@@ -1,12 +1,12 @@
 #![allow(clippy::single_match)]
 
 use smol::prelude::*;
-use std::task::{Poll, Context};
-use std::future::Future;
-use std::pin::Pin;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
+use std::task::{Context, Poll};
 
 #[derive(Debug)]
 struct Config {
@@ -273,189 +273,6 @@ impl TaskIndex {
     }
 }
 
-#[derive(Default)]
-struct PathInterner {
-    map: HashMap<&'static str, PathIndex>,
-    paths: Vec<&'static str>,
-}
-
-impl PathInterner {
-    fn insert_path(&mut self, path: &'static str) -> PathIndex {
-        match (self.map.get(path)) {
-            Some(idx) => idx,
-            None => {
-                let idx = PathIndex::from_usize(self.paths.len());
-                self.paths.push(path);
-                self.map.insert(path, idx);
-                idx
-            }
-        }
-    }
-
-    fn get_path(&mut self, idx: PathIndex) -> &'static str {
-        self.paths[idx.to_usize()]
-    }
-
-    fn len(&self) -> usize {
-        self.paths.len()
-    }
-}
-
-type JobFn = Box<dyn Fn() -> () + 'static>;
-
-struct Task {
-    input_indices: &'static [PathIndex],
-    output_indices: &'static [PathIndex],
-    do_job: Option<JobFn>,
-}
-
-type Job = Box<Future<Output = TaskIndex> + 'static>;
-
-#[derive(Default)]
-struct State {
-    path_interner: PathInterner,
-    dependencies: Vec<Vec<PathIndex>>,
-    dependants: Vec<Vec<TaskIndex>>,
-    tasks: Vec<Task>,
-    ready_queue: VecDeque<TaskIndex>,
-    scan_finished: bool,
-}
-
-impl State {
-    fn pop_ready(&mut self) -> Option<Job> {
-        if let Some(task_idx) = self.ready_queue.pop_front() {
-            let do_job = self.tasks[task_id].do_job.take().unwrap();
-            Some(Box::new(async move {
-                do_job().await();
-                task_idx
-            })
-        } else {
-            None
-        }
-    }
-
-    fn add_path(&mut self, path: &'static str) -> PathIndex {
-        self.path_interner.insert_path(path)
-    }
-
-    fn add_task(
-        &mut self,
-        inputs: &[&'static str],
-        outputs: &[&'static str],
-        make_command: MakeCommandFn,
-    ) -> TaskIndex {
-        let idx = TaskIndex::from_usize(self.tasks.len());
-
-        let input_indices = inputs
-            .into_iter()
-            .map(|path| self.path_interner.insert_path(path))
-            .collect::<Vec<PathIndex>>();
-        let output_indices = outputs
-            .into_iter()
-            .map(|path| self.path_interner.insert_path(path))
-            .collect::<Vec<PathIndex>>();
-
-        self.dependants.resize(self.path_interner.len(), Vec::new());
-        self.dependencies[idx.to_usize()] = input_indices.clone();
-
-        for input_idx in input_indices {
-            self.dependants[input_idx.to_usize()].push(idx);
-        }
-
-        self.tasks[idx.to_usize()] = Task {
-            input_indices: input_indices.leak(),
-            output_indices: output_indices.leak(),
-            make_command,
-        };
-
-        if self.dependencies[idx.to_usize()].is_empty() {
-            self.ready_queue.push_back(idx);
-        }
-
-        idx
-    }
-}
-
-#[derive(Default)]
-struct Build {
-    inner: RefCell<BuildInner>,
-    concurrency: usize,
-    running: futures::future::FuturesUnordered<Box<Command>>,
-}
-
-impl Build {
-    async fn cycle(&self) -> bool {
-        let fut: Box<dyn Future<Output=()> + 'static>  = {
-            let inner = self.inner.borrow_mut().unwrap();
-            if let Some(task_idx) = inner.ready_queue.pop_front() {
-                inner.tasks[task_idx.to_usize()].make_command()
-            } else {
-                return false;
-            }
-        };
-
-        if self.running.len() >= concurrency {
-            self.running.next().await.unwrap();
-        }
-        self.running.push(fut);
-
-        return true;
-    }
-
-    fn add_path(&self, path: &'static str) -> PathIndex {
-        self.inner.borrow_mut().unwrap().add_path(path)
-    }
-
-    fn add_task(
-        &self,
-        inputs: &[&'static str],
-        outputs: &[&'static str],
-        make_command: MakeCommandFn,
-    ) -> TaskIndex {
-        self.inner
-            .borrow_mut()
-            .unwrap()
-            .add_task(inputs, outputs, make_command)
-    }
-}
-
-async fn build(recv: smol::channel::Receiver<super::TaskDescr>) {
-    let concurrency = num_cpus::get();
-    let running = futures::future::FuturesUnordered::new();
-
-    while let Some(descr) = recv.next().await {
-        
-    }
-
-    while running.len() > 0 {
-        running.next().await.unwrap();
-    }
-}
-
-struct PathIndex(u32);
-
-impl PathIndex {
-    fn from_usize(v: usize) -> PathIndex {
-        PathIndex(u32::try_from(v).unwrap())
-    }
-
-    fn to_usize(&self) -> usize {
-        usize::try_from(self.0).unwrap()
-    }
-}
-
-struct TaskIndex(u32);
-
-impl TaskIndex {
-    fn from_usize(v: usize) -> TaskIndex {
-        TaskIndex(u32::try_from(v).unwrap())
-    }
-
-    fn to_usize(&self) -> usize {
-        usize::try_from(self.0).unwrap()
-    }
-}
-
 #[dervie(default)]
 struct PathDedup {
     set: HashSet<&'static str>,
@@ -502,155 +319,34 @@ impl PathInterner {
     }
 }
 
+type Command = Box<dyn Future<Output = ()> + 'static>;
+type MakeComandFn = Box<dyn Fn() -> Command + 'static>;
+
+struct TaskDescr {
+    input_paths: &'static [&'static str],
+    output_paths: &'static [&'static str],
+    make_command: MakeCommandFn,
+}
+
 struct Task {
     input_indices: &'static [PathIndex],
     output_indices: &'static [PathIndex],
-    make_command: super::MakeCommandFn,
+    make_command: MakeCommandFn,
 }
 
-type Command = Box<Future<Output = ()> + 'static>;
+struct ScanEntry {}
 
-#[derive(Default)]
-struct State {
-}
+impl Stream for ScanEntry {}
 
-impl State {
-    fn add_path(&mut self, path: &'static str) -> PathIndex {
-        self.path_interner.insert_path(path)
-    }
-
-    fn add_task(
-        &mut self,
-        inputs: &[&'static str],
-        outputs: &[&'static str],
-        make_command: MakeCommandFn,
-    ) -> TaskIndex {
-        let idx = TaskIndex::from_usize(self.tasks.len());
-
-        let input_indices = inputs
-            .into_iter()
-            .map(|path| self.path_interner.insert_path(path))
-            .collect::<Vec<PathIndex>>();
-        let output_indices = outputs
-            .into_iter()
-            .map(|path| self.path_interner.insert_path(path))
-            .collect::<Vec<PathIndex>>();
-
-        self.dependants.resize(self.path_interner.len(), Vec::new());
-        self.dependencies[idx.to_usize()] = input_indices.clone();
-
-        for input_idx in input_indices {
-            self.dependants[input_idx.to_usize()].push(idx);
-        }
-
-        self.tasks[idx.to_usize()] = Task {
-            input_indices: input_indices.leak(),
-            output_indices: output_indices.leak(),
-            make_command,
-        };
-
-        if self.dependencies[idx.to_usize()].is_empty() {
-            self.ready_queue.push_back(idx);
-        }
-
-        idx
-    }
-}
-
-#[derive(Default)]
-struct Build {
-    inner: RefCell<BuildInner>,
-    concurrency: usize,
-    running: futures::future::FuturesUnordered<Box<Command>>,
-}
-
-impl Build {
-    async fn cycle(&self) -> bool {
-        let fut: Box<dyn Future<Output=()> + 'static>  = {
-            let inner = self.inner.borrow_mut().unwrap();
-            if let Some(task_idx) = inner.ready_queue.pop_front() {
-                inner.tasks[task_idx.to_usize()].make_command()
-            } else {
-                return false;
-            }
-        };
-
-        if self.running.len() >= concurrency {
-            self.running.next().await.unwrap();
-        }
-        self.running.push(fut);
-
-        return true;
-    }
-
-    fn add_path(&self, path: &'static str) -> PathIndex {
-        self.inner.borrow_mut().unwrap().add_path(path)
-    }
-
-    fn add_task(
-        &self,
-        inputs: &[&'static str],
-        outputs: &[&'static str],
-        make_command: MakeCommandFn,
-    ) -> TaskIndex {
-        self.inner
-            .borrow_mut()
-            .unwrap()
-            .add_task(inputs, outputs, make_command)
-    }
-}
-
-async fn build(recv: smol::channel::Receiver<super::TaskDescr>) {
-    let concurrency = num_cpus::get();
-    let running = futures::future::FuturesUnordered::new();
-
-    while let Some(descr) = recv.next().await {
-        
-    }
-
-    while running.len() > 0 {
-        running.next().await.unwrap();
-    }
-}
-
-struct ScanCpp {
-    
-}
-
-impl Future for ScanCppm {
-    
-}
-
-struct ScanCppm {
-    
-}
-
-impl Future for ScanCppm {}
-
-struct ScanEntry {
-    
-}
-
-impl Stream for ScanEntry {
-    
-}
-
-struct Scan {
-    
-}
+struct Scan {}
 
 impl Stream for Scan {
     type Item = TaskDescr;
 
-    fn poll_next(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Option<Self::Item>> {
-        
-    }
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {}
 }
 
-type Job = Box<dyn Future<Output=TaskIndex> + 'static + Send>;
+type Job = Box<dyn Future<Output = TaskIndex> + 'static + Send>;
 
 struct Build {
     scan: Option<Scan>,
@@ -689,18 +385,50 @@ impl Build {
     fn process_task_descr(&mut self, descr: TaskDescr) {
         let task_idx = TaskIndex::from_usize(self.tasks.len());
 
-        if dependencies.is_empty() {
-            self.backlog.push_back(task_idx);
+        let input_indices = inputs
+            .into_iter()
+            .map(|path| self.path_interner.insert_path(path))
+            .collect::<Vec<PathIndex>>();
+        let output_indices = outputs
+            .into_iter()
+            .map(|path| self.path_interner.insert_path(path))
+            .collect::<Vec<PathIndex>>();
+
+        self.dependants.resize(self.path_interner.len(), Vec::new());
+        self.is_built.resize(self.path_interner.len(), Vec::new());
+        self.dependencies[task_idx.to_usize()] = input_indices.clone();
+
+        for input_idx in input_indices {
+            self.dependants[input_idx.to_usize()].push(task_idx);
         }
 
-        self.dependencies.push(dependencies);
         self.tasks.push(Task {
-            
+            input_indices: input_indices.leak(),
+            output_indices: output_indices.leak(),
+            make_command,
         });
+
+        if self.dependencies[task_idx.to_usize()].is_empty() {
+            self.ready_queue.push_back(task_idx);
+        }
     }
 
     fn process_task_finished(&mut self, task_idx: TaskIndex) {
-        
+        let task = &self.tasks[task_idx.to_usize()];
+        for out_idx in task.output_indices {
+            assert!(!self.is_built[out_idx.to_usize()]);
+            self.is_built[out_idx.to_usize()] = true;
+
+            for dependant_idx in self.dependants[out_idx.to_usize()].iter() {
+                let deps = &mut self.dependencies[dependant_idx.to_usize()];
+                let pos = deps.iter().position(|idx| idx == out_idx).unwrap();
+                deps.swap_remove(pos);
+
+                if deps.is_empty() {
+                    self.ready_queue.push_back(dependant_idx);
+                }
+            }
+        }
     }
 }
 
@@ -763,7 +491,7 @@ impl Future for Build {
 fn main() {
     let cfg = parse_args();
 
-    let build: Box<dyn Future<Output=()> + 'static> = Box::new(Build::new(cfg));
+    let build: Box<dyn Future<Output = ()> + 'static> = Box::new(Build::new(cfg));
 
     smol::LocalExecutor::new().run(build);
 }
