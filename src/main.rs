@@ -1,20 +1,12 @@
 #![allow(clippy::single_match)]
 
 use smol::prelude::*;
+use std::task::{Poll, Context};
+use std::future::Future;
+use std::pin::Pin;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
-
-mod builder;
-mod scanner;
-
-type MakeCommandFn = Box<dyn Fn() -> smol::process::Command>;
-
-struct TaskDescr {
-    inputs: Vec<&'static str>,
-    outputs: Vec<&'static str>,
-    make_command: MakeCommandFn,
-}
 
 #[derive(Debug)]
 struct Config {
@@ -309,13 +301,15 @@ impl PathInterner {
     }
 }
 
+type JobFn = Box<dyn Fn() -> () + 'static>;
+
 struct Task {
     input_indices: &'static [PathIndex],
     output_indices: &'static [PathIndex],
-    make_command: super::MakeCommandFn,
+    do_job: Option<JobFn>,
 }
 
-type Command = Box<Future<Output = ()> + 'static>;
+type Job = Box<Future<Output = TaskIndex> + 'static>;
 
 #[derive(Default)]
 struct State {
@@ -323,10 +317,23 @@ struct State {
     dependencies: Vec<Vec<PathIndex>>,
     dependants: Vec<Vec<TaskIndex>>,
     tasks: Vec<Task>,
+    ready_queue: VecDeque<TaskIndex>,
     scan_finished: bool,
 }
 
 impl State {
+    fn pop_ready(&mut self) -> Option<Job> {
+        if let Some(task_idx) = self.ready_queue.pop_front() {
+            let do_job = self.tasks[task_id].do_job.take().unwrap();
+            Some(Box::new(async move {
+                do_job().await();
+                task_idx
+            })
+        } else {
+            None
+        }
+    }
+
     fn add_path(&mut self, path: &'static str) -> PathIndex {
         self.path_interner.insert_path(path)
     }
@@ -449,6 +456,24 @@ impl TaskIndex {
     }
 }
 
+#[dervie(default)]
+struct PathDedup {
+    set: HashSet<&'static str>,
+}
+
+impl PathDedup {
+    fn insert_path(&mut self, path: &str) -> &'static str {
+        match self.set.get(path) {
+            Some(out) => out,
+            None => {
+                let out = path.to_owned().leak();
+                self.set.insert(out);
+                out
+            }
+        }
+    }
+}
+
 #[derive(Default)]
 struct PathInterner {
     map: HashMap<&'static str, PathIndex>,
@@ -487,11 +512,6 @@ type Command = Box<Future<Output = ()> + 'static>;
 
 #[derive(Default)]
 struct State {
-    path_interner: PathInterner,
-    dependencies: Vec<Vec<PathIndex>>,
-    dependants: Vec<Vec<TaskIndex>>,
-    tasks: Vec<Task>,
-    scan_finished: bool,
 }
 
 impl State {
@@ -593,12 +613,157 @@ async fn build(recv: smol::channel::Receiver<super::TaskDescr>) {
     }
 }
 
-fn run() {
+struct ScanCpp {
+    
+}
+
+impl Future for ScanCppm {
+    
+}
+
+struct ScanCppm {
+    
+}
+
+impl Future for ScanCppm {}
+
+struct ScanEntry {
+    
+}
+
+impl Stream for ScanEntry {
+    
+}
+
+struct Scan {
+    
+}
+
+impl Stream for Scan {
+    type Item = TaskDescr;
+
+    fn poll_next(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Self::Item>> {
+        
+    }
+}
+
+type Job = Box<dyn Future<Output=TaskIndex> + 'static + Send>;
+
+struct Build {
+    scan: Option<Scan>,
+    path_interner: PathInterner,
+    is_built: Vec<bool>,
+    dependencies: Vec<Vec<PathIndex>>,
+    dependants: Vec<Vec<TaskIndex>>,
+    tasks: Vec<Task>,
+    running: Vec<Job>,
+    backlog: VecDeque<TaskIndex>,
+    concurrency: usize,
+}
+
+impl Build {
+    fn new(cfg: &Config) -> Self {
+        Self {
+            scan: Scan::new(cfg),
+            path_internew: PathInterner::default(),
+            dependencies: Vec::new(),
+            dependants: Vec::new(),
+            tasks: Vec::new(),
+            running: Vec::new(),
+            backlog: VecDeque::new(),
+            concurrency: num_cpu::get(),
+        }
+    }
+
+    fn make_job(&self, task_idx: TaskIndex) -> Job {
+        let cmd = self.tasks[task_idx.to_usize()].make_command();
+        Box::new(async move {
+            cmd.await;
+            task_idx
+        })
+    }
+
+    fn process_task_descr(&mut self, descr: TaskDescr) {
+        let task_idx = TaskIndex::from_usize(self.tasks.len());
+
+        if dependencies.is_empty() {
+            self.backlog.push_back(task_idx);
+        }
+
+        self.dependencies.push(dependencies);
+        self.tasks.push(Task {
+            
+        });
+    }
+
+    fn process_task_finished(&mut self, task_idx: TaskIndex) {
+        
+    }
+}
+
+impl Future for Build {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        if let Some(scan) = self.scan.get_mut() {
+            match scan.poll_next(cx) {
+                Poll::Ready(Some(task_descr)) => {
+                    self.process_task_descr(task_descr);
+                }
+                Poll::Ready(None) => {
+                    self.scan = None;
+                }
+                Poll::Pending => {}
+            }
+        }
+
+        let mut idx = 0;
+        while idx < self.running.len() {
+            let job = &mut self.running[idx];
+            match job.poll(cx) {
+                Poll::Ready(task_idx) => {
+                    self.process_task_finished(task_idx);
+                    self.running.swap_remove(idx);
+                }
+                Poll::Pending => {
+                    idx += 1;
+                }
+            }
+        }
+
+        while self.running.len() < self.concurrency {
+            let task_idx = match self.backlog.pop_front() {
+                Some(task_idx) => task_idx,
+                None => break,
+            };
+
+            let mut job = self.make_job(task_idx);
+
+            match job.poll(cx) {
+                Poll::Ready(task_idx) => {
+                    self.process_task_finished(task_idx);
+                }
+                Poll::Pending => {
+                    self.running.push(job);
+                }
+            }
+        }
+
+        if self.scan.is_none() && self.running.is_empty() && self.backlog.is_empty() {
+            Poll::Ready(())
+        } else {
+            Poll::Pending
+        }
+    }
+}
+
+fn main() {
     let cfg = parse_args();
 
-    let (tx, rx) = smol::channel::unbounded::<TaskDescr>();
+    let build: Box<dyn Future<Output=()> + 'static> = Box::new(Build::new(cfg));
 
-    let local_ex = Box::leak(Box::new(smol::LocalExecutor::new()));
-    local_ex.spawn(scanner::scan(config, tx));
-    local_ex.run(builder::build(rx));
+    smol::LocalExecutor::new().run(build);
 }
