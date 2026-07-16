@@ -359,11 +359,32 @@ impl ReadDir {
     }
 }
 
-#[must_use = "streams do nothing unless you poll them"]
-struct ScanEntry {
-    entry: smol::fs::DirEntry,
-    config: &'static Config,
+struct DepsJson {
+    deps: Vec<String>,
+    test_deps: Vec<String>,
+    bin_deps: Vec<String>,
 }
+
+async fn read_deps_json(path: PathBuf) -> DepsJson {
+    todo!()
+}
+
+#[must_use = "streams do nothing unless you poll them"]
+enum ScanEntry {
+    ReadDepsJson(BoxedFuture<DepsJson>),
+    ScanMod(ReadDir),
+    ScanLib(ReadDir),
+    ScanTest(ReadDir),
+    ScanBin(ReadDir),
+    Done,
+}
+
+// entry folder
+//   - mod
+//   - lib
+//   - test
+//   - bin
+//   - deps.json
 
 impl ScanEntry {
     fn new(entry: smol::fs::DirEntry, config: &'static Config) -> ScanEntry {
@@ -375,7 +396,6 @@ impl ScanEntry {
         cx: &mut Context<'_>,
         path_interner: &mut PathInterner,
     ) -> Poll<Option<Task>> {
-        todo!()
     }
 }
 
