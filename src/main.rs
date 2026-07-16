@@ -1,6 +1,7 @@
 #![allow(clippy::single_match)]
 
 use smol::future::Boxed as BoxedFuture;
+use smol::stream::Boxed as BoxedStream;
 use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -334,25 +335,48 @@ struct Task {
 //     }
 // }
 
-// enum ReadDir {
-//     Start(BoxedFuture<smol::fs::ReadDir>),
-//     Running(smol::fs::ReadDir),
-//     Done,
-// }
+enum ReadDir {
+    Start(BoxedFuture<smol::io::Result<smol::fs::ReadDir>>),
+    Running(BoxedStream<smol::io::Result<smol::fs::DirEntry>>),
+    Done,
+}
 
-// impl ReadDir {
-//     fn new(path: &Path) -> ReadDir {
-//         ReadDir::Start(smol::fs::read_dir(path).boxed())
-//     }
+impl ReadDir {
+    fn new(path: PathBuf) -> ReadDir {
+        ReadDir::Start(Box::pin(smol::fs::read_dir(path)))
+    }
 
-//     fn poll_next(self: &mut self, cx: &mut Context<'_>) -> Poll<Option<smol::fs::DirEntry>> {
-//         loop {
-//             match std::mem::swap(self, ) {
-
-//             }
-//         }
-//     }
-// }
+    fn poll_next(&mut self, cx: &mut Context<'_>) -> Poll<Option<smol::fs::DirEntry>> {
+        loop {
+            match std::mem::replace(self, ReadDir::Done) {
+                ReadDir::Start(mut fut) => match fut.as_mut().poll(cx) {
+                    Poll::Ready(res) => {
+                        *self = ReadDir::Running(Box::pin(res.unwrap()));
+                    }
+                    Poll::Pending => {
+                        *self = ReadDir::Start(fut);
+                        return Poll::Pending;
+                    }
+                },
+                ReadDir::Running(mut rd) => match rd.as_mut().poll_next(cx) {
+                    Poll::Ready(Some(res)) => {
+                        *self = ReadDir::Running(rd);
+                        return Poll::Ready(Some(res.unwrap()));
+                    }
+                    Poll::Ready(None) => {
+                        *self = ReadDir::Done;
+                        return Poll::Ready(None);
+                    }
+                    Poll::Pending => {
+                        *self = ReadDir::Running(rd);
+                        return Poll::Pending;
+                    }
+                },
+                ReadDir::Done => unreachable!(),
+            }
+        }
+    }
+}
 
 // enum Scan {
 //     Running {
