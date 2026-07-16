@@ -365,12 +365,33 @@ struct DepsJson {
     bin_deps: Vec<String>,
 }
 
+fn read_deps_field(
+    root: &serde_json::Map<String, serde_json::Value>,
+    field_name: &str,
+) -> Vec<String> {
+    root.get(field_name)
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|name| name.as_str().unwrap().to_owned())
+        .collect()
+}
+
 async fn read_deps_json(path: PathBuf) -> DepsJson {
-    todo!()
+    let contents = smol::fs::read(path).await.unwrap();
+    let root = serde_json::from_slice::<serde_json::Value>(&contents).unwrap();
+    let root = root.as_object().unwrap();
+
+    DepsJson {
+        deps: read_deps_field(root, "deps"),
+        test_deps: read_deps_field(root, "test_deps"),
+        bin_deps: read_deps_field(root, "bin_deps"),
+    }
 }
 
 #[must_use = "streams do nothing unless you poll them"]
-enum ScanEntry {
+enum ScanEntryState {
     ReadDepsJson(BoxedFuture<DepsJson>),
     ScanMod(ReadDir),
     ScanLib(ReadDir),
@@ -379,16 +400,21 @@ enum ScanEntry {
     Done,
 }
 
-// entry folder
-//   - mod
-//   - lib
-//   - test
-//   - bin
-//   - deps.json
+struct ScanEntry {
+    config: &'static Config,
+    entry: smol::fs::DirEntry,
+    state: ScanEntryState,
+}
 
 impl ScanEntry {
     fn new(entry: smol::fs::DirEntry, config: &'static Config) -> ScanEntry {
-        ScanEntry { entry, config }
+        let rdj = Box::pin(read_deps_json(entry.path().join("deps.json")));
+
+        ScanEntry {
+            entry,
+            config,
+            state: ScanEntryState::ReadDepsJson(rdj),
+        }
     }
 
     fn poll_next(
@@ -396,6 +422,15 @@ impl ScanEntry {
         cx: &mut Context<'_>,
         path_interner: &mut PathInterner,
     ) -> Poll<Option<Task>> {
+        loop {
+            match std::mem::replace(&mut self.state, ScanEntryState::Done) {
+                ScanEntryState::Mod(rd) => {
+                    
+                }
+                ScanEntryState::Done => unreachable!(),
+                _ => todo!(),
+            }
+        }
     }
 }
 
@@ -449,7 +484,7 @@ impl Scan {
 
         let mut idx = 0;
         while idx < self.running.len() {
-            let mut scan_entry = &mut self.running[idx];
+            let scan_entry = &mut self.running[idx];
             let mut done = false;
             loop {
                 match scan_entry.poll_next(cx, path_interner) {
