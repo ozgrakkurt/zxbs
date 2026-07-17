@@ -402,6 +402,7 @@ enum ScanEntryState {
 
 struct ScanEntry {
     config: &'static Config,
+    deps: Option<DepsJson>,
     entry: smol::fs::DirEntry,
     state: ScanEntryState,
 }
@@ -414,6 +415,7 @@ impl ScanEntry {
             entry,
             config,
             state: ScanEntryState::ReadDepsJson(rdj),
+            deps: None,
         }
     }
 
@@ -424,11 +426,73 @@ impl ScanEntry {
     ) -> Poll<Option<Task>> {
         loop {
             match std::mem::replace(&mut self.state, ScanEntryState::Done) {
-                ScanEntryState::Mod(rd) => {
-                    
-                }
+                ScanEntryState::ReadDepsJson(mut rdj) => match rdj.as_mut().poll(cx) {
+                    Poll::Ready(deps_json) => {
+                        self.deps = Some(deps_json);
+                        self.state =
+                            ScanEntryState::ScanMod(ReadDir::new(self.entry.path().join("mod")));
+                    }
+                    Poll::Pending => {
+                        self.state = ScanEntryState::ReadDepsJson(rdj);
+                        return Poll::Pending;
+                    }
+                },
+                ScanEntryState::ScanMod(mut rd) => match rd.poll_next(cx) {
+                    Poll::Ready(Some(entry)) => {
+                        self.state = ScanEntryState::ScanMod(rd);
+                        return Poll::Ready(Some(todo!()));
+                    }
+                    Poll::Ready(None) => {
+                        self.state =
+                            ScanEntryState::ScanLib(ReadDir::new(self.entry.path().join("lib")));
+                    }
+                    Poll::Pending => {
+                        self.state = ScanEntryState::ScanMod(rd);
+                        return Poll::Pending;
+                    }
+                },
+                ScanEntryState::ScanLib(mut rd) => match rd.poll_next(cx) {
+                    Poll::Ready(Some(entry)) => {
+                        self.state = ScanEntryState::ScanLib(rd);
+                        return Poll::Ready(Some(todo!()));
+                    }
+                    Poll::Ready(None) => {
+                        self.state =
+                            ScanEntryState::ScanTest(ReadDir::new(self.entry.path().join("test")));
+                    }
+                    Poll::Pending => {
+                        self.state = ScanEntryState::ScanLib(rd);
+                        return Poll::Pending;
+                    }
+                },
+                ScanEntryState::ScanTest(mut rd) => match rd.poll_next(cx) {
+                    Poll::Ready(Some(entry)) => {
+                        self.state = ScanEntryState::ScanTest(rd);
+                        return Poll::Ready(Some(todo!()));
+                    }
+                    Poll::Ready(None) => {
+                        self.state =
+                            ScanEntryState::ScanBin(ReadDir::new(self.entry.path().join("bin")));
+                    }
+                    Poll::Pending => {
+                        self.state = ScanEntryState::ScanTest(rd);
+                        return Poll::Pending;
+                    }
+                },
+                ScanEntryState::ScanBin(mut rd) => match rd.poll_next(cx) {
+                    Poll::Ready(Some(entry)) => {
+                        self.state = ScanEntryState::ScanBin(rd);
+                        return Poll::Ready(Some(todo!()));
+                    }
+                    Poll::Ready(None) => {
+                        return Poll::Ready(None);
+                    }
+                    Poll::Pending => {
+                        self.state = ScanEntryState::ScanBin(rd);
+                        return Poll::Pending;
+                    }
+                },
                 ScanEntryState::Done => unreachable!(),
-                _ => todo!(),
             }
         }
     }
