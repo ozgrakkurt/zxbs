@@ -285,10 +285,11 @@ struct PathInterner {
 }
 
 impl PathInterner {
-    fn insert_path(&mut self, path: &'static str) -> PathIndex {
+    fn insert_path(&mut self, path: &str) -> PathIndex {
         match self.map.get(path) {
             Some(idx) => *idx,
             None => {
+                let path = path.to_owned().leak();
                 let idx = PathIndex::from_usize(self.paths.len());
                 self.paths.push(path);
                 self.map.insert(path, idx);
@@ -359,8 +360,7 @@ impl ReadDir {
     }
 }
 
-async fn read_module_deps(path: &'static str) -> Vec<String> {
-}
+async fn read_module_deps(path: &'static str) -> Vec<String> {}
 
 struct DepsJson {
     deps: Vec<String>,
@@ -393,6 +393,70 @@ async fn read_deps_json(path: PathBuf) -> DepsJson {
     }
 }
 
+enum ScanModState {
+    WaitEntry,
+    ScanDeps(BoxedFuture<Vec<String>>),
+    Done,
+}
+
+#[must_use = "streams do nothing unless you poll them"]
+struct ScanMod {
+    name: String,
+    path: PathBuf,
+    read_dir: ReadDir,
+}
+
+impl ScanMod {
+    fn new(path: PathBuf) -> ScanMod {
+        let name = path.file_name()
+        ScanMod {
+            read_dir: ReadDir::new(path),
+        }
+    }
+
+    fn poll_next(
+        &mut self,
+        cx: &mut Context<'_>,
+        path_interner: &mut PathInterner,
+        config: &'static Config,
+        entry: &smol::fs::DirEntry,
+        object_indices: &mut Vec<PathIndex>,
+    ) -> Poll<Option<Task>> {
+        loop {
+            match std::mem::replace(&mut self.state, ScanModState::Done) {
+                ScanModState::Done => unreachable!(),
+                ScanModState::WaitEntry => {
+                    match self.read_dir.poll_next(cx) {
+                        Poll::Ready(Some(entry)) => {
+                            self.state = ScanModState::ScanDeps();
+                        }
+                        Poll::Ready(None) => {
+                            self.state = ScanModState::Done;
+                            return Poll::Ready(None);
+                        }
+                        Poll::Pending => {
+                            self.state = ScanModState::WaitEntry;
+                            return Poll::Pending;
+                        }
+                    }
+                }
+                ScanModState::ScanDeps(df) => {
+                    match df.poll(cx) {
+                        Poll::Ready(deps) => {
+                            self.state = ScanModState::WaitEntry;
+                            return Poll:Ready(Some(task));
+                        }
+                        Poll::Pending => {
+                            self.state = ScanModState::ScanDeps(df);
+                            return Poll::Pending;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[must_use = "streams do nothing unless you poll them"]
 enum ScanEntryState {
     ReadDepsJson(BoxedFuture<DepsJson>),
@@ -406,7 +470,7 @@ enum ScanEntryState {
 struct ScanEntry {
     config: &'static Config,
     deps: Option<DepsJson>,
-    object_files: Vec<PathIndex>,
+    object_indices: Vec<PathIndex>,
     entry: smol::fs::DirEntry,
     state: ScanEntryState,
 }
@@ -420,7 +484,7 @@ impl ScanEntry {
             config,
             state: ScanEntryState::ReadDepsJson(rdj),
             deps: None,
-            object_files: Vec::new(),
+            object_indices: Vec::new(),
         }
     }
 
@@ -464,11 +528,34 @@ impl ScanEntry {
                     Poll::Ready(None) => {
                         self.state =
                             ScanEntryState::ScanTest(ReadDir::new(self.entry.path().join("test")));
-                        // TODO: emit .a generation task that uses all object files
+                        let object_indices = self.object_indices.clone().leak();
+                        let object_paths: &'static [&'static str] = object_indices
+                            .iter()
+                            .map(|i| path_interner.get_path(*i))
+                            .collect::<Vec<&'static str>>()
+                            .leak();
+                        let lib_name = self.entry.file_name();
+                        let out_path = self
+                            .config
+                            .build_path
+                            .join(&lib_name)
+                            .join(format!("lib{}.a", lib_name.display()));
+                        let out_idx = path_interner.insert_path(out_path.to_str().unwrap());
+                        let out_path = path_interner.get_path(out_idx);
+                        let ar = self.config.ar;
                         return Poll::Ready(Some(Task {
-                            input_indices: self.object_files.leak(),
+                            input_indices: object_indices,
                             output_indices: vec![out_idx].leak(),
                             make_command: Box::new(move || {
+                                Box::pin(async move {
+                                    smol::process::Command::new(ar)
+                                        .arg("crs")
+                                        .arg(out_path)
+                                        .args(object_paths)
+                                        .output()
+                                        .await
+                                        .unwrap();
+                                })
                             }),
                         }));
                     }
