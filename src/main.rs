@@ -360,7 +360,45 @@ impl ReadDir {
     }
 }
 
-async fn read_module_deps(path: &'static str) -> Vec<String> {}
+async fn scan_deps(config: &'static Config, path: &'static str) -> Vec<String> {
+    let output = smol::process::Command::new(config.clang_scan_deps)
+        .arg("-format=p1689")
+        .arg("--")
+        .arg(config.cxx)
+        .args(config.cflags)
+        .arg(path)
+        .output()
+        .await
+        .unwrap();
+    if !output.status.success() {
+        panic!(
+            "Failed clang_scan_deps:\n{}",
+            str::from_utf8(&output.stderr).unwrap()
+        );
+    }
+    let contents = output.stdout;
+
+    let root = serde_json::from_slice::<serde_json::Value>(&contents).unwrap();
+    let root = root.as_object().unwrap();
+
+    let mut deps = Vec::new();
+
+    for rule in root.get("rules").unwrap().as_array().unwrap().iter() {
+        let rule = rule.as_object().unwrap();
+        for p in rule.get("provides").unwrap().as_array().unwrap().iter() {
+            let name = p
+                .as_object()
+                .unwrap()
+                .get("logical-name")
+                .unwrap()
+                .as_str()
+                .unwrap();
+            deps.push(name.to_owned());
+        }
+    }
+
+    deps
+}
 
 struct DepsJson {
     deps: Vec<String>,
@@ -393,69 +431,65 @@ async fn read_deps_json(path: PathBuf) -> DepsJson {
     }
 }
 
-enum ScanModState {
-    WaitEntry,
-    ScanDeps(BoxedFuture<Vec<String>>),
-    Done,
-}
+// enum ScanModState {
+//     WaitEntry,
+//     ScanDeps(BoxedFuture<Vec<String>>),
+//     Done,
+// }
 
-#[must_use = "streams do nothing unless you poll them"]
-struct ScanMod {
-    name: String,
-    path: PathBuf,
-    read_dir: ReadDir,
-}
+// #[must_use = "streams do nothing unless you poll them"]
+// struct ScanMod {
+//     name: String,
+//     path: PathBuf,
+//     read_dir: ReadDir,
+// }
 
-impl ScanMod {
-    fn new(path: PathBuf) -> ScanMod {
-        let name = path.file_name()
-        ScanMod {
-            read_dir: ReadDir::new(path),
-        }
-    }
+// impl ScanMod {
+//     fn new(path: PathBuf) -> ScanMod {
+//         let name = path.file_name();
+//         ScanMod {
+//             read_dir: ReadDir::new(path),
+//         }
+//     }
 
-    fn poll_next(
-        &mut self,
-        cx: &mut Context<'_>,
-        path_interner: &mut PathInterner,
-        config: &'static Config,
-        entry: &smol::fs::DirEntry,
-        object_indices: &mut Vec<PathIndex>,
-    ) -> Poll<Option<Task>> {
-        loop {
-            match std::mem::replace(&mut self.state, ScanModState::Done) {
-                ScanModState::Done => unreachable!(),
-                ScanModState::WaitEntry => {
-                    match self.read_dir.poll_next(cx) {
-                        Poll::Ready(Some(entry)) => {
-                            self.state = ScanModState::ScanDeps();
-                        }
-                        Poll::Ready(None) => {
-                            self.state = ScanModState::Done;
-                            return Poll::Ready(None);
-                        }
-                        Poll::Pending => {
-                            self.state = ScanModState::WaitEntry;
-                            return Poll::Pending;
-                        }
-                    }
-                }
-                ScanModState::ScanDeps(df) => {
-                    match df.poll(cx) {
-                        Poll::Ready(deps) => {
-                            self.state = ScanModState::WaitEntry;
-                            return Poll:Ready(Some(task));
-                        }
-                        Poll::Pending => {
-                            self.state = ScanModState::ScanDeps(df);
-                            return Poll::Pending;
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
+//     fn poll_next(
+//         &mut self,
+//         cx: &mut Context<'_>,
+//         path_interner: &mut PathInterner,
+//         config: &'static Config,
+//         entry: &smol::fs::DirEntry,
+//         object_indices: &mut Vec<PathIndex>,
+//     ) -> Poll<Option<Vec<Task>>> {
+//         loop {
+//             match std::mem::replace(&mut self.state, ScanModState::Done) {
+//                 ScanModState::Done => unreachable!(),
+//                 ScanModState::WaitEntry => match self.read_dir.poll_next(cx) {
+//                     Poll::Ready(Some(entry)) => {
+//                         self.state = ScanModState::ScanDeps(Box::pin());
+//                     }
+//                     Poll::Ready(None) => {
+//                         self.state = ScanModState::Done;
+//                         return Poll::Ready(None);
+//                     }
+//                     Poll::Pending => {
+//                         self.state = ScanModState::WaitEntry;
+//                         return Poll::Pending;
+//                     }
+//                 },
+//                 ScanModState::ScanDeps(df) => match df.poll(cx) {
+//                     Poll::Ready(deps) => {
+//                         self.state = ScanModState::WaitEntry;
+//                         return Poll::Ready(Some(task));
+//                     }
+//                     Poll::Pending => {
+//                         self.state = ScanModState::ScanDeps(df);
+//                         return Poll::Pending;
+//                     }
+//                 },
+//             }
+//         }
+//     }
+// }
 
 #[must_use = "streams do nothing unless you poll them"]
 enum ScanEntryState {
@@ -492,7 +526,7 @@ impl ScanEntry {
         &mut self,
         cx: &mut Context<'_>,
         path_interner: &mut PathInterner,
-    ) -> Poll<Option<Task>> {
+    ) -> Poll<Option<Vec<Task>>> {
         loop {
             match std::mem::replace(&mut self.state, ScanEntryState::Done) {
                 ScanEntryState::ReadDepsJson(mut rdj) => match rdj.as_mut().poll(cx) {
@@ -543,7 +577,7 @@ impl ScanEntry {
                         let out_idx = path_interner.insert_path(out_path.to_str().unwrap());
                         let out_path = path_interner.get_path(out_idx);
                         let ar = self.config.ar;
-                        return Poll::Ready(Some(Task {
+                        return Poll::Ready(Some(vec![Task {
                             input_indices: object_indices,
                             output_indices: vec![out_idx].leak(),
                             make_command: Box::new(move || {
@@ -557,7 +591,7 @@ impl ScanEntry {
                                         .unwrap();
                                 })
                             }),
-                        }));
+                        }]));
                     }
                     Poll::Pending => {
                         self.state = ScanEntryState::ScanLib(rd);
@@ -601,7 +635,7 @@ impl ScanEntry {
 struct Scan {
     read_dir: Option<ReadDir>,
     running: Vec<ScanEntry>,
-    ret_queue: VecDeque<Task>,
+    to_return: Vec<Task>,
     backlog: VecDeque<smol::fs::DirEntry>,
     concurrency: usize,
     config: &'static Config,
@@ -612,7 +646,7 @@ impl Scan {
         Scan {
             read_dir: Some(ReadDir::new(cfg.src_path.to_owned())),
             running: Vec::new(),
-            ret_queue: VecDeque::new(),
+            to_return: Vec::new(),
             backlog: VecDeque::new(),
             concurrency: num_cpus::get(),
             config: cfg,
@@ -623,7 +657,7 @@ impl Scan {
         &mut self,
         cx: &mut Context<'_>,
         path_interner: &mut PathInterner,
-    ) -> Poll<Option<Task>> {
+    ) -> Poll<Option<Vec<Task>>> {
         if let Some(mut rd) = self.read_dir.take() {
             let mut done = false;
             loop {
@@ -651,8 +685,9 @@ impl Scan {
             let mut done = false;
             loop {
                 match scan_entry.poll_next(cx, path_interner) {
-                    Poll::Ready(Some(task)) => {
-                        self.ret_queue.push_back(task);
+                    Poll::Ready(Some(tasks)) => {
+                        assert!(!tasks.is_empty());
+                        self.to_return.extend(tasks);
                     }
                     Poll::Ready(None) => {
                         done = true;
@@ -681,8 +716,9 @@ impl Scan {
 
             loop {
                 match scan_entry.poll_next(cx, path_interner) {
-                    Poll::Ready(Some(task)) => {
-                        self.ret_queue.push_back(task);
+                    Poll::Ready(Some(tasks)) => {
+                        assert!(!tasks.is_empty());
+                        self.to_return.extend(tasks);
                     }
                     Poll::Ready(None) => {
                         break;
@@ -695,8 +731,8 @@ impl Scan {
             }
         }
 
-        if let Some(task) = self.ret_queue.pop_front() {
-            return Poll::Ready(Some(task));
+        if !self.to_return.is_empty() {
+            return Poll::Ready(Some(std::mem::take(&mut self.to_return)));
         }
 
         if self.read_dir.is_none() && self.backlog.is_empty() && self.running.is_empty() {
@@ -806,8 +842,9 @@ impl Future for Build {
             let mut done = false;
             loop {
                 match scan.poll_next(cx, &mut fut.path_interner) {
-                    Poll::Ready(Some(task)) => {
-                        tasks.push(task);
+                    Poll::Ready(Some(tasks_)) => {
+                        assert!(!tasks_.is_empty());
+                        tasks.extend(tasks_);
                     }
                     Poll::Ready(None) => {
                         done = true;
