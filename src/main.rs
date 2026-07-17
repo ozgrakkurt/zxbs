@@ -359,6 +359,9 @@ impl ReadDir {
     }
 }
 
+async fn read_module_deps(path: &'static str) -> Vec<String> {
+}
+
 struct DepsJson {
     deps: Vec<String>,
     test_deps: Vec<String>,
@@ -403,6 +406,7 @@ enum ScanEntryState {
 struct ScanEntry {
     config: &'static Config,
     deps: Option<DepsJson>,
+    object_files: Vec<PathIndex>,
     entry: smol::fs::DirEntry,
     state: ScanEntryState,
 }
@@ -416,6 +420,7 @@ impl ScanEntry {
             config,
             state: ScanEntryState::ReadDepsJson(rdj),
             deps: None,
+            object_files: Vec::new(),
         }
     }
 
@@ -459,6 +464,13 @@ impl ScanEntry {
                     Poll::Ready(None) => {
                         self.state =
                             ScanEntryState::ScanTest(ReadDir::new(self.entry.path().join("test")));
+                        // TODO: emit .a generation task that uses all object files
+                        return Poll::Ready(Some(Task {
+                            input_indices: self.object_files.leak(),
+                            output_indices: vec![out_idx].leak(),
+                            make_command: Box::new(move || {
+                            }),
+                        }));
                     }
                     Poll::Pending => {
                         self.state = ScanEntryState::ScanLib(rd);
