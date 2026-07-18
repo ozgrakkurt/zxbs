@@ -278,14 +278,21 @@ impl TaskIndex {
     }
 }
 
-#[derive(Default)]
 struct PathInterner {
     map: HashMap<&'static str, PathIndex>,
     paths: Vec<&'static str>,
 }
 
 impl PathInterner {
-    fn insert_path(&mut self, path: &str) -> PathIndex {
+    fn new() -> PathInterner {
+        return PathInterner {
+            map: HashMap::new(),
+            paths: Vec::new(),
+        }
+    }
+    
+    fn insert_path(&mut self, path: &Path) -> PathIndex {
+        let path = path.to_str().unwrap();
         match self.map.get(path) {
             Some(idx) => *idx,
             None => {
@@ -298,8 +305,8 @@ impl PathInterner {
         }
     }
 
-    fn get_path(&mut self, idx: PathIndex) -> &'static str {
-        self.paths[idx.to_usize()]
+    fn get_path(&mut self, idx: PathIndex) -> &'static Path {
+        Path::new(self.paths[idx.to_usize()])
     }
 
     fn len(&self) -> usize {
@@ -360,141 +367,76 @@ impl ReadDir {
     }
 }
 
-async fn scan_deps(config: &'static Config, path: &'static str) -> Vec<String> {
-    let output = smol::process::Command::new(config.clang_scan_deps)
-        .arg("-format=p1689")
-        .arg("--")
-        .arg(config.cxx)
-        .args(config.cflags)
-        .arg(path)
-        .output()
-        .await
-        .unwrap();
-    if !output.status.success() {
-        panic!(
-            "Failed clang_scan_deps:\n{}",
-            str::from_utf8(&output.stderr).unwrap()
-        );
-    }
-    let contents = output.stdout;
+enum ScanModState {
+    WaitEntry,
+    ScanDeps(PathIndex, BoxedFuture<Vec<String>>),
+    Done,
+}
 
-    let root = serde_json::from_slice::<serde_json::Value>(&contents).unwrap();
-    let root = root.as_object().unwrap();
+// Scan mod folder under a source entry.
+// Iterates every file in the mod folder, each have to be a cppm.
+// Generates two tasks, one for precompiling into pcm, another for compiling the pcm into object file.
+// First task depends on the local module dependencies of this module and library dependencies of the
+// source entry.
+// Second task depends on the first task's pcm output.
+#[must_use = "streams do nothing unless you poll them"]
+struct ScanMod {
+    name: String,
+    path: PathBuf,
+    read_dir: ReadDir,
+}
 
-    let mut deps = Vec::new();
-
-    for rule in root.get("rules").unwrap().as_array().unwrap().iter() {
-        let rule = rule.as_object().unwrap();
-        for p in rule.get("provides").unwrap().as_array().unwrap().iter() {
-            let name = p
-                .as_object()
-                .unwrap()
-                .get("logical-name")
-                .unwrap()
-                .as_str()
-                .unwrap();
-            deps.push(name.to_owned());
+impl ScanMod {
+    fn new(path: PathBuf) -> ScanMod {
+        let name = path.file_name();
+        ScanMod {
+            read_dir: ReadDir::new(path),
         }
     }
 
-    deps
-}
-
-struct DepsJson {
-    deps: Vec<String>,
-    test_deps: Vec<String>,
-    bin_deps: Vec<String>,
-}
-
-fn read_deps_field(
-    root: &serde_json::Map<String, serde_json::Value>,
-    field_name: &str,
-) -> Vec<String> {
-    root.get(field_name)
-        .unwrap()
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|name| name.as_str().unwrap().to_owned())
-        .collect()
-}
-
-async fn read_deps_json(path: PathBuf) -> DepsJson {
-    let contents = smol::fs::read(path).await.unwrap();
-    let root = serde_json::from_slice::<serde_json::Value>(&contents).unwrap();
-    let root = root.as_object().unwrap();
-
-    DepsJson {
-        deps: read_deps_field(root, "deps"),
-        test_deps: read_deps_field(root, "test_deps"),
-        bin_deps: read_deps_field(root, "bin_deps"),
+    fn poll_next(
+        &mut self,
+        cx: &mut Context<'_>,
+        path_interner: &mut PathInterner,
+        config: &'static Config,
+        entry: &smol::fs::DirEntry,
+        object_indices: &mut Vec<PathIndex>,
+    ) -> Poll<Option<Vec<Task>>> {
+        loop {
+            match std::mem::replace(&mut self.state, ScanModState::Done) {
+                ScanModState::Done => unreachable!(),
+                ScanModState::WaitEntry => match self.read_dir.poll_next(cx) {
+                    Poll::Ready(Some(entry)) => {
+                        self.state = ScanModState::ScanDeps(Box::pin(scan_deps(config, )));
+                    }
+                    Poll::Ready(None) => {
+                        self.state = ScanModState::Done;
+                        return Poll::Ready(None);
+                    }
+                    Poll::Pending => {
+                        self.state = ScanModState::WaitEntry;
+                        return Poll::Pending;
+                    }
+                },
+                ScanModState::ScanDeps(df) => match df.poll(cx) {
+                    Poll::Ready(deps) => {
+                        self.state = ScanModState::WaitEntry;
+                        return Poll::Ready(Some(task));
+                    }
+                    Poll::Pending => {
+                        self.state = ScanModState::ScanDeps(df);
+                        return Poll::Pending;
+                    }
+                },
+            }
+        }
     }
 }
-
-// enum ScanModState {
-//     WaitEntry,
-//     ScanDeps(BoxedFuture<Vec<String>>),
-//     Done,
-// }
-
-// #[must_use = "streams do nothing unless you poll them"]
-// struct ScanMod {
-//     name: String,
-//     path: PathBuf,
-//     read_dir: ReadDir,
-// }
-
-// impl ScanMod {
-//     fn new(path: PathBuf) -> ScanMod {
-//         let name = path.file_name();
-//         ScanMod {
-//             read_dir: ReadDir::new(path),
-//         }
-//     }
-
-//     fn poll_next(
-//         &mut self,
-//         cx: &mut Context<'_>,
-//         path_interner: &mut PathInterner,
-//         config: &'static Config,
-//         entry: &smol::fs::DirEntry,
-//         object_indices: &mut Vec<PathIndex>,
-//     ) -> Poll<Option<Vec<Task>>> {
-//         loop {
-//             match std::mem::replace(&mut self.state, ScanModState::Done) {
-//                 ScanModState::Done => unreachable!(),
-//                 ScanModState::WaitEntry => match self.read_dir.poll_next(cx) {
-//                     Poll::Ready(Some(entry)) => {
-//                         self.state = ScanModState::ScanDeps(Box::pin());
-//                     }
-//                     Poll::Ready(None) => {
-//                         self.state = ScanModState::Done;
-//                         return Poll::Ready(None);
-//                     }
-//                     Poll::Pending => {
-//                         self.state = ScanModState::WaitEntry;
-//                         return Poll::Pending;
-//                     }
-//                 },
-//                 ScanModState::ScanDeps(df) => match df.poll(cx) {
-//                     Poll::Ready(deps) => {
-//                         self.state = ScanModState::WaitEntry;
-//                         return Poll::Ready(Some(task));
-//                     }
-//                     Poll::Pending => {
-//                         self.state = ScanModState::ScanDeps(df);
-//                         return Poll::Pending;
-//                     }
-//                 },
-//             }
-//         }
-//     }
-// }
 
 #[must_use = "streams do nothing unless you poll them"]
 enum ScanEntryState {
     ReadDepsJson(BoxedFuture<DepsJson>),
-    ScanMod(ReadDir),
+    ScanMod(ScanMod),
     ScanLib(ReadDir),
     ScanTest(ReadDir),
     ScanBin(ReadDir),
@@ -503,7 +445,9 @@ enum ScanEntryState {
 
 struct ScanEntry {
     config: &'static Config,
-    deps: Option<DepsJson>,
+    deps: Vec<PathIndex>,
+    test_deps: Vec<PathIndex>,
+    deps: Option<&'static [PathIndex]>,
     object_indices: Vec<PathIndex>,
     entry: smol::fs::DirEntry,
     state: ScanEntryState,
@@ -531,6 +475,7 @@ impl ScanEntry {
             match std::mem::replace(&mut self.state, ScanEntryState::Done) {
                 ScanEntryState::ReadDepsJson(mut rdj) => match rdj.as_mut().poll(cx) {
                     Poll::Ready(deps_json) => {
+                        deps_json
                         self.deps = Some(deps_json);
                         self.state =
                             ScanEntryState::ScanMod(ReadDir::new(self.entry.path().join("mod")));
@@ -582,13 +527,14 @@ impl ScanEntry {
                             output_indices: vec![out_idx].leak(),
                             make_command: Box::new(move || {
                                 Box::pin(async move {
-                                    smol::process::Command::new(ar)
+                                    assert!(smol::process::Command::new(ar)
                                         .arg("crs")
                                         .arg(out_path)
                                         .args(object_paths)
                                         .output()
                                         .await
-                                        .unwrap();
+                                        .unwrap()
+                                        .status.success());
                                 })
                             }),
                         }]));
@@ -636,9 +582,29 @@ struct Scan {
     read_dir: Option<ReadDir>,
     running: Vec<ScanEntry>,
     to_return: Vec<Task>,
-    backlog: VecDeque<smol::fs::DirEntry>,
     concurrency: usize,
     config: &'static Config,
+    // deps context
+    // these fields are used for book-keeping about
+    // dependency chain between source entries.
+    // 
+    // We read the deps.json when we find a source entry and
+    // the reading of deps.json is recorded in the read_deps vector.
+    //
+    // Then information is recorded in the deps/test-deps/bin-deps vectors.
+    // And dependency chain is collected when we are issuing an entry read for the
+    // source entry. We also check for circular dependency on self when doing this
+    // collection.
+    read_deps_json: Vec<BoxedFuture<(PathBuf, DepsJson)>>,
+    deps: Vec<PathIndex>,
+    test_deps: Vec<PathIndex>,
+    bin_deps: Vec<PathIndex>,
+    // reversed dependency relation for issuing entry scans when dependency waiting is resolved.
+    wait_rev_deps: Vec<Vec<PathIndex>>,
+    // for waiting for all dependencies to be resolved. We only can issue the entry scan when
+    // all dependencies are resolved since we will need the whole dependency chain to
+    // construct the build commands and entryScan is supposed to be able to create the build commands.
+    wait_deps: Vec<Vec<PathIndex>>,
 }
 
 impl Scan {
@@ -647,9 +613,14 @@ impl Scan {
             read_dir: Some(ReadDir::new(cfg.src_path.to_owned())),
             running: Vec::new(),
             to_return: Vec::new(),
-            backlog: VecDeque::new(),
             concurrency: num_cpus::get(),
             config: cfg,
+            read_deps_json: Vec::new(),
+            deps: Vec::new(),
+            test_deps: Vec::new(),
+            bin_deps: Vec::new(),
+            wait_rev_deps: Vec::new(),
+            wait_deps: Vec::new(),
         }
     }
 
@@ -663,7 +634,20 @@ impl Scan {
             loop {
                 match rd.poll_next(cx) {
                     Poll::Ready(Some(dir_entry)) => {
-                        self.backlog.push_back(dir_entry);
+                        let path = dir_entry.path().join("deps.json");
+                        let cfg = self.config;
+                        let mut rdj = Box::pin(async move {
+                            (read_deps_json(cfg, path))
+                        });
+
+                        match rdj.as_mut().poll(cx) {
+                           Poll::Ready(_) => {
+                               unreachable!();
+                           }
+                           Poll::Pending => {
+                               self.read_deps_json.push_back(rdj);
+                           }  
+                        }                        
                     }
                     Poll::Ready(None) => {
                         done = true;
@@ -676,6 +660,8 @@ impl Scan {
             }
             if !done {
                 self.read_dir = Some(rd);
+            } else {
+                assert!(self.wait_deps.is_empty());
             }
         }
 
@@ -904,6 +890,197 @@ impl Future for Build {
             Poll::Pending
         }
     }
+}
+
+async fn scan_deps(config: &'static Config, path: &'static str) -> Vec<String> {
+    let output = smol::process::Command::new(config.clang_scan_deps)
+        .arg("-format=p1689")
+        .arg("--")
+        .arg(config.cxx)
+        .args(config.cflags)
+        .arg(path)
+        .output()
+        .await
+        .unwrap();
+    if !output.status.success() {
+        panic!(
+            "Failed clang_scan_deps:\n{}",
+            str::from_utf8(&output.stderr).unwrap()
+        );
+    }
+    let contents = output.stdout;
+
+    let root = serde_json::from_slice::<serde_json::Value>(&contents).unwrap();
+    let root = root.as_object().unwrap();
+
+    let mut deps = Vec::new();
+
+    for rule in root.get("rules").unwrap().as_array().unwrap().iter() {
+        let rule = rule.as_object().unwrap();
+        for p in rule.get("provides").unwrap().as_array().unwrap().iter() {
+            let name = p
+                .as_object()
+                .unwrap()
+                .get("logical-name")
+                .unwrap()
+                .as_str()
+                .unwrap();
+            deps.push(name.to_owned());
+        }
+    }
+
+    deps
+}
+
+struct Object {
+    id: PathIdx,
+    deps: Vec<PathIdx>,
+}
+
+struct Entry {
+    mod: Vec<Object>,
+    lib: Vec<Object>,
+    bin: Vec<Object>,
+    test: Vec<Object>,
+    deps: Vec<PathIdx>,
+    test_deps: Vec<PathIdx>,
+    bin_deps: Vec<PathIdx>,
+}
+
+struct BuildInfo {
+    entries: Vec<Entry>,
+}
+
+async fn scan_src(cfg: &Config, path_interner: &mut PathInterner) -> BuildInfo {
+    let dir = smol::fs::read_dir(cfg.src_path).await.unwrap();
+
+    while let Some(res) = dir.next().await {
+        let src_entry = res.unwrap();
+        e.path();
+        let dj = read_deps_json(cfg).await;
+
+        let mod_dir = smol::fs::read_dir(e.path().join("mod")).await.unwrap();
+
+        while let Some(res) = mod_dir.next().await {
+            let mod_entry = res.unwrap();
+            let deps = scan_deps(cfg, mod_entry).await;
+            // check deps are self name or sub of self name;
+        }
+
+        while let Some(res) = mod_dir.next().await {
+            
+        }
+    }
+}
+
+// Scan -> collect BuildInfo
+// Plan -> create build tasks using the build information
+// Build -> run the build tasks
+
+async fn read_deps(path: &Path) -> Vec<String> {
+    let contents = smol::fs::read(path).await.unwrap();
+    contents.trim().split('\n').map(|s| s.to_owned()).collect()
+}
+
+#[derive(Default)]
+struct BuildInfo {
+    id: Vec<PathIndex>,
+    mod: Vec<Vec<PathIndex>>,
+    // matrix of mod_count * mod_count.
+    // matrix[i * mod_count + j] is true if mod no i depends on mod no j.
+    mod_dep_matrix: Vec<Vec<bool>>,
+    lib: Vec<Vec<PathIndex>>,
+    bin: Vec<Vec<PathIndex>>,
+    test: Vec<Vec<PathIndex>>,
+    // same idea as mod_dep_matrix
+    dep_matrix: Vec<bool>,
+}
+
+fn check_name(name: &str) {
+    for byte in name.as_bytes() {
+        let is_char = byte >= b'a' && byte <= b'z';
+        let is_underscore = byte == b'_';
+        assert!(is_char || is_underscore);
+    }
+}
+
+fn parse_file_name(expected_extension: &str, file_name: &str) -> &str {
+    let parts: Vec<_> = file_name.split(".").collect();
+    assert_eq!(parts.len(), 2);
+    let name = parts[0];
+    let extension = parts[1];
+
+    assert!(!name.contains('-'));
+    assert!(!name.contains('.'));
+    assert!(!name.contains(':'));
+
+    check_name(name);
+
+    assert!(extension == expected_extension);
+
+    name
+}
+
+fn check_file_name(expected_extension: &str, file_name: &str) {
+    parse_file_name(expected_extension, file_name);
+}
+
+async fn scan_subfolder(path_interner: &mut PathInterner, path: &Path) -> Vec<PathIndex> {
+    
+}
+
+async fn scan(config: &Config, path_interner: &mut PathInterner) -> BuildInfo {
+    let dir = smol::fs::read_dir(config.src_path).await.unwrap();
+
+    let mut info = BuildInfo::default();
+
+    while let Some(entry) = dir.next().await {
+        let entry = entry.unwrap();
+        let path = entry.path();
+        let id = path_interner.insert_path(path);
+        info.id.push(id);
+
+        let deps = read_deps(path.join("deps")).await;
+        let mut dep_ids = Vec::with_capacity(deps.len());
+        for d in deps.iter() {
+            let dep_path = config.src_path.join(d);
+        }
+
+        let mod_path = path.join("mod");
+        let mod_dir = smol::fs::read_dir(mod_path).await.unwrap();
+        let mut mod = Vec::new();
+        while let Some(mod_file) = dir.next().await {
+            let mod_file = mod_file.unwrap();
+            check_file_name(mod_file.file_name());
+            let mod_file_path = mod_file.path();
+            let mod_file_id = path_interner.insert_path(mod_file_path);
+            mod.push(mod_file_id);
+        }
+        info.mod.push(mod);
+
+        let mut mod_dep_matrix = vec![mod.len() * mod.len(); false];
+        for &mod_file_id in mod.iter() {
+            // clang_scan_deps
+            // assert all deps are not self and are local or coming from a direct dependency.
+            // do direct dependency check by name.
+            // insert i depends on j
+            // assert j doesn't depend on i
+        }
+
+        let lib_path = path.join("lib");
+        let lib_dir = smol::fs::read_dir(lib_path).await.unwrap();
+        let mut lib = Vec::new();
+        while let Some(lib_file) = dir.next().await {
+            let lib_file = lib_file.unwrap();
+            check_file_name(lib_file.file_name());
+            let lib_file_path = lib_file.path();
+            let lib_file_id = path_interner.insert_path(lib_file_path);
+            lib.push(lib_file_id);
+        }
+        info.lib.push(lib);
+    }
+
+    info
 }
 
 fn main() {
