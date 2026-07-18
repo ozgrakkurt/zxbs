@@ -266,6 +266,19 @@ impl PathIndex {
 }
 
 #[derive(Clone, Copy, PartialEq)]
+struct EntryIndex(u32);
+
+impl EntryIndex {
+    fn from_usize(v: usize) -> EntryIndex {
+        EntryIndex(u32::try_from(v).unwrap())
+    }
+
+    fn to_usize(&self) -> usize {
+        usize::try_from(self.0).unwrap()
+    }
+}
+
+#[derive(Clone, Copy, PartialEq)]
 struct TaskIndex(u32);
 
 impl TaskIndex {
@@ -892,7 +905,7 @@ impl Future for Build {
     }
 }
 
-async fn scan_deps(config: &'static Config, path: &'static str) -> Vec<String> {
+async fn scan_deps(config: &Config, path: &str) -> Vec<String> {
     let output = smol::process::Command::new(config.clang_scan_deps)
         .arg("-format=p1689")
         .arg("--")
@@ -984,7 +997,8 @@ async fn read_deps(path: &Path) -> Vec<String> {
 
 #[derive(Default)]
 struct BuildInfo {
-    id: Vec<PathIndex>,
+    map: HashMap<PathIndex, EntryIndex>,
+    path: Vec<PathIndex>,
     mod: Vec<Vec<PathIndex>>,
     // matrix of mod_count * mod_count.
     // matrix[i * mod_count + j] is true if mod no i depends on mod no j.
@@ -992,8 +1006,20 @@ struct BuildInfo {
     lib: Vec<Vec<PathIndex>>,
     bin: Vec<Vec<PathIndex>>,
     test: Vec<Vec<PathIndex>>,
-    // same idea as mod_dep_matrix
-    dep_matrix: Vec<bool>,
+    deps: Vec<Vec<PathIndex>>,
+}
+
+impl BuildInfo {
+    fn insert_entry(&mut self, path: PathIndex) -> EntryIndex {
+        if let Some(eidx) = self.map.get(&path) {
+            eidx
+        } else {
+            let eidx = EntryIndex::from_usize(self.path.len());
+            self.path.push(path);
+            self.map.insert(path, eidx);
+            eidx
+        }
+    }
 }
 
 fn check_name(name: &str) {
@@ -1010,10 +1036,6 @@ fn parse_file_name(expected_extension: &str, file_name: &str) -> &str {
     let name = parts[0];
     let extension = parts[1];
 
-    assert!(!name.contains('-'));
-    assert!(!name.contains('.'));
-    assert!(!name.contains(':'));
-
     check_name(name);
 
     assert!(extension == expected_extension);
@@ -1026,7 +1048,16 @@ fn check_file_name(expected_extension: &str, file_name: &str) {
 }
 
 async fn scan_subfolder(path_interner: &mut PathInterner, path: &Path) -> Vec<PathIndex> {
-    
+    let dir = smol::fs::read_dir(path).await.unwrap();
+    let mut out = Vec::new();
+    while let Some(file) = dir.next().await {
+        let file = file.unwrap();
+        check_file_name(file.file_name());
+        let file_path = file.path();
+        let path_idx = path_interner.insert_path(file_path);
+        mod.push(path_idx);
+    }
+    out
 }
 
 async fn scan(config: &Config, path_interner: &mut PathInterner) -> BuildInfo {
@@ -1037,30 +1068,38 @@ async fn scan(config: &Config, path_interner: &mut PathInterner) -> BuildInfo {
     while let Some(entry) = dir.next().await {
         let entry = entry.unwrap();
         let path = entry.path();
-        let id = path_interner.insert_path(path);
-        info.id.push(id);
+        let entry_name = entry.file_name();
+        check_name(entry_name);
+        let path_idx = path_interner.insert_path(path);
 
-        let deps = read_deps(path.join("deps")).await;
-        let mut dep_ids = Vec::with_capacity(deps.len());
-        for d in deps.iter() {
-            let dep_path = config.src_path.join(d);
-        }
+        let entry_idx = info.insert_entry(path_idx);        
 
-        let mod_path = path.join("mod");
-        let mod_dir = smol::fs::read_dir(mod_path).await.unwrap();
-        let mut mod = Vec::new();
-        while let Some(mod_file) = dir.next().await {
-            let mod_file = mod_file.unwrap();
-            check_file_name(mod_file.file_name());
-            let mod_file_path = mod_file.path();
-            let mod_file_id = path_interner.insert_path(mod_file_path);
-            mod.push(mod_file_id);
+        let dep_names = read_deps(path.join("deps")).await;
+        let mut deps  = Vec::with_capacity(dep_names.len());
+        for dep_name in dep_names.iter() {
+            let dep_path = config.src_path.join(dep_name);
+            deps.push(path_interner.insert_path(&dep_path));
         }
+        info.deps.push(deps);
+
+        let mod = scan_subfolder(path_interner, &path.join("mod")).await;
         info.mod.push(mod);
 
         let mut mod_dep_matrix = vec![mod.len() * mod.len(); false];
         for &mod_file_id in mod.iter() {
-            // clang_scan_deps
+            let mod_dep_names = scan_deps(config, path_interner.get_path(mod_file_id)).await;
+            for mod_dep_name in mod_dep_names.iter() {
+                if mod_dep_name == entry_name {
+                    
+                } else if mod_dep_name.contains(':') {
+                    let parts: Vec<_> = mod_dep_name.split(':').collect();
+                    assert_eq(parts.len(), 2);
+                    assert_eq!(parts[0], entry_name);
+                    check_name(parts[1]);
+                } else if !dep_names.contains(mod_dep_name) {
+                    panic!("");
+                }
+            }
             // assert all deps are not self and are local or coming from a direct dependency.
             // do direct dependency check by name.
             // insert i depends on j
