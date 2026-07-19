@@ -253,7 +253,7 @@ fn parse_args() -> Config {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 struct PathIndex(u32);
 
 impl PathIndex {
@@ -266,12 +266,12 @@ impl PathIndex {
     }
 }
 
-#[derive(Clone, Copy, PartialEq)]
-struct EntryIndex(u32);
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+struct NameIndex(u32);
 
-impl EntryIndex {
-    fn from_usize(v: usize) -> EntryIndex {
-        EntryIndex(u32::try_from(v).unwrap())
+impl NameIndex {
+    fn from_usize(v: usize) -> NameIndex {
+        NameIndex(u32::try_from(v).unwrap())
     }
 
     fn to_usize(&self) -> usize {
@@ -279,7 +279,7 @@ impl EntryIndex {
     }
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 struct TaskIndex(u32);
 
 impl TaskIndex {
@@ -292,19 +292,42 @@ impl TaskIndex {
     }
 }
 
+#[derive(Default)]
+struct NameInterner {
+    map: HashMap<&'static str, NameIndex>,
+    names: Vec<&'static str>,
+}
+
+impl NameInterner {
+    fn insert_name(&mut self, name: &str) -> NameIndex {
+        match self.map.get(name) {
+            Some(idx) => *idx,
+            None => {
+                let name = name.to_owned().leak();
+                let idx = NameIndex::from_usize(self.names.len());
+                self.names.push(name);
+                self.map.insert(name, idx);
+                idx
+            }
+        }
+    }
+
+    fn get_name(&self, idx: NameIndex) -> &'static str {
+        self.names[idx.to_usize()]
+    }
+
+    fn len(&self) -> usize {
+        self.names.len()
+    }
+}
+
+#[derive(Default)]
 struct PathInterner {
     map: HashMap<&'static str, PathIndex>,
     paths: Vec<&'static str>,
 }
 
 impl PathInterner {
-    fn new() -> PathInterner {
-        PathInterner {
-            map: HashMap::new(),
-            paths: Vec::new(),
-        }
-    }
-
     fn insert_path(&mut self, path: &Path) -> PathIndex {
         let path = path.to_str().unwrap();
         match self.map.get(path) {
@@ -319,7 +342,7 @@ impl PathInterner {
         }
     }
 
-    fn get_path(&mut self, idx: PathIndex) -> &'static Path {
+    fn get_path(&self, idx: PathIndex) -> &'static Path {
         Path::new(self.paths[idx.to_usize()])
     }
 
@@ -485,37 +508,27 @@ async fn scan_deps(config: &Config, path: &Path) -> Vec<String> {
     deps
 }
 
-async fn read_deps_file(path: &Path) -> Vec<String> {
+async fn read_deps_file(interner: &mut NameInterner, path: &Path) -> Vec<NameIndex> {
     let contents = String::from_utf8(smol::fs::read(path).await.unwrap()).unwrap();
-    contents.trim().split('\n').map(|s| s.to_owned()).collect()
+    contents
+        .trim()
+        .split('\n')
+        .map(|s| interner.insert_name(s))
+        .collect()
 }
 
 #[derive(Default)]
 struct BuildInfo {
-    map: HashMap<PathIndex, EntryIndex>,
-    name: Vec<String>,
-    path: Vec<PathIndex>,
-    module: Vec<Vec<PathIndex>>,
+    map: HashMap<NameIndex, u32>,
+    name: Vec<NameIndex>,
+    module: Vec<Vec<NameIndex>>,
     // matrix of mod_count * mod_count.
     // matrix[i * mod_count + j] is true if mod no i depends on mod no j.
     mod_dep_matrix: Vec<Vec<bool>>,
-    lib: Vec<Vec<PathIndex>>,
-    bin: Vec<Vec<PathIndex>>,
-    test: Vec<Vec<PathIndex>>,
-    deps: Vec<Vec<PathIndex>>,
-}
-
-impl BuildInfo {
-    fn insert_entry(&mut self, path: PathIndex) -> EntryIndex {
-        if let Some(eidx) = self.map.get(&path) {
-            *eidx
-        } else {
-            let eidx = EntryIndex::from_usize(self.path.len());
-            self.path.push(path);
-            self.map.insert(path, eidx);
-            eidx
-        }
-    }
+    lib: Vec<Vec<NameIndex>>,
+    bin: Vec<Vec<NameIndex>>,
+    test: Vec<Vec<NameIndex>>,
+    deps: Vec<Vec<NameIndex>>,
 }
 
 fn check_name(name: &str) {
@@ -541,131 +554,158 @@ fn parse_file_name<'name>(expected_extensions: &[&str], file_name: &'name str) -
 
 async fn scan_subfolder(
     expected_extensions: &[&str],
-    path_interner: &mut PathInterner,
+    interner: &mut NameInterner,
     path: &Path,
-) -> (Vec<String>, Vec<PathIndex>) {
+) -> Vec<NameIndex> {
     let mut dir = smol::fs::read_dir(path).await.unwrap();
-    let mut paths = Vec::new();
     let mut names = Vec::new();
     while let Some(file) = dir.next().await {
         let file = file.unwrap();
         let name =
             parse_file_name(expected_extensions, file.file_name().to_str().unwrap()).to_owned();
-        let file_path = file.path();
-        let path_idx = path_interner.insert_path(&file_path);
-        paths.push(path_idx);
-        names.push(name);
+        check_name(&name);
+        let name_index = interner.insert_name(&name);
+        names.push(name_index);
     }
-
-    (names, paths)
+    names
 }
 
-async fn scan(config: &Config, path_interner: &mut PathInterner) -> BuildInfo {
+async fn scan(config: &Config, interner: &mut NameInterner) -> BuildInfo {
     let mut dir = smol::fs::read_dir(config.src_path).await.unwrap();
 
     let mut info = BuildInfo::default();
 
+    let mut entry_idx: u32 = 0;
     while let Some(entry) = dir.next().await {
         let entry = entry.unwrap();
         let path = entry.path();
         let entry_name = entry.file_name();
         let entry_name = entry_name.to_str().unwrap();
         check_name(entry_name);
-        let path_idx = path_interner.insert_path(&path);
+        let entry_name: NameIndex = interner.insert_name(entry_name);
+        assert!(info.map.insert(entry_name, entry_idx).is_none());
 
-        info.insert_entry(path_idx);
-        info.name.push(entry_name.to_owned());
+        info.name.push(entry_name);
 
-        let dep_names = read_deps_file(&path.join("deps")).await;
-        let mut deps = Vec::with_capacity(dep_names.len());
-        for dep_name in dep_names.iter() {
-            check_name(dep_name);
-            let dep_path = config.src_path.join(dep_name);
-            deps.push(path_interner.insert_path(&dep_path));
-        }
-        info.deps.push(deps);
+        let deps = read_deps_file(interner, &path.join("deps")).await;
 
-        let (mod_part_names, module) =
-            scan_subfolder(&["cppm"], path_interner, &path.join("mod")).await;
+        let mod_parts = scan_subfolder(&["cppm"], interner, &path.join("mod")).await;
+        let n_mod_parts = mod_parts.len();
 
-        let mut mod_dep_matrix = vec![false; module.len() * module.len()];
-        for (self_idx, &mod_file_id) in module.iter().enumerate() {
-            let mod_dep_names = scan_deps(config, path_interner.get_path(mod_file_id)).await;
+        let mut mod_dep_matrix = vec![false; n_mod_parts * n_mod_parts];
+        for (part_pos, &part_name) in mod_parts.iter().enumerate() {
+            let mod_dep_names = scan_deps(config, &path.join(interner.get_name(part_name))).await;
             for mod_dep_name in mod_dep_names.iter() {
                 if mod_dep_name.contains(':') {
                     let parts: Vec<_> = mod_dep_name.split(':').collect();
-                    check_name(parts[1]);
                     assert_eq!(parts.len(), 2);
-                    assert_eq!(parts[0], entry_name);
-                    assert_ne!(parts[1], &mod_part_names[self_idx]);
-                    let dep_idx = mod_part_names
-                        .iter()
-                        .position(|nm| nm.as_str() == parts[1])
-                        .unwrap();
-                    mod_dep_matrix[self_idx * module.len() + dep_idx] = true;
-                    assert!(!mod_dep_matrix[dep_idx * module.len() + self_idx]);
-                } else if !dep_names.contains(mod_dep_name) && mod_dep_name != entry_name {
-                    panic!("invalid dependency");
+                    check_name(parts[0]);
+                    check_name(parts[1]);
+                    let part0 = interner.insert_name(parts[0]);
+                    let part1 = interner.insert_name(parts[1]);
+
+                    assert_eq!(part0, entry_name);
+                    assert_ne!(part1, part_name);
+
+                    let dep_pos = mod_parts.iter().position(|nidx| *nidx == part1).unwrap();
+
+                    mod_dep_matrix[part_pos * n_mod_parts + dep_pos] = true;
+                    assert!(!mod_dep_matrix[dep_pos * n_mod_parts + part_pos]);
+                } else {
+                    let mod_dep_name = interner.insert_name(mod_dep_name);
+                    let is_direct_dep = deps.contains(&mod_dep_name);
+                    assert!(is_direct_dep);
                 }
             }
         }
+        info.deps.push(deps);
         info.mod_dep_matrix.push(mod_dep_matrix);
-        info.module.push(module);
+        info.module.push(mod_parts);
 
-        let (_, lib) = scan_subfolder(&["s", "cc"], path_interner, &path.join("lib")).await;
+        let lib = scan_subfolder(&["s", "cc"], interner, &path.join("lib")).await;
         info.lib.push(lib);
 
-        let (_, test) = scan_subfolder(&["cc"], path_interner, &path.join("test")).await;
+        let test = scan_subfolder(&["cc"], interner, &path.join("test")).await;
         info.test.push(test);
 
-        let (_, bin) = scan_subfolder(&["cc"], path_interner, &path.join("bin")).await;
+        let bin = scan_subfolder(&["cc"], interner, &path.join("bin")).await;
         info.bin.push(bin);
+
+        entry_idx += 1;
     }
 
     info
 }
 
-fn plan_module_build(tasks: &mut Vec<Task>, config: &Config, entry_name: &str, entry_deps: &[String], module_parts: &[PathIndex], mod_dep_matrix: &[bool]) {
-    for part in module_parts {
-        let tidx = tasks.len();
-        let task_index = TaskIndex::from_usize(tidx);
-        
-        tasks.push(Task {
-            input_indices: [],
-            command: Box::pin(async move {
-                // do the build job
-                task_index
-            })
-        });
-    }
-}
+// fn plan_module_build(
+//     tasks: &mut Vec<Task>,
+//     config: &Config,
+//     entry_name: &str,
+//     entry_deps: &[String],
+//     module_parts: &[PathIndex],
+//     mod_dep_matrix: &[bool],
+// ) {
+//     for part in module_parts {
+//         let tidx = tasks.len();
+//         let task_index = TaskIndex::from_usize(tidx);
 
-fn plan(config: &Config, info: &BuildInfo) -> Vec<Task> {
-    assert_eq!(info.path.len(), info.mod_dep_matrix.len());
-    assert_eq!(info.path.len(), info.module.len());
-    assert_eq!(info.path.len(), info.lib.len());
-    assert_eq!(info.path.len(), info.bin.len());
-    assert_eq!(info.path.len(), info.test.len());
-    assert_eq!(info.path.len(), info.deps.len());
+//         precompile_cppm();
+//         compile_pcm();
 
-    let mut tasks = Vec::new();
+//         // precompile cppm to pcm
+//         tasks.push(Task {
+//             input_indices: [],
+//             output_indices: [],
+//             command: Box::pin(async move {
+//                 // do the build job
+//                 task_index
+//             }),
+//         });
 
-    for eidx in 0..info.path.len() {
-        let entry_idx = EntryIndex::from_usize(eidx);
-        plan_module_build(&tasks, config, &info.name[eidx], &info.deps[eidx], &info.module[eidx], &info.mod_dep_matrix[eidx]);
-    }
+//         // compile pcm to obj
+//     }
+// }
 
-    tasks
+fn plan(
+    config: &Config,
+    name_interner: &NameInterner,
+    path_interner: &mut PathInterner,
+    info: &BuildInfo,
+) -> Vec<Task> {
+    // assert_eq!(info.path.len(), info.mod_dep_matrix.len());
+    // assert_eq!(info.path.len(), info.module.len());
+    // assert_eq!(info.path.len(), info.lib.len());
+    // assert_eq!(info.path.len(), info.bin.len());
+    // assert_eq!(info.path.len(), info.test.len());
+    // assert_eq!(info.path.len(), info.deps.len());
+
+    // let mut tasks = Vec::new();
+
+    // for eidx in 0..info.path.len() {
+    //     let entry_idx = EntryIndex::from_usize(eidx);
+    //     plan_module_build(
+    //         &tasks,
+    //         config,
+    //         &info.name[eidx],
+    //         &info.deps[eidx],
+    //         &info.module[eidx],
+    //         &info.mod_dep_matrix[eidx],
+    //     );
+    // }
+
+    // tasks
+    Vec::new()
 }
 
 async fn run(executor: &'static Executor) {
     let config = parse_args();
 
-    let mut path_interner = PathInterner::new();
+    let mut name_interner = NameInterner::default();
+    let info = scan(&config, &mut name_interner).await;
+    let name_interner = name_interner;
 
-    let info = scan(&config, &mut path_interner).await;
-
-    let tasks = plan(&config, &info);
+    let mut path_interner = PathInterner::default();
+    let tasks = plan(&config, &name_interner, &mut path_interner, &info);
 
     let build = Build::new(executor, tasks, path_interner.len());
 
