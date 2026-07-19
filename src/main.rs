@@ -329,177 +329,96 @@ impl PathInterner {
     }
 }
 
-type Command = BoxedFuture<()>;
-type MakeCommandFn = Box<dyn Fn() -> Command + 'static + Send>;
-
 struct Task {
     input_indices: &'static [PathIndex],
     output_indices: &'static [PathIndex],
-    make_command: MakeCommandFn,
+    command: Option<BoxedFuture<TaskIndex>>,
 }
 
-// type Job = BoxedFuture<TaskIndex>;
+type Executor = smol::Executor<'static>;
 
-// #[must_use = "futures do nothing unless you `.await` or poll them"]
-// struct Build {
-//     scan: Option<Scan>,
-//     path_interner: PathInterner,
-//     is_built: Vec<bool>,
-//     dependencies: Vec<Vec<PathIndex>>,
-//     dependants: Vec<Vec<TaskIndex>>,
-//     tasks: Vec<Task>,
-//     running: Vec<Job>,
-//     backlog: VecDeque<TaskIndex>,
-//     concurrency: usize,
-//     done: bool,
-// }
+#[must_use = "futures do nothing unless you `.await` or poll them"]
+struct Build {
+    executor: &'static Executor,
+    is_built: Vec<bool>,
+    dependencies: Vec<Vec<PathIndex>>,
+    dependants: Vec<Vec<TaskIndex>>,
+    tasks: Vec<Task>,
+    running: Vec<smol::Task<TaskIndex>>,
+    backlog: VecDeque<TaskIndex>,
+    concurrency: usize,
+    done: bool,
+}
 
-// impl Build {
-//     fn new(cfg: &'static Config) -> Self {
-//         Self {
-//             scan: Some(Scan::new(cfg)),
-//             path_interner: PathInterner::new(),
-//             is_built: Vec::new(),
-//             dependencies: Vec::new(),
-//             dependants: Vec::new(),
-//             tasks: Vec::new(),
-//             running: Vec::new(),
-//             backlog: VecDeque::new(),
-//             concurrency: num_cpus::get(),
-//             done: false,
-//         }
-//     }
+impl Build {
+    fn process_task_finished(&mut self, task_idx: TaskIndex) {
+        let task = &self.tasks[task_idx.to_usize()];
+        for out_idx in task.output_indices {
+            assert!(!self.is_built[out_idx.to_usize()]);
+            self.is_built[out_idx.to_usize()] = true;
 
-//     fn make_job(&self, task_idx: TaskIndex) -> Job {
-//         let cmd = (self.tasks[task_idx.to_usize()].make_command)();
-//         Box::pin(async move {
-//             cmd.await;
-//             task_idx
-//         })
-//     }
+            for &dependant_idx in self.dependants[out_idx.to_usize()].iter() {
+                let deps: &mut Vec<PathIndex> = &mut self.dependencies[dependant_idx.to_usize()];
+                let pos = deps.iter().position(|idx| idx.0 == out_idx.0).unwrap();
+                deps.swap_remove(pos);
 
-//     fn process_task_scanned(&mut self, task: Task) {
-//         assert_eq!(self.tasks.len(), self.dependencies.len());
+                if deps.is_empty() {
+                    self.backlog.push_back(dependant_idx);
+                }
+            }
+        }
+    }
+}
 
-//         let task_idx = TaskIndex::from_usize(self.tasks.len());
+impl Future for Build {
+    type Output = ();
 
-//         self.is_built.resize(self.path_interner.len(), false);
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let fut = self.get_mut();
 
-//         let mut dependencies = Vec::with_capacity(task.input_indices.len());
-//         for &path_idx in task.input_indices {
-//             if !self.is_built[path_idx.to_usize()] {
-//                 dependencies.push(path_idx);
-//             }
-//         }
+        assert!(!fut.done);
 
-//         self.dependants.resize(self.path_interner.len(), Vec::new());
-//         for path_idx in task.input_indices {
-//             self.dependants[path_idx.to_usize()].push(task_idx);
-//         }
+        let mut idx = 0;
+        while idx < fut.running.len() {
+            let job = &mut fut.running[idx];
+            match job.poll(cx) {
+                Poll::Ready(task_idx) => {
+                    fut.process_task_finished(task_idx);
+                    std::mem::drop(fut.running.swap_remove(idx));
+                }
+                Poll::Pending => {
+                    idx += 1;
+                }
+            }
+        }
 
-//         if dependencies.is_empty() {
-//             self.backlog.push_back(task_idx);
-//         }
+        while fut.running.len() < fut.concurrency {
+            let task_idx = match fut.backlog.pop_front() {
+                Some(task_idx) => task_idx,
+                None => break,
+            };
 
-//         self.tasks.push(task);
-//         self.dependencies.push(dependencies);
-//     }
+            let command = fut.tasks[task_idx.to_usize()].command.take().unwrap();
+            let mut handle = fut.executor.spawn(command);
 
-//     fn process_task_finished(&mut self, task_idx: TaskIndex) {
-//         let task = &self.tasks[task_idx.to_usize()];
-//         for out_idx in task.output_indices {
-//             assert!(!self.is_built[out_idx.to_usize()]);
-//             self.is_built[out_idx.to_usize()] = true;
+            match handle.poll(cx) {
+                Poll::Ready(task_idx) => {
+                    fut.process_task_finished(task_idx);
+                }
+                Poll::Pending => {
+                    fut.running.push(handle);
+                }
+            }
+        }
 
-//             for &dependant_idx in self.dependants[out_idx.to_usize()].iter() {
-//                 let deps = &mut self.dependencies[dependant_idx.to_usize()];
-//                 let pos = deps.iter().position(|idx| idx.0 == out_idx.0).unwrap();
-//                 deps.swap_remove(pos);
-
-//                 if deps.is_empty() {
-//                     self.backlog.push_back(dependant_idx);
-//                 }
-//             }
-//         }
-//     }
-// }
-
-// impl Future for Build {
-//     type Output = ();
-
-//     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-//         let fut = self.get_mut();
-
-//         assert!(!fut.done);
-
-//         if let Some(mut scan) = fut.scan.take() {
-//             let mut tasks: Vec<Task> = Vec::new();
-//             let mut done = false;
-//             loop {
-//                 match scan.poll_next(cx, &mut fut.path_interner) {
-//                     Poll::Ready(Some(tasks_)) => {
-//                         assert!(!tasks_.is_empty());
-//                         tasks.extend(tasks_);
-//                     }
-//                     Poll::Ready(None) => {
-//                         done = true;
-//                         break;
-//                     }
-//                     Poll::Pending => {
-//                         break;
-//                     }
-//                 }
-//             }
-
-//             for task in tasks {
-//                 fut.process_task_scanned(task);
-//             }
-
-//             if !done {
-//                 fut.scan = Some(scan);
-//             }
-//         }
-
-//         let mut idx = 0;
-//         while idx < fut.running.len() {
-//             let job = &mut fut.running[idx];
-//             match job.as_mut().poll(cx) {
-//                 Poll::Ready(task_idx) => {
-//                     fut.process_task_finished(task_idx);
-//                     std::mem::drop(fut.running.swap_remove(idx));
-//                 }
-//                 Poll::Pending => {
-//                     idx += 1;
-//                 }
-//             }
-//         }
-
-//         while fut.running.len() < fut.concurrency {
-//             let task_idx = match fut.backlog.pop_front() {
-//                 Some(task_idx) => task_idx,
-//                 None => break,
-//             };
-
-//             let mut job = fut.make_job(task_idx);
-
-//             match job.as_mut().poll(cx) {
-//                 Poll::Ready(task_idx) => {
-//                     fut.process_task_finished(task_idx);
-//                 }
-//                 Poll::Pending => {
-//                     fut.running.push(job);
-//                 }
-//             }
-//         }
-
-//         if fut.scan.is_none() && fut.running.is_empty() && fut.backlog.is_empty() {
-//             fut.done = true;
-//             Poll::Ready(())
-//         } else {
-//             Poll::Pending
-//         }
-//     }
-// }
+        if fut.running.is_empty() && fut.backlog.is_empty() {
+            fut.done = true;
+            Poll::Ready(())
+        } else {
+            Poll::Pending
+        }
+    }
+}
 
 async fn scan_deps(config: &Config, path: &Path) -> Vec<String> {
     let output = smol::process::Command::new(config.clang_scan_deps)
@@ -679,10 +598,10 @@ async fn scan(config: &Config, path_interner: &mut PathInterner) -> BuildInfo {
 }
 
 fn plan(config: &Config, info: &BuildInfo) -> Build {
-    
+    todo!();
 }
 
-async fn run() {
+async fn run(executor: &'static Executor) {
     let config = parse_args();
 
     let mut path_interner = PathInterner::new();
@@ -690,8 +609,11 @@ async fn run() {
     let info = scan(&config, &mut path_interner).await;
 
     let build = plan(&config, &info);
+
+    build.await;
 }
 
 fn main() {
-    smol::block_on(run());
+    let executor = Box::leak(Box::new(Executor::new()));
+    executor.run(run(executor));
 }
