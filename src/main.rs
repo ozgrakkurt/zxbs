@@ -678,12 +678,18 @@ async fn scan(config: &Config, path_interner: &mut PathInterner) -> BuildInfo {
     info
 }
 
+fn plan(config: &Config, info: &BuildInfo) -> Build {
+    
+}
+
 async fn run() {
-    let cfg = Box::leak(Box::new(parse_args()));
+    let config = parse_args();
 
     let mut path_interner = PathInterner::new();
 
-    let info = scan(cfg, &mut path_interner).await;
+    let info = scan(&config, &mut path_interner).await;
+
+    let build = plan(&config, &info);
 }
 
 fn main() {
