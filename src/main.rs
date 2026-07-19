@@ -5,7 +5,6 @@
 
 use smol::future::Boxed as BoxedFuture;
 use smol::prelude::*;
-use smol::stream::Boxed as BoxedStream;
 use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -120,7 +119,7 @@ fn make_cflags(cfg: &FlagCfg) -> Vec<&'static str> {
         "--target=x86_64-linux-none",
     ];
 
-    cflags.push(format!("-O{}", &cfg.opt_level).leak());
+    cflags.push(format!("-O{}", cfg.opt_level).leak());
 
     if cfg.debug_info {
         cflags.push("-g1");
@@ -351,6 +350,32 @@ struct Build {
 }
 
 impl Build {
+    fn new(executor: &'static Executor, tasks: Vec<Task>, num_paths: usize) -> Build {
+        let mut dependencies = Vec::with_capacity(tasks.len());
+
+        let mut dependants = vec![Vec::new(); num_paths];
+
+        for (idx, task) in tasks.iter().enumerate() {
+            let task_idx = TaskIndex::from_usize(idx);
+            dependencies.push(task.input_indices.to_vec());
+            for input_idx in task.input_indices.iter() {
+                dependants[input_idx.to_usize()].push(task_idx);
+            }
+        }
+
+        Build {
+            executor,
+            is_built: vec![false; tasks.len()],
+            dependencies,
+            dependants,
+            tasks,
+            running: Vec::new(),
+            backlog: VecDeque::new(),
+            concurrency: num_cpus::get(),
+            done: false,
+        }
+    }
+
     fn process_task_finished(&mut self, task_idx: TaskIndex) {
         let task = &self.tasks[task_idx.to_usize()];
         for out_idx in task.output_indices {
@@ -468,6 +493,7 @@ async fn read_deps_file(path: &Path) -> Vec<String> {
 #[derive(Default)]
 struct BuildInfo {
     map: HashMap<PathIndex, EntryIndex>,
+    name: Vec<String>,
     path: Vec<PathIndex>,
     module: Vec<Vec<PathIndex>>,
     // matrix of mod_count * mod_count.
@@ -547,11 +573,13 @@ async fn scan(config: &Config, path_interner: &mut PathInterner) -> BuildInfo {
         check_name(entry_name);
         let path_idx = path_interner.insert_path(&path);
 
-        let entry_idx = info.insert_entry(path_idx);
+        info.insert_entry(path_idx);
+        info.name.push(entry_name.to_owned());
 
         let dep_names = read_deps_file(&path.join("deps")).await;
         let mut deps = Vec::with_capacity(dep_names.len());
         for dep_name in dep_names.iter() {
+            check_name(dep_name);
             let dep_path = config.src_path.join(dep_name);
             deps.push(path_interner.insert_path(&dep_path));
         }
@@ -597,8 +625,37 @@ async fn scan(config: &Config, path_interner: &mut PathInterner) -> BuildInfo {
     info
 }
 
-fn plan(config: &Config, info: &BuildInfo) -> Build {
-    todo!();
+fn plan_module_build(tasks: &mut Vec<Task>, config: &Config, entry_name: &str, entry_deps: &[String], module_parts: &[PathIndex], mod_dep_matrix: &[bool]) {
+    for part in module_parts {
+        let tidx = tasks.len();
+        let task_index = TaskIndex::from_usize(tidx);
+        
+        tasks.push(Task {
+            input_indices: [],
+            command: Box::pin(async move {
+                // do the build job
+                task_index
+            })
+        });
+    }
+}
+
+fn plan(config: &Config, info: &BuildInfo) -> Vec<Task> {
+    assert_eq!(info.path.len(), info.mod_dep_matrix.len());
+    assert_eq!(info.path.len(), info.module.len());
+    assert_eq!(info.path.len(), info.lib.len());
+    assert_eq!(info.path.len(), info.bin.len());
+    assert_eq!(info.path.len(), info.test.len());
+    assert_eq!(info.path.len(), info.deps.len());
+
+    let mut tasks = Vec::new();
+
+    for eidx in 0..info.path.len() {
+        let entry_idx = EntryIndex::from_usize(eidx);
+        plan_module_build(&tasks, config, &info.name[eidx], &info.deps[eidx], &info.module[eidx], &info.mod_dep_matrix[eidx]);
+    }
+
+    tasks
 }
 
 async fn run(executor: &'static Executor) {
@@ -608,12 +665,14 @@ async fn run(executor: &'static Executor) {
 
     let info = scan(&config, &mut path_interner).await;
 
-    let build = plan(&config, &info);
+    let tasks = plan(&config, &info);
+
+    let build = Build::new(executor, tasks, path_interner.len());
 
     build.await;
 }
 
 fn main() {
     let executor = Box::leak(Box::new(Executor::new()));
-    executor.run(run(executor));
+    smol::future::block_on(executor.run(run(executor)));
 }
