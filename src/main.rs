@@ -5,7 +5,7 @@
 
 use smol::future::Boxed as BoxedFuture;
 use smol::prelude::*;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -877,6 +877,150 @@ fn plan_lib_build(
     });
 }
 
+fn plan_bin_build(
+    config: &Config,
+    name_interner: &NameInterner,
+    path_interner: &mut PathInterner,
+    tasks: &mut Vec<Task>,
+    info: &BuildInfo,
+    entry_index: usize,
+    lib_paths: &'static [&'static str],
+) {
+    // depend on self lib (.a)
+    // compile cc to .o
+    // do linking
+
+    let entry_name = name_interner.get_name(info.name[entry_index]);
+
+    let self_pcm_path = config
+        .build_path
+        .join("mod")
+        .join(format!("{}.pcm", entry_name));
+    let self_pcm_path_idx = path_interner.insert_path(&self_pcm_path);
+
+    let self_lib_path = config
+        .build_path
+        .join("lib")
+        .join(entry_name)
+        .join(format!("lib{}.a", entry_name));
+    let self_lib_path_idx = path_interner.insert_path(&self_lib_path);
+
+    let bins = &info.bin[entry_index];
+    let build_path = config.build_path.join(entry_name).join("bin");
+    let src_path = config.src_path.join(entry_name).join("bin");
+
+    let mod_build_path = config.build_path.join("mod");
+    let prebuilt_module_path_flag = format!("-fprebuilt-module-path={}", mod_build_path.display());
+
+    for &bin_name_idx in bins.iter() {
+        // emit obj compilation task
+        // emit linking task
+
+        let bin_name = name_interner.get_name(bin_name_idx);
+
+        let cc_path = src_path.join(format!("{}.cc", bin_name));
+
+        let obj_path = build_path.join(format!("{}.o", bin_name));
+        let obj_path_index = path_interner.insert_path(&obj_path);
+        let exe_path = build_path.join(bin_name);
+        let exe_path_index = path_interner.insert_path(&exe_path);
+
+        let input_indices = vec![self_pcm_path_idx];
+        let output_indices = vec![obj_path_index];
+
+        let mut obj_command = smol::process::Command::new(config.cxx);
+        obj_command
+            .args(config.cflags)
+            .arg(cc_path.display().to_string())
+            .arg(prebuilt_module_path_flag.clone())
+            .arg("-c")
+            .arg("-o")
+            .arg(obj_path.display().to_string());
+
+        let task_index = TaskIndex::from_usize(tasks.len());
+        tasks.push(Task {
+            input_indices,
+            output_indices,
+            command: Some(Box::pin(async move {
+                let output = obj_command.output().await.unwrap();
+                if !output.status.success() {
+                    panic!(
+                        "Failed to compile main object file of binary:\n{}",
+                        str::from_utf8(&output.stderr).unwrap(),
+                    );
+                }
+                task_index
+            })),
+        });
+
+        let input_indices = vec![self_lib_path_idx, obj_path_index];
+        let output_indices = vec![exe_path_index];
+
+        let mut link_command = smol::process::Command::new(config.cxx);
+        link_command
+            .args(config.ldflags)
+            .arg("-o")
+            .arg(exe_path.display().to_string())
+            .arg(obj_path.display().to_string())
+            .args(lib_paths);
+
+        let task_index = TaskIndex::from_usize(tasks.len());
+        tasks.push(Task {
+            input_indices,
+            output_indices,
+            command: Some(Box::pin(async move {
+                let output = link_command.output().await.unwrap();
+                if !output.status.success() {
+                    panic!(
+                        "Failed to link binary:\n{}",
+                        str::from_utf8(&output.stderr).unwrap(),
+                    );
+                }
+                task_index
+            })),
+        });
+    }
+}
+
+fn collect_lib_path_list(
+    config: &Config,
+    name_interner: &NameInterner,
+    path_interner: &mut PathInterner,
+    info: &BuildInfo,
+    entry_index: usize,
+) -> &'static [&'static str] {
+    let mut path_list: Vec<&'static str> = Vec::new();
+
+    let self_name_idx = info.name[entry_index];
+
+    let mut processed: HashSet<NameIndex> = HashSet::new();
+    let mut worklist: Vec<NameIndex> = vec![self_name_idx];
+    while let Some(name_idx) = worklist.pop() {
+        let pos_idx: usize = usize::try_from(*info.map.get(&name_idx).unwrap()).unwrap();
+
+        let name = name_interner.get_name(name_idx);
+
+        let lib_path = config
+            .build_path
+            .join(name)
+            .join("lib")
+            .join(format!("lib{}.a", name));
+        let lib_path_idx = path_interner.insert_path(&lib_path);
+        path_list.push(path_interner.get_path(lib_path_idx).to_str().unwrap());
+
+        for &dep_name_idx in info.deps[pos_idx].iter() {
+            // check deps don't cycle back to the initial name
+            assert_ne!(dep_name_idx, self_name_idx);
+            // deduplicate using the set, so we don't reprocess same names again
+            if processed.insert(dep_name_idx) {
+                worklist.push(dep_name_idx);
+            }
+        }
+    }
+
+    path_list.leak()
+}
+
 fn plan(
     config: &Config,
     name_interner: &NameInterner,
@@ -895,6 +1039,19 @@ fn plan(
     for eidx in 0..info.name.len() {
         plan_module_build(config, name_interner, path_interner, &mut tasks, info, eidx);
         plan_lib_build(config, name_interner, path_interner, &mut tasks, info, eidx);
+
+        // collect the library path list for doing static linking.
+        let lib_path_list = collect_lib_path_list(config, name_interner, path_interner, info, eidx);
+
+        plan_bin_build(
+            config,
+            name_interner,
+            path_interner,
+            &mut tasks,
+            info,
+            eidx,
+            lib_path_list,
+        );
     }
 
     tasks
