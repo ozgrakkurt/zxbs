@@ -637,34 +637,40 @@ async fn scan(config: &Config, interner: &mut NameInterner) -> BuildInfo {
     info
 }
 
-// fn plan_module_build(
-//     tasks: &mut Vec<Task>,
-//     config: &Config,
-//     entry_name: &str,
-//     entry_deps: &[String],
-//     module_parts: &[PathIndex],
-//     mod_dep_matrix: &[bool],
-// ) {
-//     for part in module_parts {
-//         let tidx = tasks.len();
-//         let task_index = TaskIndex::from_usize(tidx);
+fn plan_module_build(
+    tasks: &mut Vec<Task>,
+    config: &Config,
+    entry_name: NameIndex,
+    entry_deps: &[NameIndex],
+    mod_parts: &[PathIndex],
+    mod_dep_matrix: &[bool],
+) {
+    let n_mod_parts = mod_parts.len();
 
-//         precompile_cppm();
-//         compile_pcm();
+    let entry_dep_paths: Vec<PathIndex>  = Vec::with_capacity(entry_deps.len());
+    let lib_path = config.build_path.join("lib");
+    for dep_name in entry_deps.iter() {
+        let path = lib_path.join();
+        entry_dep_paths.push();
+    }
 
-//         // precompile cppm to pcm
-//         tasks.push(Task {
-//             input_indices: [],
-//             output_indices: [],
-//             command: Box::pin(async move {
-//                 // do the build job
-//                 task_index
-//             }),
-//         });
+    for part in module_parts {
+        let tidx = tasks.len();
+        let task_index = TaskIndex::from_usize(tidx);
 
-//         // compile pcm to obj
-//     }
-// }
+        // precompile cppm to pcm
+        tasks.push(Task {
+            input_indices: [],
+            output_indices: [],
+            command: Box::pin(async move {
+                // do the build job
+                task_index
+            }),
+        });
+
+        // compile pcm to obj
+    }
+}
 
 fn plan(
     config: &Config,
@@ -672,29 +678,28 @@ fn plan(
     path_interner: &mut PathInterner,
     info: &BuildInfo,
 ) -> Vec<Task> {
-    // assert_eq!(info.path.len(), info.mod_dep_matrix.len());
-    // assert_eq!(info.path.len(), info.module.len());
-    // assert_eq!(info.path.len(), info.lib.len());
-    // assert_eq!(info.path.len(), info.bin.len());
-    // assert_eq!(info.path.len(), info.test.len());
-    // assert_eq!(info.path.len(), info.deps.len());
+    assert_eq!(info.path.len(), info.mod_dep_matrix.len());
+    assert_eq!(info.path.len(), info.module.len());
+    assert_eq!(info.path.len(), info.lib.len());
+    assert_eq!(info.path.len(), info.bin.len());
+    assert_eq!(info.path.len(), info.test.len());
+    assert_eq!(info.path.len(), info.deps.len());
 
-    // let mut tasks = Vec::new();
+    let mut tasks = Vec::new();
 
-    // for eidx in 0..info.path.len() {
-    //     let entry_idx = EntryIndex::from_usize(eidx);
-    //     plan_module_build(
-    //         &tasks,
-    //         config,
-    //         &info.name[eidx],
-    //         &info.deps[eidx],
-    //         &info.module[eidx],
-    //         &info.mod_dep_matrix[eidx],
-    //     );
-    // }
+    for eidx in 0..info.path.len() {
+        let entry_idx = u32::try_from(eidx).unwrap();
+        plan_module_build(
+            &mut tasks,
+            config,
+            &info.name[eidx],
+            &info.deps[eidx],
+            &info.module[eidx],
+            &info.mod_dep_matrix[eidx],
+        );
+    }
 
-    // tasks
-    Vec::new()
+    tasks
 }
 
 async fn run(executor: &'static Executor) {
