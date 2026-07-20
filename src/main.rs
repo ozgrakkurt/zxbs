@@ -316,9 +316,9 @@ impl NameInterner {
         self.names[idx.to_usize()]
     }
 
-    fn len(&self) -> usize {
-        self.names.len()
-    }
+    // fn len(&self) -> usize {
+    //     self.names.len()
+    // }
 }
 
 #[derive(Default)]
@@ -539,7 +539,7 @@ fn check_name(name: &str) {
     }
 }
 
-fn parse_file_name<'name>(expected_extensions: &[&str], file_name: &'name str) -> &'name str {
+fn parse_file_name<'name>(expected_extension: &str, file_name: &'name str) -> &'name str {
     let parts: Vec<_> = file_name.split(".").collect();
     assert_eq!(parts.len(), 2);
     let name = parts[0];
@@ -547,13 +547,13 @@ fn parse_file_name<'name>(expected_extensions: &[&str], file_name: &'name str) -
 
     check_name(name);
 
-    assert!(expected_extensions.contains(&extension));
+    assert_eq!(expected_extension, extension);
 
     name
 }
 
 async fn scan_subfolder(
-    expected_extensions: &[&str],
+    expected_extension: &str,
     interner: &mut NameInterner,
     path: &Path,
 ) -> Vec<NameIndex> {
@@ -562,7 +562,7 @@ async fn scan_subfolder(
     while let Some(file) = dir.next().await {
         let file = file.unwrap();
         let name =
-            parse_file_name(expected_extensions, file.file_name().to_str().unwrap()).to_owned();
+            parse_file_name(expected_extension, file.file_name().to_str().unwrap()).to_owned();
         check_name(&name);
         let name_index = interner.insert_name(&name);
         names.push(name_index);
@@ -589,8 +589,11 @@ async fn scan(config: &Config, interner: &mut NameInterner) -> BuildInfo {
 
         let deps = read_deps_file(interner, &path.join("deps")).await;
 
-        let mod_parts = scan_subfolder(&["cppm"], interner, &path.join("mod")).await;
+        let mod_parts = scan_subfolder("cppm", interner, &path.join("mod")).await;
         let n_mod_parts = mod_parts.len();
+
+        // has to have root module
+        assert!(mod_parts.contains(&entry_name));
 
         let mut mod_dep_matrix = vec![false; n_mod_parts * n_mod_parts];
         for (part_pos, &part_name) in mod_parts.iter().enumerate() {
@@ -622,13 +625,13 @@ async fn scan(config: &Config, interner: &mut NameInterner) -> BuildInfo {
         info.mod_dep_matrix.push(mod_dep_matrix);
         info.module.push(mod_parts);
 
-        let lib = scan_subfolder(&["s", "cc"], interner, &path.join("lib")).await;
+        let lib = scan_subfolder("cc", interner, &path.join("lib")).await;
         info.lib.push(lib);
 
-        let test = scan_subfolder(&["cc"], interner, &path.join("test")).await;
+        let test = scan_subfolder("cc", interner, &path.join("test")).await;
         info.test.push(test);
 
-        let bin = scan_subfolder(&["cc"], interner, &path.join("bin")).await;
+        let bin = scan_subfolder("cc", interner, &path.join("bin")).await;
         info.bin.push(bin);
 
         entry_idx += 1;
@@ -659,7 +662,7 @@ fn plan_module_build(
     let entry_deps = info.deps[entry_index].as_slice();
 
     let mut ext_pcm_paths: Vec<PathIndex> = Vec::with_capacity(entry_deps.len());
-    let mod_build_path = config.build_path.join("module");
+    let mod_build_path = config.build_path.join("mod");
     for &dep_name in entry_deps.iter() {
         let dep_name = name_interner.get_name(dep_name);
         let dep_pcm_path = mod_build_path.join(format!("{}.pcm", dep_name));
@@ -779,6 +782,101 @@ fn plan_module_build(
     }
 }
 
+fn plan_lib_build(
+    config: &Config,
+    name_interner: &NameInterner,
+    path_interner: &mut PathInterner,
+    tasks: &mut Vec<Task>,
+    info: &BuildInfo,
+    entry_index: usize,
+) {
+    // build object files (both .cc and .s)
+    // archive into .a file
+
+    let entry_name = name_interner.get_name(info.name[entry_index]);
+
+    let parts = &info.lib[entry_index];
+    let src_path = config.src_path.join(entry_name).join("lib");
+    let build_path = config.build_path.join(entry_name).join("lib");
+
+    let root_pcm_path = config
+        .build_path
+        .join("mod")
+        .join(format!("{}.pcm", entry_name));
+    let root_pcm_path_index = path_interner.insert_path(&root_pcm_path);
+
+    let mod_build_path = config.build_path.join("mod");
+    let prebuilt_module_path_flag = format!("-fprebuilt-module-path={}", mod_build_path.display());
+
+    let mut obj_path_indices: Vec<PathIndex> = Vec::with_capacity(parts.len());
+    let mut obj_paths: Vec<String> = Vec::with_capacity(parts.len());
+    for &part_name_idx in parts.iter() {
+        let part_name = name_interner.get_name(part_name_idx);
+        let cc_path = src_path.join(format!("{}.cc", part_name));
+        let obj_path = build_path.join(format!("{}.o", part_name));
+        let obj_path_index = path_interner.insert_path(&obj_path);
+
+        obj_path_indices.push(obj_path_index);
+        obj_paths.push(obj_path.display().to_string());
+
+        let input_indices = vec![root_pcm_path_index];
+        let output_indices = vec![obj_path_index];
+
+        let mut build_obj_command = smol::process::Command::new(config.cxx);
+        build_obj_command
+            .args(config.cflags)
+            .arg(cc_path.display().to_string())
+            .arg(prebuilt_module_path_flag.clone())
+            .arg("-c")
+            .arg("-o")
+            .arg(obj_path.display().to_string());
+
+        let task_index = TaskIndex::from_usize(tasks.len());
+        tasks.push(Task {
+            input_indices,
+            output_indices,
+            command: Some(Box::pin(async move {
+                let output = build_obj_command.output().await.unwrap();
+                if !output.status.success() {
+                    panic!(
+                        "Failed to compile library cc file into object file:\n{}",
+                        str::from_utf8(&output.stderr).unwrap()
+                    );
+                }
+                task_index
+            })),
+        })
+    }
+
+    let lib_output_path = build_path.join(format!("lib{}.a", entry_name));
+    let lib_output_path_idx = path_interner.insert_path(&lib_output_path);
+
+    let input_indices = obj_path_indices;
+    let output_indices = vec![lib_output_path_idx];
+
+    let mut archive_lib_command = smol::process::Command::new(config.ar);
+    archive_lib_command
+        .arg("crs")
+        .arg(lib_output_path.display().to_string())
+        .args(obj_paths);
+
+    let task_index = TaskIndex::from_usize(tasks.len());
+    tasks.push(Task {
+        input_indices,
+        output_indices,
+        command: Some(Box::pin(async move {
+            let output = archive_lib_command.output().await.unwrap();
+            if !output.status.success() {
+                panic!(
+                    "Failed to archive library:\n{}",
+                    str::from_utf8(&output.stderr).unwrap(),
+                );
+            }
+            task_index
+        })),
+    });
+}
+
 fn plan(
     config: &Config,
     name_interner: &NameInterner,
@@ -796,6 +894,7 @@ fn plan(
 
     for eidx in 0..info.name.len() {
         plan_module_build(config, name_interner, path_interner, &mut tasks, info, eidx);
+        plan_lib_build(config, name_interner, path_interner, &mut tasks, info, eidx);
     }
 
     tasks
