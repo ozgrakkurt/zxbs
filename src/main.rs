@@ -2,6 +2,7 @@
 #![allow(clippy::wrong_self_convention)]
 #![allow(clippy::ptr_arg)]
 #![allow(clippy::manual_range_contains)]
+#![allow(clippy::too_many_arguments)]
 
 use smol::future::Boxed as BoxedFuture;
 use smol::prelude::*;
@@ -808,8 +809,20 @@ fn plan_lib_build(
     let mod_build_path = config.build_path.join("mod");
     let prebuilt_module_path_flag = format!("-fprebuilt-module-path={}", mod_build_path.display());
 
-    let mut obj_path_indices: Vec<PathIndex> = Vec::with_capacity(parts.len());
-    let mut obj_paths: Vec<String> = Vec::with_capacity(parts.len());
+    let mod_parts = &info.lib[entry_index];
+
+    let mut obj_path_indices: Vec<PathIndex> = Vec::with_capacity(parts.len() + mod_parts.len());
+    let mut obj_paths: Vec<String> = Vec::with_capacity(parts.len() + mod_parts.len());
+
+    for &mod_part_name_idx in mod_parts.iter() {
+        let part_name = name_interner.get_name(mod_part_name_idx);
+        let mod_part_obj_path =
+            mod_build_path.join(make_module_artifact_name(entry_name, part_name, "o"));
+        let path_idx = path_interner.insert_path(&mod_part_obj_path);
+        obj_path_indices.push(path_idx);
+        obj_paths.push(mod_part_obj_path.display().to_string());
+    }
+
     for &part_name_idx in parts.iter() {
         let part_name = name_interner.get_name(part_name_idx);
         let cc_path = src_path.join(format!("{}.cc", part_name));
@@ -885,10 +898,14 @@ fn plan_bin_build(
     info: &BuildInfo,
     entry_index: usize,
     lib_paths: &'static [&'static str],
+    lib_path_indices: &[PathIndex],
+    is_test: bool,
 ) {
     // depend on self lib (.a)
     // compile cc to .o
     // do linking
+
+    let artifact_kind_name = if is_test { "test" } else { "bin" };
 
     let entry_name = name_interner.get_name(info.name[entry_index]);
 
@@ -898,16 +915,9 @@ fn plan_bin_build(
         .join(format!("{}.pcm", entry_name));
     let self_pcm_path_idx = path_interner.insert_path(&self_pcm_path);
 
-    let self_lib_path = config
-        .build_path
-        .join("lib")
-        .join(entry_name)
-        .join(format!("lib{}.a", entry_name));
-    let self_lib_path_idx = path_interner.insert_path(&self_lib_path);
-
     let bins = &info.bin[entry_index];
-    let build_path = config.build_path.join(entry_name).join("bin");
-    let src_path = config.src_path.join(entry_name).join("bin");
+    let build_path = config.build_path.join(entry_name).join(artifact_kind_name);
+    let src_path = config.src_path.join(entry_name).join(artifact_kind_name);
 
     let mod_build_path = config.build_path.join("mod");
     let prebuilt_module_path_flag = format!("-fprebuilt-module-path={}", mod_build_path.display());
@@ -953,7 +963,8 @@ fn plan_bin_build(
             })),
         });
 
-        let input_indices = vec![self_lib_path_idx, obj_path_index];
+        let mut input_indices = lib_path_indices.to_vec();
+        input_indices.push(obj_path_index);
         let output_indices = vec![exe_path_index];
 
         let mut link_command = smol::process::Command::new(config.cxx);
@@ -979,6 +990,29 @@ fn plan_bin_build(
                 task_index
             })),
         });
+
+        if is_test {
+            let input_indices = vec![exe_path_index];
+            let output_indices = Vec::new();
+
+            let mut test_command = smol::process::Command::new(exe_path.display().to_string());
+
+            let task_index = TaskIndex::from_usize(tasks.len());
+            tasks.push(Task {
+                input_indices,
+                output_indices,
+                command: Some(Box::pin(async move {
+                    let output = test_command.output().await.unwrap();
+                    if !output.status.success() {
+                        panic!(
+                            "Failed to run test:\n{}",
+                            str::from_utf8(&output.stderr).unwrap(),
+                        );
+                    }
+                    task_index
+                })),
+            });
+        }
     }
 }
 
@@ -1043,15 +1077,24 @@ fn plan(
         // collect the library path list for doing static linking.
         let lib_path_list = collect_lib_path_list(config, name_interner, path_interner, info, eidx);
 
-        plan_bin_build(
-            config,
-            name_interner,
-            path_interner,
-            &mut tasks,
-            info,
-            eidx,
-            lib_path_list,
-        );
+        let lib_path_indices: Vec<PathIndex> = lib_path_list
+            .iter()
+            .map(|p| path_interner.insert_path(Path::new(p)))
+            .collect();
+
+        for is_test in [true, false] {
+            plan_bin_build(
+                config,
+                name_interner,
+                path_interner,
+                &mut tasks,
+                info,
+                eidx,
+                lib_path_list,
+                &lib_path_indices,
+                is_test,
+            );
+        }
     }
 
     tasks

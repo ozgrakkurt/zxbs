@@ -7,3 +7,9 @@ edition = "2024"
 smol = "2"
 serde_json = "1"
 num_cpus = "1"
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
