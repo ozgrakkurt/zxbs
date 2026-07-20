@@ -352,8 +352,8 @@ impl PathInterner {
 }
 
 struct Task {
-    input_indices: &'static [PathIndex],
-    output_indices: &'static [PathIndex],
+    input_indices: Vec<PathIndex>,
+    output_indices: Vec<PathIndex>,
     command: Option<BoxedFuture<TaskIndex>>,
 }
 
@@ -401,7 +401,7 @@ impl Build {
 
     fn process_task_finished(&mut self, task_idx: TaskIndex) {
         let task = &self.tasks[task_idx.to_usize()];
-        for out_idx in task.output_indices {
+        for out_idx in task.output_indices.iter() {
             assert!(!self.is_built[out_idx.to_usize()]);
             self.is_built[out_idx.to_usize()] = true;
 
@@ -637,38 +637,145 @@ async fn scan(config: &Config, interner: &mut NameInterner) -> BuildInfo {
     info
 }
 
+fn make_module_artifact_name(root_name: &str, part_name: &str, extension: &str) -> String {
+    if root_name == part_name {
+        format!("{}.{}", root_name, extension)
+    } else {
+        format!("{}-{}.{}", root_name, part_name, extension)
+    }
+}
+
 fn plan_module_build(
-    tasks: &mut Vec<Task>,
     config: &Config,
-    entry_name: NameIndex,
-    entry_deps: &[NameIndex],
-    mod_parts: &[PathIndex],
-    mod_dep_matrix: &[bool],
+    name_interner: &NameInterner,
+    path_interner: &mut PathInterner,
+    tasks: &mut Vec<Task>,
+    info: &BuildInfo,
+    entry_index: usize,
 ) {
+    let mod_parts = info.module[entry_index].as_slice();
     let n_mod_parts = mod_parts.len();
 
-    let entry_dep_paths: Vec<PathIndex>  = Vec::with_capacity(entry_deps.len());
-    let lib_path = config.build_path.join("lib");
-    for dep_name in entry_deps.iter() {
-        let path = lib_path.join();
-        entry_dep_paths.push();
+    let entry_deps = info.deps[entry_index].as_slice();
+
+    let mut ext_pcm_paths: Vec<PathIndex> = Vec::with_capacity(entry_deps.len());
+    let mod_build_path = config.build_path.join("module");
+    for &dep_name in entry_deps.iter() {
+        let dep_name = name_interner.get_name(dep_name);
+        let dep_pcm_path = mod_build_path.join(format!("{}.pcm", dep_name));
+        let dep_pcm_path = path_interner.insert_path(&dep_pcm_path);
+        ext_pcm_paths.push(dep_pcm_path);
     }
 
-    for part in module_parts {
-        let tidx = tasks.len();
-        let task_index = TaskIndex::from_usize(tidx);
+    let entry_name = name_interner.get_name(info.name[entry_index]);
 
-        // precompile cppm to pcm
+    let mut local_pcm_paths: Vec<PathIndex> = Vec::with_capacity(n_mod_parts);
+    let mut local_object_paths: Vec<PathIndex> = Vec::with_capacity(n_mod_parts);
+    for &part_name in mod_parts.iter() {
+        let part_name = name_interner.get_name(part_name);
+        let part_pcm_path =
+            mod_build_path.join(make_module_artifact_name(entry_name, part_name, "pcm"));
+        let part_object_path =
+            mod_build_path.join(make_module_artifact_name(entry_name, part_name, "o"));
+        let part_pcm_path = path_interner.insert_path(&part_pcm_path);
+        let part_object_path = path_interner.insert_path(&part_object_path);
+        local_pcm_paths.push(part_pcm_path);
+        local_object_paths.push(part_object_path);
+    }
+
+    let mod_src_path = config
+        .src_path
+        .join(name_interner.get_name(info.name[entry_index]))
+        .join("mod");
+
+    for (part_idx, &part) in mod_parts.iter().enumerate() {
+        let task_index = TaskIndex::from_usize(tasks.len());
+
+        let mut input_indices = ext_pcm_paths.clone();
+        let mod_dep_matrix_offset = n_mod_parts * entry_index;
+        for index in info.mod_dep_matrix[entry_index]
+            [mod_dep_matrix_offset..mod_dep_matrix_offset + n_mod_parts]
+            .iter()
+            .enumerate()
+            .filter(|(_, is_dep)| **is_dep)
+            .map(|(idx, _)| idx)
+        {
+            input_indices.push(local_pcm_paths[index]);
+        }
+
+        let output_indices = vec![local_pcm_paths[part_idx]];
+
+        let cppm_path = mod_src_path.join(format!("{}.cppm", name_interner.get_name(part)));
+        let prebuilt_module_path_flag =
+            format!("-fprebuilt-module-path={}", mod_build_path.display());
+
+        let mut build_pcm_command = smol::process::Command::new(config.cxx);
+        build_pcm_command
+            .args(config.cflags)
+            .arg(cppm_path.display().to_string())
+            .arg("--precompile")
+            .arg(prebuilt_module_path_flag.clone())
+            .arg("-o")
+            .arg(
+                path_interner
+                    .get_path(local_pcm_paths[part_idx])
+                    .display()
+                    .to_string(),
+            );
+
         tasks.push(Task {
-            input_indices: [],
-            output_indices: [],
-            command: Box::pin(async move {
-                // do the build job
+            input_indices,
+            output_indices,
+            command: Some(Box::pin(async move {
+                let output = build_pcm_command.output().await.unwrap();
+                if !output.status.success() {
+                    panic!(
+                        "Failed precompile:\n{}",
+                        str::from_utf8(&output.stderr).unwrap()
+                    );
+                }
                 task_index
-            }),
+            })),
         });
 
-        // compile pcm to obj
+        let input_indices = vec![local_pcm_paths[part_idx]];
+        let output_indices = vec![local_object_paths[part_idx]];
+
+        let task_index = TaskIndex::from_usize(tasks.len());
+
+        let mut build_obj_command = smol::process::Command::new(config.cxx);
+        build_obj_command
+            .args(config.cflags)
+            .arg(
+                path_interner
+                    .get_path(local_pcm_paths[part_idx])
+                    .display()
+                    .to_string(),
+            )
+            .arg(prebuilt_module_path_flag.clone())
+            .arg("-c")
+            .arg("-o")
+            .arg(
+                path_interner
+                    .get_path(local_object_paths[part_idx])
+                    .display()
+                    .to_string(),
+            );
+
+        tasks.push(Task {
+            input_indices,
+            output_indices,
+            command: Some(Box::pin(async move {
+                let output = build_obj_command.output().await.unwrap();
+                if !output.status.success() {
+                    panic!(
+                        "Failed to compile pcm into object file:\n{}",
+                        str::from_utf8(&output.stderr).unwrap()
+                    );
+                }
+                task_index
+            })),
+        });
     }
 }
 
@@ -678,25 +785,17 @@ fn plan(
     path_interner: &mut PathInterner,
     info: &BuildInfo,
 ) -> Vec<Task> {
-    assert_eq!(info.path.len(), info.mod_dep_matrix.len());
-    assert_eq!(info.path.len(), info.module.len());
-    assert_eq!(info.path.len(), info.lib.len());
-    assert_eq!(info.path.len(), info.bin.len());
-    assert_eq!(info.path.len(), info.test.len());
-    assert_eq!(info.path.len(), info.deps.len());
+    assert_eq!(info.name.len(), info.mod_dep_matrix.len());
+    assert_eq!(info.name.len(), info.module.len());
+    assert_eq!(info.name.len(), info.lib.len());
+    assert_eq!(info.name.len(), info.bin.len());
+    assert_eq!(info.name.len(), info.test.len());
+    assert_eq!(info.name.len(), info.deps.len());
 
     let mut tasks = Vec::new();
 
-    for eidx in 0..info.path.len() {
-        let entry_idx = u32::try_from(eidx).unwrap();
-        plan_module_build(
-            &mut tasks,
-            config,
-            &info.name[eidx],
-            &info.deps[eidx],
-            &info.module[eidx],
-            &info.mod_dep_matrix[eidx],
-        );
+    for eidx in 0..info.name.len() {
+        plan_module_build(config, name_interner, path_interner, &mut tasks, info, eidx);
     }
 
     tasks
