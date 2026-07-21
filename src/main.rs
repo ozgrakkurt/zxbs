@@ -835,7 +835,7 @@ fn plan_lib_build(
     let mod_build_path = config.build_path.join("mod");
     let prebuilt_module_path_flag = format!("-fprebuilt-module-path={}", mod_build_path.display());
 
-    let mod_parts = &info.mod[entry_index];
+    let mod_parts = &info.module[entry_index];
 
     let mut obj_path_indices: Vec<PathIndex> = Vec::with_capacity(parts.len() + mod_parts.len());
     let mut obj_paths: Vec<String> = Vec::with_capacity(parts.len() + mod_parts.len());
