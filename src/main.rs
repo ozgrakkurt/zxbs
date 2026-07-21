@@ -379,11 +379,17 @@ impl Build {
 
         let mut dependants = vec![Vec::new(); num_paths];
 
+        let mut backlog = VecDeque::new();
+
         for (idx, task) in tasks.iter().enumerate() {
             let task_idx = TaskIndex::from_usize(idx);
             dependencies.push(task.input_indices.to_vec());
             for input_idx in task.input_indices.iter() {
                 dependants[input_idx.to_usize()].push(task_idx);
+            }
+
+            if task.input_indices.is_empty() {
+                backlog.push_back(task_idx);
             }
         }
 
@@ -394,7 +400,7 @@ impl Build {
             dependants,
             tasks,
             running: Vec::new(),
-            backlog: VecDeque::new(),
+            backlog,
             concurrency: num_cpus::get(),
             done: false,
         }
@@ -514,11 +520,14 @@ async fn scan_deps(config: &Config, path: &Path) -> Vec<String> {
 
 async fn read_deps_file(interner: &mut NameInterner, path: &Path) -> Vec<NameIndex> {
     let contents = String::from_utf8(smol::fs::read(path).await.unwrap()).unwrap();
-    contents
-        .trim()
-        .split('\n')
-        .map(|s| interner.insert_name(s))
-        .collect()
+    let mut indx = Vec::new();
+    for line in contents.trim().split('\n') {
+        let line = line.trim();
+        if !line.is_empty() {
+            indx.push(interner.insert_name(line));
+        }
+    }
+    indx
 }
 
 #[derive(Default)]
@@ -1111,6 +1120,9 @@ fn plan(
 
 async fn run(executor: &'static Executor) {
     let config = parse_args();
+
+    let _ = smol::fs::remove_dir_all(config.build_path).await;
+    smol::fs::create_dir_all(config.build_path).await.unwrap();
 
     let mut name_interner = NameInterner::default();
     let info = scan(&config, &mut name_interner).await;
