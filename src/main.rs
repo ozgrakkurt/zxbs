@@ -470,15 +470,14 @@ impl Future for Build {
 }
 
 async fn scan_deps(config: &Config, path: &Path) -> Vec<String> {
-    let output = smol::process::Command::new(config.clang_scan_deps)
-        .arg("-format=p1689")
+    let mut cmd = smol::process::Command::new(config.clang_scan_deps);
+    cmd.arg("-format=p1689")
         .arg("--")
         .arg(config.cxx)
         .args(config.cflags)
-        .arg(path)
-        .output()
-        .await
-        .unwrap();
+        .arg("-c")
+        .arg(path);
+    let output = cmd.output().await.unwrap();
     if !output.status.success() {
         panic!(
             "Failed clang_scan_deps:\n{}",
@@ -494,7 +493,11 @@ async fn scan_deps(config: &Config, path: &Path) -> Vec<String> {
 
     for rule in root.get("rules").unwrap().as_array().unwrap().iter() {
         let rule = rule.as_object().unwrap();
-        for p in rule.get("provides").unwrap().as_array().unwrap().iter() {
+        let reqs = match rule.get("requires") {
+            Some(req) => req,
+            None => continue,
+        };
+        for p in reqs.as_array().unwrap().iter() {
             let name = p
                 .as_object()
                 .unwrap()
@@ -596,9 +599,15 @@ async fn scan(config: &Config, interner: &mut NameInterner) -> BuildInfo {
         // has to have root module
         assert!(mod_parts.contains(&entry_name));
 
+        let mod_path = path.join("mod");
+
         let mut mod_dep_matrix = vec![false; n_mod_parts * n_mod_parts];
         for (part_pos, &part_name) in mod_parts.iter().enumerate() {
-            let mod_dep_names = scan_deps(config, &path.join(interner.get_name(part_name))).await;
+            let mod_dep_names = scan_deps(
+                config,
+                &mod_path.join(format!("{}.cppm", interner.get_name(part_name))),
+            )
+            .await;
             for mod_dep_name in mod_dep_names.iter() {
                 if mod_dep_name.contains(':') {
                     let parts: Vec<_> = mod_dep_name.split(':').collect();
