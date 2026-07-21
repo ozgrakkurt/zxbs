@@ -682,6 +682,7 @@ fn plan_module_build(
 
     let mut ext_pcm_paths: Vec<PathIndex> = Vec::with_capacity(entry_deps.len());
     let mod_build_path = config.build_path.join("mod");
+    std::fs::create_dir_all(&mod_build_path).unwrap();
     for &dep_name in entry_deps.iter() {
         let dep_name = name_interner.get_name(dep_name);
         let dep_pcm_path = mod_build_path.join(format!("{}.pcm", dep_name));
@@ -714,7 +715,7 @@ fn plan_module_build(
         let task_index = TaskIndex::from_usize(tasks.len());
 
         let mut input_indices = ext_pcm_paths.clone();
-        let mod_dep_matrix_offset = n_mod_parts * entry_index;
+        let mod_dep_matrix_offset = n_mod_parts * part_idx;
         for index in info.mod_dep_matrix[entry_index]
             [mod_dep_matrix_offset..mod_dep_matrix_offset + n_mod_parts]
             .iter()
@@ -817,6 +818,8 @@ fn plan_lib_build(
     let parts = &info.lib[entry_index];
     let src_path = config.src_path.join(entry_name).join("lib");
     let build_path = config.build_path.join(entry_name).join("lib");
+
+    std::fs::create_dir_all(&build_path).unwrap();
 
     let root_pcm_path = config
         .build_path
@@ -938,6 +941,9 @@ fn plan_bin_build(
     let src_path = config.src_path.join(entry_name).join(artifact_kind_name);
 
     let mod_build_path = config.build_path.join("mod");
+
+    std::fs::create_dir_all(&build_path).unwrap();
+
     let prebuilt_module_path_flag = format!("-fprebuilt-module-path={}", mod_build_path.display());
 
     for &bin_name_idx in bins.iter() {
