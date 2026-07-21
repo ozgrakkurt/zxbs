@@ -545,10 +545,15 @@ struct BuildInfo {
 }
 
 fn check_name(name: &str) {
-    for &byte in name.as_bytes() {
+    let name = name.as_bytes();
+    if !name.is_empty() {
+        assert!(name[0] >= b'a' && name[0] <= b'z');
+    }
+    for &byte in name {
         let is_char = byte >= b'a' && byte <= b'z';
+        let is_digit = byte.is_ascii_digit();
         let is_underscore = byte == b'_';
-        assert!(is_char || is_underscore);
+        assert!(is_char || is_digit || is_underscore);
     }
 }
 
@@ -830,7 +835,7 @@ fn plan_lib_build(
     let mod_build_path = config.build_path.join("mod");
     let prebuilt_module_path_flag = format!("-fprebuilt-module-path={}", mod_build_path.display());
 
-    let mod_parts = &info.lib[entry_index];
+    let mod_parts = &info.mod[entry_index];
 
     let mut obj_path_indices: Vec<PathIndex> = Vec::with_capacity(parts.len() + mod_parts.len());
     let mut obj_paths: Vec<String> = Vec::with_capacity(parts.len() + mod_parts.len());
