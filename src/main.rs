@@ -370,6 +370,7 @@ struct Build {
     running: Vec<smol::Task<TaskIndex>>,
     backlog: VecDeque<TaskIndex>,
     concurrency: usize,
+    n_tasks_finished: usize,
     done: bool,
 }
 
@@ -402,12 +403,14 @@ impl Build {
             running: Vec::new(),
             backlog,
             concurrency: num_cpus::get(),
+            n_tasks_finished: 0,
             done: false,
         }
     }
 
     fn process_task_finished(&mut self, task_idx: TaskIndex) {
         let task = &self.tasks[task_idx.to_usize()];
+        self.n_tasks_finished += 1;
         for out_idx in task.output_indices.iter() {
             assert!(!self.is_built[out_idx.to_usize()]);
             self.is_built[out_idx.to_usize()] = true;
@@ -468,6 +471,7 @@ impl Future for Build {
 
         if fut.running.is_empty() && fut.backlog.is_empty() {
             fut.done = true;
+            assert_eq!(fut.n_tasks_finished, fut.tasks.len());
             Poll::Ready(())
         } else {
             Poll::Pending
@@ -941,7 +945,11 @@ fn plan_bin_build(
         .join(format!("{}.pcm", entry_name));
     let self_pcm_path_idx = path_interner.insert_path(&self_pcm_path);
 
-    let bins = &info.bin[entry_index];
+    let bins = if is_test {
+        &info.test[entry_index]
+    } else {
+        &info.bin[entry_index]
+    };
     let build_path = config.build_path.join(entry_name).join(artifact_kind_name);
     let src_path = config.src_path.join(entry_name).join(artifact_kind_name);
 
@@ -1034,7 +1042,8 @@ fn plan_bin_build(
                     let output = test_command.output().await.unwrap();
                     if !output.status.success() {
                         panic!(
-                            "Failed to run test:\n{}",
+                            "Failed to run test ({}):\n{}",
+                            output.status,
                             str::from_utf8(&output.stderr).unwrap(),
                         );
                     }
