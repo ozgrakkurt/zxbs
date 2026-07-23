@@ -12,6 +12,242 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
+struct PrecompileToPcm {
+    cxx: &'static str,
+    cxxflags: &'static [&'static str],
+    prebuilt_module_path_flag: &'static str,
+    input_path: PathIndex,
+    output_path: PathIndex,
+}
+
+type StdOut = String;
+
+impl PrecompileToPcm {
+    fn print(&self, path_interner: &PathInterner) -> String {
+        let mut out = Vec::with_capacity(1024);
+
+        out.extend_from_slice(self.cxx.as_bytes());
+        out.extend_from_slice(b" <cxxflags> ");
+
+        out.extend_from_slice(
+            path_interner
+                .get_path(self.input_path)
+                .to_str()
+                .unwrap()
+                .as_bytes(),
+        );
+
+        out.extend_from_slice(b" --precompile <prebuilt_module_path_flag> -o ");
+
+        out.extend_from_slice(path_interner.get_path(self.output_path).to_str().unwrap());
+
+        String::from_utf8(out).unwrap()
+    }
+
+    async fn run(&self, path_interner: &PathInterner) -> StdOut {
+        let output = match smol::process::Command::new(self.cxx)
+            .args(self.cxxflags)
+            .arg(path_interner.get_path(self.input_path).to_str().unwrap())
+            .arg("--precompile")
+            .arg(self.prebuilt_module_path_flag)
+            .arg("-o")
+            .arg(path_interner.get_path(self.output_path).to_str().unwrap())
+            .output()
+            .await
+        {
+            Ok(out) => out,
+            Err(e) => {
+                panic!(
+                    "Failed to run command. Command:\n\t{}\nError = {:?}\n",
+                    self.print(path_interner),
+                    e,
+                );
+            }
+        };
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(output.stderr);
+            panic!(
+                "Precompile to .pcm Failed. Command:\n\t{}\nStatus: {}\nStdErr:\n{}\n",
+                self.print(path_interner),
+                output.status,
+                stderr,
+            );
+        }
+
+        String::from_utf8_lossy(output.stdout)
+    }
+}
+
+struct CompileToObject {
+    cxx: &'static str,
+    cxxflags: &'static [&'static str],
+    prebuilt_module_path_flag: &'static str,
+    input_path: PathIndex,
+    output_path: PathIndex,
+}
+
+impl CompileToObject {
+    fn print(&self, path_interner: &PathInterner) -> String {
+        let mut out = Vec::with_capacity(1024);
+
+        out.extend_from_slice(self.cxx.as_bytes());
+        out.extend_from_slice(b" <cxxflags> ");
+
+        out.extend_from_slice(path_interner.get_path(self.input_path).to_str().unwrap());
+
+        out.extend_from_slice(b" <prebuilt_module_path_flag> -c -o ");
+
+        out.extend_from_slice(path_interner.get_path(self.output_path).to_str().unwrap());
+
+        String::from_utf8(out).unwrap()
+    }
+
+    async fn run(&self, path_interner: &PathInterner) -> StdOut {
+        let output = match smol::process::Command::new(self.cxx)
+            .args(self.cxxflags)
+            .arg(path_interner.get_path(self.input_path).to_str().unwrap())
+            .arg(self.prebuilt_module_path_flag)
+            .arg("-c")
+            .arg("-o")
+            .arg(path_interner.get_path(self.output_path).to_str().unwrap())
+            .output()
+            .await
+        {
+            Ok(out) => out,
+            Err(e) => {
+                panic!(
+                    "Failed to run command. Command:\n\t{}\nError = {:?}\n",
+                    self.print(path_interner),
+                    e,
+                );
+            }
+        };
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(output.stderr);
+            panic!(
+                "Precompile to .pcm Failed. Command:\n\t{}\nStatus: {}\nStdErr:\n{}\n",
+                self.print(path_interner),
+                output.status,
+                stderr,
+            );
+        }
+
+        String::from_utf8_lossy(output.stdout)
+    }
+}
+
+struct ArchiveLib {
+    ar: &'static str,
+    input_paths: Vec<&'static str>,
+    output_path: PathIndex,
+}
+
+impl ArchiveLib {
+    fn print(&self, path_interner: &PathInterner) -> String {
+        let mut out = Vec::with_capacity(1024);
+
+        out.extend_from_slice(self.ar.as_bytes());
+        out.extend_from_slice(b" crs ");
+
+        out.extend_from_slice(path_interner.get_path(self.output_path).to_str().unwrap());
+
+        for in_path in self.input_paths.iter() {
+            out.push(b' ');
+            out.extend_from_slice(path_interner.get_path(self.in_path).to_str().unwrap());
+        }
+
+        String::from_utf8(out).unwrap()
+    }
+
+    async fn run(&self, path_interner: &PathInterner) -> StdOut {
+        let output = match smol::process::Command::new(self.ar)
+            .arg("crs")
+            .arg(path_interner.get_path(self.input_path).to_str().unwrap())
+            .output()
+            .await
+        {
+            Ok(out) => out,
+            Err(e) => {
+                panic!(
+                    "Failed to run command. Command:\n\t{}\nError = {:?}\n",
+                    self.print(path_interner),
+                    e,
+                );
+            }
+        };
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(output.stderr);
+            panic!(
+                "Precompile to .pcm Failed. Command:\n\t{}\nStatus: {}\nStdErr:\n{}\n",
+                self.print(path_interner),
+                output.status,
+                stderr,
+            );
+        }
+
+        String::from_utf8_lossy(output.stdout)
+    }
+}
+
+struct LinkBinary {
+    cxx: &'static str,
+    ldflags: &'static [&'static str],
+    object_path: PathIndex,
+    dep_paths: Vec<PathIndex>,
+}
+
+struct RunBinary {
+    path: PathIndex,
+}
+
+enum Command {
+    PrecompileToPcm(Box<PrecompileToPcm>),
+    CompileToObject(Box<CompileToObject>),
+    ArchiveLib(Box<ArchiveLib>),
+    LinkBinary(Box<LinkBinary>),
+    RunBinary(RunBinary),
+}
+
+struct Command {
+    program: &'static str,
+    flags: &'static [&'static str],
+    args: Vec<&'static str>,
+}
+
+impl Command {
+    fn new(program: &'static str, flags: &'static [&'static str]) -> Command {
+        Command {
+            program,
+            flags,
+            args: Vec::new(),
+        }
+    }
+
+    fn arg(&mut self, arg: &'static str) {}
+
+    fn print(&self) -> String {
+        let mut cap: usize = self.program.as_bytes().len() + 1;
+        for arg in self.args.iter() {
+            cap += arg.as_bytes().len() + 1;
+        }
+
+        let mut out = Vec::with_capacity(cap);
+        out.extend_from_slice(self.program.as_bytes());
+        out.push(b' ');
+        for arg in self.args.iter() {
+            out.push(arg.as_bytes());
+            out.push(b' ');
+        }
+
+        String::from_utf8(out).unwrap()
+    }
+
+    async fn run(&self) -> String {}
+}
+
 #[derive(Debug)]
 struct Config {
     cxx: &'static str,
