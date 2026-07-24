@@ -8,8 +8,8 @@ async fn run(executor: &'static Executor) {
     let _ = smol::fs::remove_dir_all(config.build_path).await;
     smol::fs::create_dir_all(config.build_path).await.unwrap();
 
-    let mut interner = interner::Interner::new();
-    let info = scan::scan(&config, &mut interner).await;
+    let interner: &'static mut interner::Interner = Box::leak(Box::new(interner::Interner::new()));
+    let info = scan::scan(&config, interner).await;
 
     let tasks = plan::plan(&config, &mut interner, &info);
 

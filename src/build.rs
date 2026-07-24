@@ -1,3 +1,10 @@
+use std::collections::VecDeque;
+use std::pin::Pin;
+use std::task::{Context, Poll};
+
+use crate::command::Command;
+use crate::interner::{Interner, Str};
+
 pub struct Task {
     pub inputs: Vec<Str>,
     pub outputs: Vec<Str>,
@@ -22,6 +29,7 @@ pub type Executor = smol::Executor<'static>;
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct Build {
     pub executor: &'static Executor,
+    pub interner: &'static Interner,
     pub is_built: Vec<bool>,
     pub dependencies: Vec<Vec<Str>>,
     pub dependants: Vec<Vec<TaskIndex>>,
@@ -34,7 +42,7 @@ pub struct Build {
 }
 
 impl Build {
-    fn new(executor: &'static Executor, tasks: Vec<Task>) -> Build {
+    fn new(executor: &'static Executor, interner: &'static Interner, tasks: Vec<Task>) -> Build {
         let mut dependencies = Vec::with_capacity(tasks.len());
 
         let mut dependants = Vec::with_capacity(tasks.len());
@@ -60,6 +68,7 @@ impl Build {
 
         Build {
             executor,
+            interner,
             is_built: vec![false; tasks.len()],
             dependencies,
             dependants,
@@ -76,11 +85,16 @@ impl Build {
         let task = &self.tasks[task_idx.to_usize()];
         self.n_tasks_finished += 1;
         for out_idx in task.output_indices.iter() {
-            assert!(!self.is_built[out_idx.to_usize()]);
+            assert!(
+                !self.is_built[out_idx.to_usize()],
+                "The output {} was built for the second time by command: {}",
+                self.interner.get(out_idx),
+                task.command.print()
+            );
             self.is_built[out_idx.to_usize()] = true;
 
             for &dependant_idx in self.dependants[out_idx.to_usize()].iter() {
-                let deps: &mut Vec<PathIndex> = &mut self.dependencies[dependant_idx.to_usize()];
+                let deps: &mut Vec<Str> = &mut self.dependencies[dependant_idx.to_usize()];
                 let pos = deps.iter().position(|idx| idx.0 == out_idx.0).unwrap();
                 deps.swap_remove(pos);
 

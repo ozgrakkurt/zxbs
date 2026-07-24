@@ -1,3 +1,6 @@
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+
 #[derive(Debug)]
 pub struct Config {
     pub cxx: &'static str,
@@ -9,87 +12,36 @@ pub struct Config {
     pub src_path: &'static Path,
 }
 
-impl Config {
-    pub fn parse_args() -> Config {
-        let mut args = HashMap::<String, String>::new();
-
-        for arg in std::env::args().skip(1) {
-            let parts = arg.split('=').collect::<Vec<&str>>();
-
-            match parts.len() {
-                1 => {
-                    if args.insert(arg.clone(), "".to_owned()).is_some() {
-                        panic!("Duplicate argument: {}", arg);
-                    }
-                }
-                2 => {
-                    if args
-                        .insert(parts[0].to_owned(), parts[1].to_owned())
-                        .is_some()
-                    {
-                        panic!("Duplicate argument: {}", parts[0]);
-                    }
-                }
-                _ => {
-                    panic!("Invalid CLI argument: {}", arg);
-                }
-            }
-        }
-
-        let cxx = args.get("--cxx").map(leak_str).unwrap_or("clang++");
-        let ar = args.get("--ar").map(leak_str).unwrap_or("llvm-ar");
-        let clang_scan_deps = args
-            .get("--clang-scan-deps")
-            .map(leak_str)
-            .unwrap_or("clang-scan-deps");
-        let opt_level = args.get("--opt-level").map(leak_str).unwrap_or("2");
-        let dev_mode = get_bool_arg(&args, "dev-mode", true);
-        let debug_info = get_bool_arg(&args, "debug-info", true);
-        let fuzz = get_bool_arg(&args, "fuzz", false);
-        let src_dir = args.get("--src-dir").map(leak_str).unwrap_or("src");
-        let build_dir: &'static str = args.get("--build-dir").map(leak_str).unwrap_or("build");
-
-        let current_path = std::env::current_dir().unwrap();
-        let src_path = make_path_absolute(&current_path, Path::new(src_dir)).leak();
-        let build_path = make_path_absolute(&current_path, Path::new(build_dir)).leak();
-
-        let flag_cfg = FlagCfg {
-            opt_level: opt_level.to_owned(),
-            dev_mode,
-            debug_info,
-            fuzz,
-        };
-        let cxxflags = make_cxxflags(&flag_cfg).leak();
-        let ldflags = make_ldflags(&flag_cfg).leak();
-
-        Config {
-            cxx: cxx.to_owned().leak(),
-            ar: ar.to_owned().leak(),
-            clang_scan_deps: clang_scan_deps.to_owned().leak(),
-            build_path,
-            src_path,
-            cxxflags,
-            ldflags,
-        }
-    }
-}
-
-fn get_bool_arg(args: &HashMap<String, String>, name: &str, default: bool) -> bool {
+fn get_bool_arg(args: &mut HashMap<String, String>, name: &str, default: bool) -> bool {
     let positive = format!("--{}", name);
     let negative = format!("--no-{}", name);
 
-    match args.get(&positive) {
+    match args.remove(&positive) {
         Some(v) => {
-            assert_eq!(v.as_str(), "");
-            assert!(args.get(&negative).is_none());
+            assert_eq!(
+                v.as_str(),
+                "",
+                "expected bool flag `{}`` to not have `--flag=<value>` form",
+                name,
+            );
+            assert!(
+                args.remove(&negative).is_none(),
+                "both negative and positive variants of flag `{}` was found.",
+                name,
+            );
             return true;
         }
         None => {}
     }
 
-    match args.get(&negative) {
+    match args.remove(&negative) {
         Some(v) => {
-            assert_eq!(v.as_str(), "");
+            assert_eq!(
+                v.as_str(),
+                "",
+                "expected bool flag `{}`` to not have `--flag=<value>` form",
+                name,
+            );
             return false;
         }
         None => {}
@@ -238,6 +190,79 @@ fn make_ldflags(cfg: &FlagCfg) -> Vec<&'static str> {
     ldflags
 }
 
-fn leak_str(s: &String) -> &'static str {
-    s.clone().leak()
+fn leak_str(s: String) -> &'static str {
+    s.leak()
+}
+
+impl Config {
+    pub fn parse_args() -> Config {
+        let mut args = HashMap::<String, String>::new();
+
+        for arg in std::env::args().skip(1) {
+            let parts = arg.split('=').collect::<Vec<&str>>();
+
+            match parts.len() {
+                1 => {
+                    if args.insert(arg.clone(), "".to_owned()).is_some() {
+                        panic!("Duplicate argument: {}", arg);
+                    }
+                }
+                2 => {
+                    if args
+                        .insert(parts[0].to_owned(), parts[1].to_owned())
+                        .is_some()
+                    {
+                        panic!("Duplicate argument: {}", parts[0]);
+                    }
+                }
+                _ => {
+                    panic!("Invalid CLI argument: {}", arg);
+                }
+            }
+        }
+
+        let cxx = args.remove("--cxx").map(leak_str).unwrap_or("clang++");
+        let ar = args.remove("--ar").map(leak_str).unwrap_or("llvm-ar");
+        let clang_scan_deps = args
+            .remove("--clang-scan-deps")
+            .map(leak_str)
+            .unwrap_or("clang-scan-deps");
+        let opt_level = args.remove("--opt-level").map(leak_str).unwrap_or("2");
+        let dev_mode = get_bool_arg(&args, "dev-mode", true);
+        let debug_info = get_bool_arg(&args, "debug-info", true);
+        let fuzz = get_bool_arg(&args, "fuzz", false);
+        let src_dir = args.remove("--src-dir").map(leak_str).unwrap_or("src");
+        let build_dir: &'static str = args.remove("--build-dir").map(leak_str).unwrap_or("build");
+
+        if !args.is_empty() {
+            eprintln!("Found unexpected flags: ");
+            for arg in args.keys() {
+                eprintln!("--{}", arg);
+            }
+            panic!("It is not allowed to pass unexpected flags, aborting build...");
+        }
+
+        let current_path = std::env::current_dir().unwrap();
+        let src_path = make_path_absolute(&current_path, Path::new(src_dir)).leak();
+        let build_path = make_path_absolute(&current_path, Path::new(build_dir)).leak();
+
+        let flag_cfg = FlagCfg {
+            opt_level: opt_level.to_owned(),
+            dev_mode,
+            debug_info,
+            fuzz,
+        };
+        let cxxflags = make_cxxflags(&flag_cfg).leak();
+        let ldflags = make_ldflags(&flag_cfg).leak();
+
+        Config {
+            cxx: cxx.to_owned().leak(),
+            ar: ar.to_owned().leak(),
+            clang_scan_deps: clang_scan_deps.to_owned().leak(),
+            build_path,
+            src_path,
+            cxxflags,
+            ldflags,
+        }
+    }
 }

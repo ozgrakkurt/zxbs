@@ -38,7 +38,7 @@ impl PrecompileToPcm {
             Err(e) => {
                 panic!(
                     "Failed to run command. Command:\n\t{}\nError = {:?}\n",
-                    self.print(path_interner),
+                    self.print(),
                     e,
                 );
             }
@@ -48,7 +48,7 @@ impl PrecompileToPcm {
             let stderr = String::from_utf8_lossy(output.stderr);
             panic!(
                 "Precompile to .pcm Failed. Command:\n\t{}\nStatus: {}\nStdErr:\n{}\n",
-                self.print(path_interner),
+                self.print(),
                 output.status,
                 stderr,
             );
@@ -138,7 +138,7 @@ impl ArchiveLib {
         out
     }
 
-    pub async fn run(&self, path_interner: &PathInterner) -> StdOut {
+    pub async fn run(&self) -> StdOut {
         let output = match smol::process::Command::new(self.ar)
             .arg("crs")
             .arg(self.output)
