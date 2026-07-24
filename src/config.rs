@@ -63,6 +63,7 @@ struct FlagCfg {
     dev_mode: bool,
     debug_info: bool,
     fuzz: bool,
+    build_path: &'static Path,
 }
 
 fn make_cxxflags(cfg: &FlagCfg) -> Vec<&'static str> {
@@ -124,6 +125,14 @@ fn make_cxxflags(cfg: &FlagCfg) -> Vec<&'static str> {
     ];
 
     cxxflags.push(format!("-O{}", cfg.opt_level).leak());
+
+    cxxflags.push(
+        format!(
+            "-fprebuilt-module-path={}",
+            cfg.build_path.join("mod").display()
+        )
+        .leak(),
+    );
 
     if cfg.debug_info {
         cxxflags.push("-g1");
@@ -228,9 +237,9 @@ impl Config {
             .map(leak_str)
             .unwrap_or("clang-scan-deps");
         let opt_level = args.remove("--opt-level").map(leak_str).unwrap_or("2");
-        let dev_mode = get_bool_arg(&args, "dev-mode", true);
-        let debug_info = get_bool_arg(&args, "debug-info", true);
-        let fuzz = get_bool_arg(&args, "fuzz", false);
+        let dev_mode = get_bool_arg(&mut args, "dev-mode", true);
+        let debug_info = get_bool_arg(&mut args, "debug-info", true);
+        let fuzz = get_bool_arg(&mut args, "fuzz", false);
         let src_dir = args.remove("--src-dir").map(leak_str).unwrap_or("src");
         let build_dir: &'static str = args.remove("--build-dir").map(leak_str).unwrap_or("build");
 
@@ -251,6 +260,7 @@ impl Config {
             dev_mode,
             debug_info,
             fuzz,
+            build_path,
         };
         let cxxflags = make_cxxflags(&flag_cfg).leak();
         let ldflags = make_ldflags(&flag_cfg).leak();

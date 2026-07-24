@@ -1,9 +1,6 @@
-pub type StdOut = String;
-
 pub struct PrecompileToPcm {
     pub cxx: &'static str,
     pub cxxflags: &'static [&'static str],
-    pub prebuilt_module_path_flag: &'static str,
     pub input: &'static str,
     pub output: &'static str,
 }
@@ -16,19 +13,18 @@ impl PrecompileToPcm {
 
         out.push_str(self.input);
 
-        out.push_str(b" --precompile <prebuilt_module_path_flag> -o ");
+        out.push_str(" --precompile -o ");
 
         out.push_str(self.output);
 
         out
     }
 
-    pub async fn run(&self) -> StdOut {
+    pub async fn run(&self) {
         let output = match smol::process::Command::new(self.cxx)
             .args(self.cxxflags)
             .arg(self.input)
             .arg("--precompile")
-            .arg(self.prebuilt_module_path_flag)
             .arg("-o")
             .arg(self.output)
             .output()
@@ -45,7 +41,7 @@ impl PrecompileToPcm {
         };
 
         if !output.status.success() {
-            let stderr = String::from_utf8_lossy(output.stderr);
+            let stderr = String::from_utf8(output.stderr).unwrap();
             panic!(
                 "Precompile to .pcm Failed. Command:\n\t{}\nStatus: {}\nStdErr:\n{}\n",
                 self.print(),
@@ -54,14 +50,16 @@ impl PrecompileToPcm {
             );
         }
 
-        String::from_utf8_lossy(output.stdout)
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        if !stdout.trim().is_empty() {
+            eprintln!("STDOUT of {}:\n{}", self.print(), stdout.as_str());
+        }
     }
 }
 
 pub struct CompileToObject {
     pub cxx: &'static str,
     pub cxxflags: &'static [&'static str],
-    pub prebuilt_module_path_flag: &'static str,
     pub input: &'static str,
     pub output: &'static str,
 }
@@ -74,18 +72,17 @@ impl CompileToObject {
 
         out.push_str(self.input);
 
-        out.push_str(" <prebuilt_module_path_flag> -c -o ");
+        out.push_str(" -c -o ");
 
         out.push_str(self.output);
 
         out
     }
 
-    pub async fn run(&self) -> StdOut {
+    pub async fn run(&self) {
         let output = match smol::process::Command::new(self.cxx)
             .args(self.cxxflags)
             .arg(self.input)
-            .arg(self.prebuilt_module_path_flag)
             .arg("-c")
             .arg("-o")
             .arg(self.output)
@@ -103,7 +100,7 @@ impl CompileToObject {
         };
 
         if !output.status.success() {
-            let stderr = String::from_utf8_lossy(output.stderr);
+            let stderr = String::from_utf8(output.stderr).unwrap();
             panic!(
                 "Compile to .o Failed. Command:\n\t{}\nStatus: {}\nStdErr:\n{}\n",
                 self.print(),
@@ -112,7 +109,10 @@ impl CompileToObject {
             );
         }
 
-        String::from_utf8_lossy(output.stdout)
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        if !stdout.trim().is_empty() {
+            eprintln!("STDOUT of {}:\n{}", self.print(), stdout.as_str());
+        }
     }
 }
 
@@ -138,7 +138,7 @@ impl ArchiveLib {
         out
     }
 
-    pub async fn run(&self) -> StdOut {
+    pub async fn run(&self) {
         let output = match smol::process::Command::new(self.ar)
             .arg("crs")
             .arg(self.output)
@@ -157,7 +157,7 @@ impl ArchiveLib {
         };
 
         if !output.status.success() {
-            let stderr = String::from_utf8_lossy(output.stderr);
+            let stderr = String::from_utf8(output.stderr).unwrap();
             panic!(
                 "Archiving a library failed. Command:\n\t{}\nStatus: {}\nStdErr:\n{}\n",
                 self.print(),
@@ -166,7 +166,10 @@ impl ArchiveLib {
             );
         }
 
-        String::from_utf8_lossy(output.stdout)
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        if !stdout.trim().is_empty() {
+            eprintln!("STDOUT of {}:\n{}", self.print(), stdout.as_str());
+        }
     }
 }
 
@@ -175,7 +178,7 @@ pub struct LinkBinary {
     pub ldflags: &'static [&'static str],
     pub output: &'static str,
     pub object: &'static str,
-    pub deps: Vec<&'static str>,
+    pub deps: &'static [&'static str],
 }
 
 impl LinkBinary {
@@ -193,15 +196,17 @@ impl LinkBinary {
             out.push(' ');
             out.push_str(dep);
         }
+
+        out
     }
 
-    pub async fn run(&self) -> StdOut {
+    pub async fn run(&self) {
         let output = match smol::process::Command::new(self.cxx)
             .args(self.ldflags)
             .arg("-o")
             .arg(self.output)
             .arg(self.object)
-            .args(self.deps.as_slice())
+            .args(self.deps)
             .output()
             .await
         {
@@ -216,7 +221,7 @@ impl LinkBinary {
         };
 
         if !output.status.success() {
-            let stderr = String::from_utf8_lossy(output.stderr);
+            let stderr = String::from_utf8(output.stderr).unwrap();
             panic!(
                 "Linking a binary failed. Command:\n\t{}\nStatus: {}\nStdErr:\n{}\n",
                 self.print(),
@@ -225,7 +230,10 @@ impl LinkBinary {
             );
         }
 
-        String::from_utf8_lossy(output.stdout)
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        if !stdout.trim().is_empty() {
+            eprintln!("STDOUT of {}:\n{}", self.print(), stdout.as_str());
+        }
     }
 }
 
@@ -243,7 +251,7 @@ impl RunBinary {
         out
     }
 
-    pub async fn run(&self) -> StdOut {
+    pub async fn run(&self) {
         let output = match smol::process::Command::new(self.path).output().await {
             Ok(out) => out,
             Err(e) => {
@@ -256,7 +264,7 @@ impl RunBinary {
         };
 
         if !output.status.success() {
-            let stderr = String::from_utf8_lossy(output.stderr);
+            let stderr = String::from_utf8(output.stderr).unwrap();
             panic!(
                 "Running a binary failed. Command:\n\t{}\nStatus: {}\nStdErr:\n{}\n",
                 self.print(),
@@ -265,15 +273,18 @@ impl RunBinary {
             );
         }
 
-        String::from_utf8_lossy(output.stdout)
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        if !stdout.trim().is_empty() {
+            eprintln!("STDOUT of {}:\n{}", self.print(), stdout.as_str());
+        }
     }
 }
 
 pub enum Command {
-    PrecompileToPcm(Box<PrecompileToPcm>),
-    CompileToObject(Box<CompileToObject>),
-    ArchiveLib(Box<ArchiveLib>),
-    LinkBinary(Box<LinkBinary>),
+    PrecompileToPcm(PrecompileToPcm),
+    CompileToObject(CompileToObject),
+    ArchiveLib(ArchiveLib),
+    LinkBinary(LinkBinary),
     RunBinary(RunBinary),
 }
 
@@ -288,7 +299,7 @@ impl Command {
         }
     }
 
-    pub async fn run(&self) -> StdOut {
+    pub async fn run(&self) {
         match self {
             Command::PrecompileToPcm(x) => x.run().await,
             Command::CompileToObject(x) => x.run().await,

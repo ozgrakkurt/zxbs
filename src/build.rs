@@ -2,14 +2,10 @@ use std::collections::VecDeque;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
+use smol::future::FutureExt;
+
 use crate::command::Command;
 use crate::interner::{Interner, Str};
-
-pub struct Task {
-    pub inputs: Vec<Str>,
-    pub outputs: Vec<Str>,
-    pub command: Command,
-}
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct TaskIndex(u32);
@@ -24,6 +20,12 @@ impl TaskIndex {
     }
 }
 
+pub struct Task {
+    pub inputs: Vec<Str>,
+    pub outputs: Vec<Str>,
+    pub command: Option<Command>,
+}
+
 pub type Executor = smol::Executor<'static>;
 
 #[must_use = "futures do nothing unless you `.await` or poll them"]
@@ -34,7 +36,7 @@ pub struct Build {
     pub dependencies: Vec<Vec<Str>>,
     pub dependants: Vec<Vec<TaskIndex>>,
     pub tasks: Vec<Task>,
-    pub running: Vec<smol::Task<TaskIndex>>,
+    pub running: Vec<smol::Task<(Command, TaskIndex)>>,
     pub backlog: VecDeque<TaskIndex>,
     pub concurrency: usize,
     pub n_tasks_finished: usize,
@@ -42,7 +44,11 @@ pub struct Build {
 }
 
 impl Build {
-    fn new(executor: &'static Executor, interner: &'static Interner, tasks: Vec<Task>) -> Build {
+    pub fn new(
+        executor: &'static Executor,
+        interner: &'static Interner,
+        tasks: Vec<Task>,
+    ) -> Build {
         let mut dependencies = Vec::with_capacity(tasks.len());
 
         let mut dependants = Vec::with_capacity(tasks.len());
@@ -51,17 +57,17 @@ impl Build {
 
         for (idx, task) in tasks.iter().enumerate() {
             let task_idx = TaskIndex::from_usize(idx);
-            dependencies.push(task.input_indices.to_vec());
-            for input_idx in task.input_indices.iter() {
+            dependencies.push(task.inputs.to_vec());
+            for input_idx in task.inputs.iter() {
                 dependants.resize(input_idx.to_usize() + 1, Vec::new());
                 dependants[input_idx.to_usize()].push(task_idx);
             }
 
-            for output_idx in task.output_indices.iter() {
+            for output_idx in task.outputs.iter() {
                 dependants.resize(output_idx.to_usize() + 1, Vec::new());
             }
 
-            if task.input_indices.is_empty() {
+            if task.inputs.is_empty() {
                 backlog.push_back(task_idx);
             }
         }
@@ -81,21 +87,21 @@ impl Build {
         }
     }
 
-    fn process_task_finished(&mut self, task_idx: TaskIndex) {
+    fn process_task_finished(&mut self, (cmd, task_idx): (Command, TaskIndex)) {
         let task = &self.tasks[task_idx.to_usize()];
         self.n_tasks_finished += 1;
-        for out_idx in task.output_indices.iter() {
+        for &out_idx in task.outputs.iter() {
             assert!(
                 !self.is_built[out_idx.to_usize()],
                 "The output {} was built for the second time by command: {}",
                 self.interner.get(out_idx),
-                task.command.print()
+                cmd.print()
             );
             self.is_built[out_idx.to_usize()] = true;
 
             for &dependant_idx in self.dependants[out_idx.to_usize()].iter() {
                 let deps: &mut Vec<Str> = &mut self.dependencies[dependant_idx.to_usize()];
-                let pos = deps.iter().position(|idx| idx.0 == out_idx.0).unwrap();
+                let pos = deps.iter().position(|&idx| idx == out_idx).unwrap();
                 deps.swap_remove(pos);
 
                 if deps.is_empty() {
@@ -118,8 +124,8 @@ impl Future for Build {
         while idx < fut.running.len() {
             let job = &mut fut.running[idx];
             match job.poll(cx) {
-                Poll::Ready(task_idx) => {
-                    fut.process_task_finished(task_idx);
+                Poll::Ready(res) => {
+                    fut.process_task_finished(res);
                     std::mem::drop(fut.running.swap_remove(idx));
                 }
                 Poll::Pending => {
@@ -135,11 +141,14 @@ impl Future for Build {
             };
 
             let command = fut.tasks[task_idx.to_usize()].command.take().unwrap();
-            let mut handle = fut.executor.spawn(command);
+            let mut handle = fut.executor.spawn(async move {
+                command.run().await;
+                (command, task_idx)
+            });
 
             match handle.poll(cx) {
-                Poll::Ready(task_idx) => {
-                    fut.process_task_finished(task_idx);
+                Poll::Ready(res) => {
+                    fut.process_task_finished(res);
                 }
                 Poll::Pending => {
                     fut.running.push(handle);

@@ -14,7 +14,7 @@ impl Str {
 }
 
 pub struct Interner {
-    map: HashMap<&'static str, u32>,
+    map: HashMap<&'static str, Str>,
     list: Vec<&'static str>,
 }
 
@@ -32,7 +32,7 @@ impl Interner {
             None => {
                 let item: &'static str = item.to_owned().leak();
                 let out = Str::from_usize(self.list.len());
-                self.list.push(out);
+                self.list.push(item);
                 self.map.insert(item, out);
                 out
             }

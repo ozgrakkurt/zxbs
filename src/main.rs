@@ -11,9 +11,9 @@ async fn run(executor: &'static Executor) {
     let interner: &'static mut interner::Interner = Box::leak(Box::new(interner::Interner::new()));
     let info = scan::scan(&config, interner).await;
 
-    let tasks = plan::plan(&config, &mut interner, &info);
+    let tasks = plan::plan(&config, interner, &info);
 
-    let build = Build::new(executor, tasks);
+    let build = build::Build::new(executor, interner, tasks);
 
     build.await;
 }

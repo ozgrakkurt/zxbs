@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+use smol::stream::StreamExt;
+
 use crate::config::Config;
 use crate::interner::{Interner, Str};
 
@@ -52,7 +54,7 @@ async fn scan_deps(config: &Config, path: &Path) -> Vec<String> {
     cmd.arg("-format=p1689")
         .arg("--")
         .arg(config.cxx)
-        .args(config.cflags)
+        .args(config.cxxflags)
         .arg("-c")
         .arg(path);
     let output = match cmd.output().await {
@@ -73,7 +75,7 @@ async fn scan_deps(config: &Config, path: &Path) -> Vec<String> {
         );
     }
 
-    parse_p1689(output.stdout)
+    parse_p1689(output.stdout.as_slice())
 }
 
 pub fn parse_deps_file(interner: &mut Interner, contents: &str) -> Vec<Str> {
@@ -82,26 +84,32 @@ pub fn parse_deps_file(interner: &mut Interner, contents: &str) -> Vec<Str> {
         let line = line.trim();
         if !line.is_empty() {
             check_name(line);
-            indx.push(interner.insert_name(line));
+            indx.push(interner.insert(line));
         }
     }
     indx
 }
 
 async fn read_deps_file(interner: &mut Interner, path: &Path) -> Vec<Str> {
-    let contents = String::from_utf8(
-        smol::fs::read(path)
-            .await
-            .expect(format!("failed to read deps file at: {}", path.display())),
-    )
+    let contents = String::from_utf8(smol::fs::read(path).await.unwrap_or_else(|e| {
+        panic!(
+            "failed to read deps file at: {}. Error={}",
+            path.display(),
+            e
+        )
+    }))
     .unwrap();
-    parse_deps_file(contents.as_slice)
+    parse_deps_file(interner, contents.as_str())
 }
 
-fn check_name(name: &str) {
-    let name = name.as_bytes();
-    assert!(!name.is_empty(), "invalid name: {}", name);
-    assert!(name[0] >= b'a' && name[0] <= b'z', "invalid name: {}", name);
+fn check_name(name_str: &str) {
+    let name = name_str.as_bytes();
+    assert!(!name.is_empty(), "invalid name: {}", name_str);
+    assert!(
+        name[0] >= b'a' && name[0] <= b'z',
+        "invalid name: {}",
+        name_str
+    );
     for &byte in name {
         let is_char = byte >= b'a' && byte <= b'z';
         let is_digit = byte.is_ascii_digit();
@@ -109,7 +117,7 @@ fn check_name(name: &str) {
         assert!(
             is_char || is_digit || is_underscore,
             "invalid name: {}",
-            name
+            name_str,
         );
     }
 }
@@ -155,7 +163,7 @@ async fn scan_subfolder(
     while let Some(file) = dir.next().await {
         let file = file.unwrap();
         let name = parse_file_name(
-            file.path(),
+            &file.path(),
             expected_extension,
             file.file_name().to_str().unwrap(),
         )
@@ -195,7 +203,7 @@ pub async fn scan(config: &Config, interner: &mut Interner) -> BuildInfo {
         assert!(
             mod_parts.contains(&entry_name),
             "root module of entry {} not found",
-            entry_name
+            interner.get(entry_name),
         );
 
         let mod_path = path.join("mod");
@@ -204,7 +212,7 @@ pub async fn scan(config: &Config, interner: &mut Interner) -> BuildInfo {
         for (part_pos, &part_name) in mod_parts.iter().enumerate() {
             let mod_dep_names = scan_deps(
                 config,
-                &mod_path.join(format!("{}.cppm", interner.get_name(part_name))),
+                &mod_path.join(format!("{}.cppm", interner.get(part_name))),
             )
             .await;
             for mod_dep_name in mod_dep_names.iter() {
@@ -213,43 +221,54 @@ pub async fn scan(config: &Config, interner: &mut Interner) -> BuildInfo {
                     assert_eq!(parts.len(), 2);
                     check_name(parts[0]);
                     check_name(parts[1]);
-                    let part0 = interner.insert_name(parts[0]);
-                    let part1 = interner.insert_name(parts[1]);
+                    let part0 = interner.insert(parts[0]);
+                    let part1 = interner.insert(parts[1]);
 
                     assert_eq!(
-                        part0, entry_name,
+                        part0,
+                        entry_name,
                         "part of entry {} doesn't define a module under it. It instead defines under {}",
-                        entry_name, part0
+                        interner.get(entry_name),
+                        interner.get(part0),
                     );
                     assert_ne!(
-                        part1, part_name,
+                        part1,
+                        part_name,
                         "part {} of entry {} doesn't define expected module {}:{}",
-                        part_name, entry_name, entry_name, part_name
+                        interner.get(part_name),
+                        interner.get(entry_name),
+                        interner.get(entry_name),
+                        interner.get(part_name),
                     );
 
                     let dep_pos = mod_parts
                         .iter()
                         .position(|nidx| *nidx == part1)
-                        .expect(format!(
-                            "dependency with name {} of part with name {} not found in entry with name {}",
-                            mod_dep_name, part_name, entry_name,
-                        ));
+                        .unwrap_or_else(||
+                            panic!(
+                                "dependency with name {} of part with name {} not found in entry with name {}",
+                                mod_dep_name, interner.get(part_name), interner.get(entry_name),
+                            )
+                        );
 
                     mod_dep_matrix[part_pos * n_mod_parts + dep_pos] = true;
                     assert!(
                         !mod_dep_matrix[dep_pos * n_mod_parts + part_pos],
                         "cyclic dependency between {} and {} in entry {}",
-                        part_name,
+                        interner.get(part_name),
                         mod_dep_name,
-                        entry_name
+                        interner.get(entry_name),
                     );
                 } else {
-                    let mod_dep_name = interner.insert_name(mod_dep_name);
-                    let is_direct_dep = deps.contains(&mod_dep_name);
+                    let mod_dep_name_idx = interner.insert(mod_dep_name);
+                    let is_direct_dep = deps.contains(&mod_dep_name_idx);
                     assert!(
                         is_direct_dep,
                         "Module file {}:{} depends on {} but it isn't listed in the deps file of {}",
-                        entry_name, part_name, mod_dep_name, entry_name
+                        interner.get(entry_name),
+                        interner.get(part_name),
+                        mod_dep_name,
+                        interner.get(entry_name),
                     );
                 }
             }
