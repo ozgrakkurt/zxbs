@@ -1,3 +1,5 @@
+use smol::future::Boxed as BoxedFuture;
+
 pub struct PrecompileToPcm {
     pub cxx: &'static str,
     pub cxxflags: &'static [&'static str],
@@ -286,6 +288,7 @@ pub enum Command {
     ArchiveLib(ArchiveLib),
     LinkBinary(LinkBinary),
     RunBinary(RunBinary),
+    Dyn(BoxedFuture<()>),
 }
 
 impl Command {
@@ -296,16 +299,18 @@ impl Command {
             Command::ArchiveLib(x) => x.print(),
             Command::LinkBinary(x) => x.print(),
             Command::RunBinary(x) => x.print(),
+            Command::Dyn(_) => "<Dyn Command>".to_owned(),
         }
     }
 
-    pub async fn run(&self) {
+    pub async fn run(&mut self) {
         match self {
             Command::PrecompileToPcm(x) => x.run().await,
             Command::CompileToObject(x) => x.run().await,
             Command::ArchiveLib(x) => x.run().await,
             Command::LinkBinary(x) => x.run().await,
             Command::RunBinary(x) => x.run().await,
+            Command::Dyn(x) => x.await,
         }
     }
 }

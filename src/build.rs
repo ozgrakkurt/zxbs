@@ -140,7 +140,7 @@ impl Future for Build {
                 None => break,
             };
 
-            let command = fut.tasks[task_idx.to_usize()].command.take().unwrap();
+            let mut command = fut.tasks[task_idx.to_usize()].command.take().unwrap();
             let mut handle = fut.executor.spawn(async move {
                 command.run().await;
                 (command, task_idx)
