@@ -42,4 +42,8 @@ impl Interner {
     pub fn get(&self, s: Str) -> &'static str {
         self.list[s.to_usize()]
     }
+
+    pub fn len(&self) -> usize {
+        self.list.len()
+    }
 }

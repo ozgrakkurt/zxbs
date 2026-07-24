@@ -236,7 +236,7 @@ impl Config {
             .remove("--clang-scan-deps")
             .map(leak_str)
             .unwrap_or("clang-scan-deps");
-        let opt_level = args.remove("--opt-level").map(leak_str).unwrap_or("2");
+        let opt_level = args.remove("--opt-level").map(leak_str).unwrap_or("0");
         let dev_mode = get_bool_arg(&mut args, "dev-mode", true);
         let debug_info = get_bool_arg(&mut args, "debug-info", true);
         let fuzz = get_bool_arg(&mut args, "fuzz", false);

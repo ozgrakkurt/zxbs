@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
 use std::pin::Pin;
 use std::task::{Context, Poll};
+use std::time::Instant;
 
 use smol::future::FutureExt;
 
@@ -36,11 +37,12 @@ pub struct Build {
     pub dependencies: Vec<Vec<Str>>,
     pub dependants: Vec<Vec<TaskIndex>>,
     pub tasks: Vec<Task>,
-    pub running: Vec<smol::Task<(Command, TaskIndex)>>,
+    pub running: Vec<smol::Task<(Command, TaskIndex, u64)>>,
     pub backlog: VecDeque<TaskIndex>,
     pub concurrency: usize,
     pub n_tasks_finished: usize,
     pub done: bool,
+    pub timings_milliseconds: Vec<u64>,
 }
 
 impl Build {
@@ -51,7 +53,7 @@ impl Build {
     ) -> Build {
         let mut dependencies = Vec::with_capacity(tasks.len());
 
-        let mut dependants = Vec::with_capacity(tasks.len());
+        let mut dependants = vec![Vec::new(); interner.len()];
 
         let mut backlog = VecDeque::new();
 
@@ -59,12 +61,7 @@ impl Build {
             let task_idx = TaskIndex::from_usize(idx);
             dependencies.push(task.inputs.to_vec());
             for input_idx in task.inputs.iter() {
-                dependants.resize(input_idx.to_usize() + 1, Vec::new());
                 dependants[input_idx.to_usize()].push(task_idx);
-            }
-
-            for output_idx in task.outputs.iter() {
-                dependants.resize(output_idx.to_usize() + 1, Vec::new());
             }
 
             if task.inputs.is_empty() {
@@ -72,10 +69,17 @@ impl Build {
             }
         }
 
+        if !tasks.is_empty() && backlog.is_empty() {
+            panic!(
+                "Couldn't find a starting task. All tasks have dependencies so there is no task to build at the start. Impossible to make progress."
+            );
+        }
+
         Build {
+            timings_milliseconds: vec![0; tasks.len()],
             executor,
             interner,
-            is_built: vec![false; tasks.len()],
+            is_built: vec![false; interner.len()],
             dependencies,
             dependants,
             tasks,
@@ -87,9 +91,13 @@ impl Build {
         }
     }
 
-    fn process_task_finished(&mut self, (cmd, task_idx): (Command, TaskIndex)) {
+    fn process_task_finished(&mut self, (cmd, task_idx, timing_millis): (Command, TaskIndex, u64)) {
         let task = &self.tasks[task_idx.to_usize()];
         self.n_tasks_finished += 1;
+        self.timings_milliseconds[task_idx.to_usize()] = timing_millis;
+
+        eprintln!("{}: {}ms", cmd.print(), timing_millis);
+        
         for &out_idx in task.outputs.iter() {
             assert!(
                 !self.is_built[out_idx.to_usize()],
@@ -142,8 +150,13 @@ impl Future for Build {
 
             let mut command = fut.tasks[task_idx.to_usize()].command.take().unwrap();
             let mut handle = fut.executor.spawn(async move {
+                let t0 = Instant::now();
                 command.run().await;
-                (command, task_idx)
+                (
+                    command,
+                    task_idx,
+                    u64::try_from(t0.elapsed().as_millis()).unwrap(),
+                )
             });
 
             match handle.poll(cx) {
@@ -159,6 +172,10 @@ impl Future for Build {
         if fut.running.is_empty() && fut.backlog.is_empty() {
             fut.done = true;
             assert_eq!(fut.n_tasks_finished, fut.tasks.len());
+
+            let total_ms: u64 = fut.timings_milliseconds.iter().sum();
+            eprintln!("total task time: {}ms", total_ms);
+
             Poll::Ready(())
         } else {
             Poll::Pending
