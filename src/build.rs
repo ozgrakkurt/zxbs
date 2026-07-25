@@ -3,8 +3,6 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Instant;
 
-use smol::future::FutureExt;
-
 use crate::command::Command;
 use crate::interner::{Interner, Str};
 
@@ -27,17 +25,16 @@ pub struct Task {
     pub command: Option<Command>,
 }
 
-pub type Executor = smol::Executor<'static>;
+type Handle = Pin<Box<tokio::task::JoinHandle<(Command, TaskIndex, u64)>>>;
 
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct Build {
-    pub executor: &'static Executor,
     pub interner: &'static Interner,
     pub is_built: Vec<bool>,
     pub dependencies: Vec<Vec<Str>>,
     pub dependants: Vec<Vec<TaskIndex>>,
     pub tasks: Vec<Task>,
-    pub running: Vec<smol::Task<(Command, TaskIndex, u64)>>,
+    pub running: Vec<Handle>,
     pub backlog: VecDeque<TaskIndex>,
     pub concurrency: usize,
     pub n_tasks_finished: usize,
@@ -46,11 +43,7 @@ pub struct Build {
 }
 
 impl Build {
-    pub fn new(
-        executor: &'static Executor,
-        interner: &'static Interner,
-        tasks: Vec<Task>,
-    ) -> Build {
+    pub fn new(interner: &'static Interner, tasks: Vec<Task>) -> Build {
         let mut dependencies = Vec::with_capacity(tasks.len());
 
         let mut dependants = vec![Vec::new(); interner.len()];
@@ -77,7 +70,6 @@ impl Build {
 
         Build {
             timings_milliseconds: vec![0; tasks.len()],
-            executor,
             interner,
             is_built: vec![false; interner.len()],
             dependencies,
@@ -97,13 +89,13 @@ impl Build {
         self.timings_milliseconds[task_idx.to_usize()] = timing_millis;
 
         eprintln!("{}: {}ms", cmd.print(), timing_millis);
-        
+
         for &out_idx in task.outputs.iter() {
             assert!(
                 !self.is_built[out_idx.to_usize()],
                 "The output {} was built for the second time by command: {}",
                 self.interner.get(out_idx),
-                cmd.print()
+                cmd.print(),
             );
             self.is_built[out_idx.to_usize()] = true;
 
@@ -131,9 +123,9 @@ impl Future for Build {
         let mut idx = 0;
         while idx < fut.running.len() {
             let job = &mut fut.running[idx];
-            match job.poll(cx) {
+            match job.as_mut().poll(cx) {
                 Poll::Ready(res) => {
-                    fut.process_task_finished(res);
+                    fut.process_task_finished(res.unwrap());
                     std::mem::drop(fut.running.swap_remove(idx));
                 }
                 Poll::Pending => {
@@ -149,7 +141,7 @@ impl Future for Build {
             };
 
             let mut command = fut.tasks[task_idx.to_usize()].command.take().unwrap();
-            let mut handle = fut.executor.spawn(async move {
+            let mut handle = Box::pin(tokio::task::spawn(async move {
                 let t0 = Instant::now();
                 command.run().await;
                 (
@@ -157,11 +149,11 @@ impl Future for Build {
                     task_idx,
                     u64::try_from(t0.elapsed().as_millis()).unwrap(),
                 )
-            });
+            }));
 
-            match handle.poll(cx) {
+            match handle.as_mut().poll(cx) {
                 Poll::Ready(res) => {
-                    fut.process_task_finished(res);
+                    fut.process_task_finished(res.unwrap());
                 }
                 Poll::Pending => {
                     fut.running.push(handle);

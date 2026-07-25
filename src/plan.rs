@@ -1,9 +1,7 @@
 use std::collections::HashSet;
 
 use crate::build::Task;
-use crate::command::{
-    ArchiveLib, Command, CompileToObject, LinkBinary, PrecompileToPcm, RunBinary,
-};
+use crate::command::{ArchiveLib, Command, CompileModule, CompileToObject, LinkBinary, RunBinary};
 use crate::config::Config;
 use crate::interner::{Interner, Str};
 use crate::scan::BuildInfo;
@@ -72,7 +70,7 @@ fn plan_module_build(
             input_indices.push(local_pcm_paths[index]);
         }
 
-        let output_indices = vec![local_pcm_paths[part_idx]];
+        let output_indices = vec![local_pcm_paths[part_idx], local_object_paths[part_idx]];
 
         let cppm_path = mod_src_path.join(format!("{}.cppm", interner.get(part)));
         let cppm_path = interner.insert(cppm_path.to_str().unwrap());
@@ -81,25 +79,12 @@ fn plan_module_build(
         tasks.push(Task {
             inputs: input_indices,
             outputs: output_indices,
-            command: Some(Command::PrecompileToPcm(PrecompileToPcm {
+            command: Some(Command::CompileModule(CompileModule {
                 cxx: config.cxx,
                 cxxflags: config.cxxflags,
                 input: cppm_path,
-                output: interner.get(local_pcm_paths[part_idx]),
-            })),
-        });
-
-        let input_indices = vec![local_pcm_paths[part_idx]];
-        let output_indices = vec![local_object_paths[part_idx]];
-
-        tasks.push(Task {
-            inputs: input_indices,
-            outputs: output_indices,
-            command: Some(Command::CompileToObject(CompileToObject {
-                cxx: config.cxx,
-                cxxflags: config.cxxflags,
-                input: interner.get(local_pcm_paths[part_idx]),
-                output: interner.get(local_object_paths[part_idx]),
+                object_output: interner.get(local_object_paths[part_idx]),
+                pcm_output: interner.get(local_pcm_paths[part_idx]),
             })),
         });
     }

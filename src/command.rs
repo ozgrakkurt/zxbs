@@ -1,13 +1,16 @@
-use smol::future::Boxed as BoxedFuture;
+use futures::future::FutureObj;
 
-pub struct PrecompileToPcm {
+type BoxedFuture<T> = FutureObj<'static, T>;
+
+pub struct CompileModule {
     pub cxx: &'static str,
     pub cxxflags: &'static [&'static str],
     pub input: &'static str,
-    pub output: &'static str,
+    pub object_output: &'static str,
+    pub pcm_output: &'static str,
 }
 
-impl PrecompileToPcm {
+impl CompileModule {
     pub fn print(&self) -> String {
         let mut out = String::with_capacity(1024);
 
@@ -15,20 +18,25 @@ impl PrecompileToPcm {
 
         out.push_str(self.input);
 
-        out.push_str(" --precompile -o ");
+        out.push_str(" -fmodule-output=");
 
-        out.push_str(self.output);
+        out.push_str(self.pcm_output);
+
+        out.push_str(" -c -o ");
+
+        out.push_str(self.object_output);
 
         out
     }
 
     pub async fn run(&self) {
-        let output = match smol::process::Command::new(self.cxx)
+        let output = match tokio::process::Command::new(self.cxx)
             .args(self.cxxflags)
             .arg(self.input)
-            .arg("--precompile")
+            .arg(format!("-fmodule-output={}", self.pcm_output))
+            .arg("-c")
             .arg("-o")
-            .arg(self.output)
+            .arg(self.object_output)
             .output()
             .await
         {
@@ -45,7 +53,7 @@ impl PrecompileToPcm {
         if !output.status.success() {
             let stderr = String::from_utf8(output.stderr).unwrap();
             panic!(
-                "Precompile to .pcm Failed. Command:\n\t{}\nStatus: {}\nStdErr:\n{}\n",
+                "Compile module (.cppm) Failed. Command:\n\t{}\nStatus: {}\nStdErr:\n{}\n",
                 self.print(),
                 output.status,
                 stderr,
@@ -82,7 +90,7 @@ impl CompileToObject {
     }
 
     pub async fn run(&self) {
-        let output = match smol::process::Command::new(self.cxx)
+        let output = match tokio::process::Command::new(self.cxx)
             .args(self.cxxflags)
             .arg(self.input)
             .arg("-c")
@@ -141,7 +149,7 @@ impl ArchiveLib {
     }
 
     pub async fn run(&self) {
-        let output = match smol::process::Command::new(self.ar)
+        let output = match tokio::process::Command::new(self.ar)
             .arg("crs")
             .arg(self.output)
             .args(self.inputs.as_slice())
@@ -203,7 +211,7 @@ impl LinkBinary {
     }
 
     pub async fn run(&self) {
-        let output = match smol::process::Command::new(self.cxx)
+        let output = match tokio::process::Command::new(self.cxx)
             .args(self.ldflags)
             .arg("-o")
             .arg(self.output)
@@ -254,7 +262,7 @@ impl RunBinary {
     }
 
     pub async fn run(&self) {
-        let output = match smol::process::Command::new(self.path).output().await {
+        let output = match tokio::process::Command::new(self.path).output().await {
             Ok(out) => out,
             Err(e) => {
                 panic!(
@@ -283,7 +291,7 @@ impl RunBinary {
 }
 
 pub enum Command {
-    PrecompileToPcm(PrecompileToPcm),
+    CompileModule(CompileModule),
     CompileToObject(CompileToObject),
     ArchiveLib(ArchiveLib),
     LinkBinary(LinkBinary),
@@ -294,7 +302,7 @@ pub enum Command {
 impl Command {
     pub fn print(&self) -> String {
         match self {
-            Command::PrecompileToPcm(x) => x.print(),
+            Command::CompileModule(x) => x.print(),
             Command::CompileToObject(x) => x.print(),
             Command::ArchiveLib(x) => x.print(),
             Command::LinkBinary(x) => x.print(),
@@ -305,7 +313,7 @@ impl Command {
 
     pub async fn run(&mut self) {
         match self {
-            Command::PrecompileToPcm(x) => x.run().await,
+            Command::CompileModule(x) => x.run().await,
             Command::CompileToObject(x) => x.run().await,
             Command::ArchiveLib(x) => x.run().await,
             Command::LinkBinary(x) => x.run().await,

@@ -1,8 +1,6 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use smol::stream::StreamExt;
-
 use crate::config::Config;
 use crate::interner::{Interner, Str};
 
@@ -50,7 +48,7 @@ pub fn parse_p1689(contents: &[u8]) -> Vec<String> {
 }
 
 async fn scan_deps(config: &Config, path: &Path) -> Vec<String> {
-    let mut cmd = smol::process::Command::new(config.clang_scan_deps);
+    let mut cmd = tokio::process::Command::new(config.clang_scan_deps);
     cmd.arg("-format=p1689")
         .arg("--")
         .arg(config.cxx)
@@ -91,7 +89,7 @@ pub fn parse_deps_file(interner: &mut Interner, contents: &str) -> Vec<Str> {
 }
 
 async fn read_deps_file(interner: &mut Interner, path: &Path) -> Vec<Str> {
-    let contents = String::from_utf8(smol::fs::read(path).await.unwrap_or_else(|e| {
+    let contents = String::from_utf8(tokio::fs::read(path).await.unwrap_or_else(|e| {
         panic!(
             "failed to read deps file at: {}. Error={}",
             path.display(),
@@ -158,10 +156,9 @@ async fn scan_subfolder(
     interner: &mut Interner,
     path: &Path,
 ) -> Vec<Str> {
-    let mut dir = smol::fs::read_dir(path).await.unwrap();
+    let mut dir = tokio::fs::read_dir(path).await.unwrap();
     let mut names = Vec::new();
-    while let Some(file) = dir.next().await {
-        let file = file.unwrap();
+    while let Some(file) = dir.next_entry().await.unwrap() {
         let name = parse_file_name(
             &file.path(),
             expected_extension,
@@ -176,13 +173,12 @@ async fn scan_subfolder(
 }
 
 pub async fn scan(config: &Config, interner: &mut Interner) -> BuildInfo {
-    let mut dir = smol::fs::read_dir(config.src_path).await.unwrap();
+    let mut dir = tokio::fs::read_dir(config.src_path).await.unwrap();
 
     let mut info = BuildInfo::default();
 
     let mut entry_idx: u32 = 0;
-    while let Some(entry) = dir.next().await {
-        let entry = entry.unwrap();
+    while let Some(entry) = dir.next_entry().await.unwrap() {
         let path = entry.path();
         let entry_name = entry.file_name();
         let entry_name = entry_name.to_str().unwrap();
