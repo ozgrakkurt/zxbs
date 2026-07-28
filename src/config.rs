@@ -254,7 +254,7 @@ impl Config {
         if !args.is_empty() {
             eprintln!("Found unexpected flags: ");
             for arg in args.keys() {
-                eprintln!("--{}", arg);
+                eprintln!("{}", arg);
             }
             panic!("It is not allowed to pass unexpected flags, aborting build...");
         }

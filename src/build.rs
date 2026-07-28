@@ -96,11 +96,19 @@ impl<'a> Build<'a> {
 
         let kind = self.interner.insert(cmd.kind_str());
 
-        for &out in task.outputs.iter() {
+        if !task.outputs.is_empty() {
+            for &out in task.outputs.iter() {
+                self.tracer.record(tracer::Entry {
+                    timing_ms,
+                    kind,
+                    output: out,
+                });
+            }
+        } else {
             self.tracer.record(tracer::Entry {
                 timing_ms,
                 kind,
-                output: out,
+                output: self.interner.insert(""),
             });
         }
 

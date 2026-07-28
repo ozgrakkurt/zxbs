@@ -42,8 +42,7 @@ impl Tracer {
 
         let mut out = String::with_capacity(1024);
 
-        for i in ((self.data.len() - 1)..0).take(30) {
-            let entry = self.data[i];
+        for entry in self.data.iter().rev().take(30) {
             out.push_str(interner.get(entry.output));
             out.push_str(":\t");
             out.push_str(entry.timing_ms.to_string().as_str());
