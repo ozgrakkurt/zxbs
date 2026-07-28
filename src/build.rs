@@ -5,6 +5,7 @@ use std::time::Instant;
 
 use crate::command::Command;
 use crate::interner::{Interner, Str};
+use crate::tracer;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct TaskIndex(u32);
@@ -28,8 +29,9 @@ pub struct Task {
 type Handle = Pin<Box<tokio::task::JoinHandle<(Command, TaskIndex, u64)>>>;
 
 #[must_use = "futures do nothing unless you `.await` or poll them"]
-pub struct Build {
-    pub interner: &'static Interner,
+pub struct Build<'a> {
+    pub tracer: &'a mut tracer::Tracer,
+    pub interner: &'a mut Interner,
     pub is_built: Vec<bool>,
     pub dependencies: Vec<Vec<Str>>,
     pub dependants: Vec<Vec<TaskIndex>>,
@@ -39,11 +41,14 @@ pub struct Build {
     pub concurrency: usize,
     pub n_tasks_finished: usize,
     pub done: bool,
-    pub timings_milliseconds: Vec<u64>,
 }
 
-impl Build {
-    pub fn new(interner: &'static Interner, tasks: Vec<Task>) -> Build {
+impl<'a> Build<'a> {
+    pub fn new(
+        tracer: &'a mut tracer::Tracer,
+        interner: &'a mut Interner,
+        tasks: Vec<Task>,
+    ) -> Build<'a> {
         let mut dependencies = Vec::with_capacity(tasks.len());
 
         let mut dependants = vec![Vec::new(); interner.len()];
@@ -68,10 +73,12 @@ impl Build {
             );
         }
 
+        let is_built = vec![false; interner.len()];
+
         Build {
-            timings_milliseconds: vec![0; tasks.len()],
+            tracer,
             interner,
-            is_built: vec![false; interner.len()],
+            is_built,
             dependencies,
             dependants,
             tasks,
@@ -83,12 +90,19 @@ impl Build {
         }
     }
 
-    fn process_task_finished(&mut self, (cmd, task_idx, timing_millis): (Command, TaskIndex, u64)) {
+    fn process_task_finished(&mut self, (cmd, task_idx, timing_ms): (Command, TaskIndex, u64)) {
         let task = &self.tasks[task_idx.to_usize()];
         self.n_tasks_finished += 1;
-        self.timings_milliseconds[task_idx.to_usize()] = timing_millis;
 
-        eprintln!("{}: {}ms", cmd.print(), timing_millis);
+        let kind = self.interner.insert(cmd.kind_str());
+
+        for &out in task.outputs.iter() {
+            self.tracer.record(tracer::Entry {
+                timing_ms,
+                kind,
+                output: out,
+            });
+        }
 
         for &out_idx in task.outputs.iter() {
             assert!(
@@ -112,7 +126,7 @@ impl Build {
     }
 }
 
-impl Future for Build {
+impl<'a> Future for Build<'a> {
     type Output = ();
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -164,9 +178,6 @@ impl Future for Build {
         if fut.running.is_empty() && fut.backlog.is_empty() {
             fut.done = true;
             assert_eq!(fut.n_tasks_finished, fut.tasks.len());
-
-            let total_ms: u64 = fut.timings_milliseconds.iter().sum();
-            eprintln!("total task time: {}ms", total_ms);
 
             Poll::Ready(())
         } else {

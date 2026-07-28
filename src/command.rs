@@ -321,4 +321,15 @@ impl Command {
             Command::Dyn(x) => x.await,
         }
     }
+
+    pub fn kind_str(&self) -> &'static str {
+        match self {
+            Command::CompileModule(_) => "CompileModule",
+            Command::CompileToObject(_) => "CompileToObject",
+            Command::ArchiveLib(_) => "ArchiveLib",
+            Command::LinkBinary(_) => "LinkBinary",
+            Command::RunBinary(_) => "RunBinary",
+            Command::Dyn(_) => "Dyn",
+        }
+    }
 }

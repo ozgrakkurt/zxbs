@@ -10,6 +10,7 @@ pub struct Config {
     pub ldflags: &'static [&'static str],
     pub build_path: &'static Path,
     pub src_path: &'static Path,
+    pub time_trace: bool,
 }
 
 fn get_bool_arg(args: &mut HashMap<String, String>, name: &str, default: bool) -> bool {
@@ -281,6 +282,7 @@ impl Config {
             src_path,
             cxxflags,
             ldflags,
+            time_trace,
         }
     }
 }
