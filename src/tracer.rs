@@ -38,8 +38,7 @@ impl Tracer {
             return String::new();
         }
 
-        self.data
-            .sort_unstable_by(|l, r| l.timing_ms.cmp(&r.timing_ms));
+        self.data.sort_unstable_by_key(|l| l.timing_ms);
 
         let mut out = String::with_capacity(1024);
 
@@ -72,7 +71,7 @@ impl Tracer {
 
         let mut by_kind = by_kind.into_iter().collect::<Vec<(Str, u64)>>();
 
-        by_kind.sort_unstable_by(|l, r| l.1.cmp(&r.1));
+        by_kind.sort_unstable_by_key(|l| l.1);
 
         let mut out = String::with_capacity(1024);
 
