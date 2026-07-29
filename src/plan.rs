@@ -227,6 +227,9 @@ fn plan_bin_build(
         let exe_path_index = interner.insert(exe_path.to_str().unwrap());
         let exe_path = interner.get(exe_path_index);
 
+        let test_stamp_path = build_path.join("test_stamp").join(bin_name);
+        let test_stamp_path_index = interner.insert(test_stamp_path.to_str().unwrap());
+
         let input_indices = vec![self_pcm_path_idx];
         let output_indices = vec![obj_path_index];
 
@@ -259,7 +262,7 @@ fn plan_bin_build(
 
         if is_test {
             let input_indices = vec![exe_path_index];
-            let output_indices = Vec::new();
+            let output_indices = vec![test_stamp_path_index];
 
             tasks.push(Task {
                 inputs: input_indices.leak(),
