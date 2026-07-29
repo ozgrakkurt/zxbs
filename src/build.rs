@@ -21,8 +21,8 @@ impl TaskIndex {
 }
 
 pub struct Task {
-    pub inputs: Vec<Str>,
-    pub outputs: Vec<Str>,
+    pub inputs: &'static [Str],
+    pub outputs: &'static [Str],
     pub command: Option<Command>,
 }
 
@@ -96,21 +96,11 @@ impl<'a> Build<'a> {
 
         let kind = self.interner.insert(cmd.kind_str());
 
-        if !task.outputs.is_empty() {
-            for &out in task.outputs.iter() {
-                self.tracer.record(tracer::Entry {
-                    timing_ms,
-                    kind,
-                    output: out,
-                });
-            }
-        } else {
-            self.tracer.record(tracer::Entry {
-                timing_ms,
-                kind,
-                output: self.interner.insert(""),
-            });
-        }
+        self.tracer.record(tracer::Entry {
+            timing_ms,
+            kind,
+            outputs: task.outputs,
+        });
 
         for &out_idx in task.outputs.iter() {
             assert!(

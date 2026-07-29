@@ -5,7 +5,7 @@ use crate::interner::{Interner, Str};
 #[derive(Clone, Copy)]
 pub struct Entry {
     pub timing_ms: u64,
-    pub output: Str,
+    pub outputs: &'static [Str],
     pub kind: Str,
 }
 
@@ -43,8 +43,11 @@ impl Tracer {
         let mut out = String::with_capacity(1024);
 
         for entry in self.data.iter().rev().take(30) {
-            out.push_str(interner.get(entry.output));
-            out.push_str(":\t");
+            for &output in entry.outputs.iter() {
+                out.push('\n');
+                out.push_str(interner.get(output));
+            }
+            out.push_str(": ");
             out.push_str(entry.timing_ms.to_string().as_str());
             out.push_str("ms\n");
         }
