@@ -314,7 +314,7 @@ impl TestCmd {
         }
 
         for &output in self.outputs.iter() {
-            assert!(!finished.insert(output));
+            assert!(finished.insert(output));
         }
     }
 }

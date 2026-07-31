@@ -65,14 +65,16 @@ fuzz_target!(|fuzz_input: &[u8]| {
     let finished: Arc<Mutex<HashSet<Str>>> = Arc::new(Mutex::new(HashSet::new()));
 
     for _ in 0..n_tasks {
-        let n_inputs = match fuzz_input.choose_index((N_PATHS - path_idx).min(5)) {
-            Ok(n_inputs) => n_inputs,
+        let n_paths = match fuzz_input.choose_index((N_PATHS - path_idx).min(10)) {
+            Ok(np) => np,
             Err(_) => return,
         };
-        let n_outputs = match fuzz_input.choose_index((N_PATHS - (path_idx + n_inputs)).min(5)) {
-            Ok(n_out) => n_out,
+
+        let n_inputs = match fuzz_input.choose_index(n_paths) {
+            Ok(ni) => ni,
             Err(_) => return,
         };
+        let n_outputs = n_paths - n_inputs;
 
         let mut outputs = Vec::with_capacity(n_outputs);
         for i in 0..n_outputs {
@@ -88,7 +90,7 @@ fuzz_target!(|fuzz_input: &[u8]| {
             inputs.push(paths[in_idx]);
         }
 
-        path_idx += n_inputs + n_outputs;
+        path_idx += n_outputs;
         tasks.push(make_task(finished.clone(), inputs, outputs));
     }
     assert!(path_idx <= N_PATHS);
