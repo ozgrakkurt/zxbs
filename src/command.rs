@@ -1,6 +1,7 @@
-use futures::future::FutureObj;
+use std::future::Future;
+use std::pin::Pin;
 
-type BoxedFuture<T> = FutureObj<'static, T>;
+type BoxedFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
 
 pub struct CompileModule {
     pub cxx: &'static str,
