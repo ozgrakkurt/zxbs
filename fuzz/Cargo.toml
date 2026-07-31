@@ -10,13 +10,14 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 rand = { version = "0.10.2", features = ["thread_rng"] }
+tokio = { version = "1", features = ["full"] }
 
 [dependencies.zxbs]
 path = ".."
 
 [[bin]]
-name = "fuzz_target_1"
-path = "fuzz_targets/fuzz_target_1.rs"
+name = "fuzz_build"
+path = "fuzz_targets/fuzz_build.rs"
 test = false
 doc = false
 bench = false
