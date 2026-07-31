@@ -21,6 +21,43 @@ fn test_empty() {
     assert!(tasks.is_empty());
 }
 
+fn check_run_bin_task(
+    task: &Task,
+    interner: &mut Interner,
+    build_path: &str,
+    entry_name: &str,
+    bin_name: &str,
+    is_test: bool,
+) {
+    let folder_name = if is_test { "test" } else { "bin" };
+
+    assert_eq!(
+        &task.inputs,
+        &[interner.insert(&format!(
+            "{}/{}/{}/{}",
+            build_path, entry_name, folder_name, bin_name
+        ))]
+    );
+
+    assert_eq!(
+        &task.outputs,
+        &[interner.insert(&format!(
+            "{}/{}/{}/stamp/{}",
+            build_path, entry_name, folder_name, bin_name,
+        ))],
+    );
+
+    match &task.command {
+        Some(Command::RunBinary(rb)) => {
+            assert_eq!(
+                rb.path,
+                format!("{}/{}/{}/{}", build_path, entry_name, folder_name, bin_name)
+            );
+        }
+        _ => unreachable!(),
+    }
+}
+
 fn check_link_bin_task(
     task: &Task,
     interner: &mut Interner,
@@ -42,9 +79,7 @@ fn check_link_bin_task(
             build_path, entry_name, folder_name, bin_name
         )),
     ];
-    let mut expected_deps = vec![
-        interner.get(inputs[0]).to_owned(),
-    ];
+    let mut expected_deps = vec![interner.get(inputs[0]).to_owned()];
     for dn in dep_names.iter() {
         inputs.push(interner.insert(&format!("{}/{}/lib/lib{}.a", build_path, dn, dn)));
         expected_deps.push(format!("{}/{}/lib/lib{}.a", build_path, dn, dn));
@@ -102,7 +137,7 @@ fn check_build_bin_task(
         &task.outputs,
         &[interner.insert(&format!(
             "{}/{}/{}/{}.o",
-            build_path, entry_name, folder_name, bin_name
+            build_path, entry_name, folder_name, bin_name,
         ))],
     );
 
@@ -451,7 +486,78 @@ fn test_simple() {
         true,
         &[],
     );
-    // panic!("@@ {}", tasks[9].command.as_ref().unwrap().print());
+    check_run_bin_task(
+        &tasks[10],
+        &mut interner,
+        &build_path,
+        "base",
+        "memcmp",
+        true,
+    );
+    check_build_bin_task(
+        &tasks[11],
+        &mut interner,
+        &build_path,
+        &src_path,
+        "base",
+        "vec",
+        true,
+    );
+    check_link_bin_task(
+        &tasks[12],
+        &mut interner,
+        &build_path,
+        "base",
+        "vec",
+        true,
+        &[],
+    );
+    check_run_bin_task(&tasks[13], &mut interner, &build_path, "base", "vec", true);
+    check_build_bin_task(
+        &tasks[14],
+        &mut interner,
+        &build_path,
+        &src_path,
+        "base",
+        "arith",
+        true,
+    );
+    check_link_bin_task(
+        &tasks[15],
+        &mut interner,
+        &build_path,
+        "base",
+        "arith",
+        true,
+        &[],
+    );
+    check_run_bin_task(
+        &tasks[16],
+        &mut interner,
+        &build_path,
+        "base",
+        "arith",
+        true,
+    );
+    check_build_bin_task(
+        &tasks[17],
+        &mut interner,
+        &build_path,
+        &src_path,
+        "base",
+        "memcpy_bench",
+        false,
+    );
+    check_link_bin_task(
+        &tasks[18],
+        &mut interner,
+        &build_path,
+        "base",
+        "memcpy_bench",
+        false,
+        &[],
+    );
+    panic!("@@ {}", tasks[19].command.as_ref().unwrap().print());
 
     assert_eq!(tasks.len(), 39);
 
