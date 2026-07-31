@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct Config {
     pub cxx: &'static str,
     pub ar: &'static str,
@@ -211,7 +211,7 @@ fn leak_str(s: String) -> &'static str {
 }
 
 impl Config {
-    pub fn parse_args() -> Config {
+    fn load_cli_args() -> HashMap<String, String> {
         let mut args = HashMap::<String, String>::new();
 
         for arg in std::env::args().skip(1) {
@@ -237,6 +237,10 @@ impl Config {
             }
         }
 
+        args
+    }
+
+    pub fn parse_args(mut args: HashMap<String, String>) -> Config {
         let cxx = args.remove("--cxx").map(leak_str).unwrap_or("clang++");
         let ar = args.remove("--ar").map(leak_str).unwrap_or("llvm-ar");
         let clang_scan_deps = args
@@ -284,5 +288,9 @@ impl Config {
             ldflags,
             time_trace,
         }
+    }
+
+    pub fn load_args() -> Config {
+        Self::parse_args(Self::load_cli_args())
     }
 }

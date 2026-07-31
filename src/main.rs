@@ -3,7 +3,7 @@ use std::time::Instant;
 use zxbs::{build, config, interner, plan, scan, tracer};
 
 async fn run() {
-    let config = config::Config::parse_args();
+    let config = config::Config::load_args();
 
     let _ = tokio::fs::remove_dir_all(config.build_path).await;
     tokio::fs::create_dir_all(config.build_path).await.unwrap();
@@ -50,6 +50,8 @@ async fn run() {
 
         eprintln!("build time trace top entries:");
         eprintln!("{}", tracer.print_by_timing(interner));
+    } else {
+        eprintln!("total time: {}ms", start_time.elapsed().as_millis());
     }
 }
 
