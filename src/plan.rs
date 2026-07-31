@@ -77,8 +77,8 @@ fn plan_module_build(
         let cppm_path = interner.get(cppm_path);
 
         tasks.push(Task {
-            inputs: input_indices.leak(),
-            outputs: output_indices.leak(),
+            inputs: input_indices,
+            outputs: output_indices,
             command: Some(Command::CompileModule(CompileModule {
                 cxx: config.cxx,
                 cxxflags: config.cxxflags,
@@ -146,8 +146,8 @@ fn plan_lib_build(
         let output_indices = vec![obj_path_index];
 
         tasks.push(Task {
-            inputs: input_indices.leak(),
-            outputs: output_indices.leak(),
+            inputs: input_indices,
+            outputs: output_indices,
             command: Some(Command::CompileToObject(CompileToObject {
                 cxx: config.cxx,
                 cxxflags: config.cxxflags,
@@ -165,8 +165,8 @@ fn plan_lib_build(
     let output_indices = vec![lib_output_path_idx];
 
     tasks.push(Task {
-        inputs: input_indices.leak(),
-        outputs: output_indices.leak(),
+        inputs: input_indices,
+        outputs: output_indices,
         command: Some(Command::ArchiveLib(ArchiveLib {
             ar: config.ar,
             output: lib_output_path,
@@ -234,8 +234,8 @@ fn plan_bin_build(
         let output_indices = vec![obj_path_index];
 
         tasks.push(Task {
-            inputs: input_indices.leak(),
-            outputs: output_indices.leak(),
+            inputs: input_indices,
+            outputs: output_indices,
             command: Some(Command::CompileToObject(CompileToObject {
                 cxx: config.cxx,
                 cxxflags: config.cxxflags,
@@ -249,8 +249,8 @@ fn plan_bin_build(
         let output_indices = vec![exe_path_index];
 
         tasks.push(Task {
-            inputs: input_indices.leak(),
-            outputs: output_indices.leak(),
+            inputs: input_indices,
+            outputs: output_indices,
             command: Some(Command::LinkBinary(LinkBinary {
                 cxx: config.cxx,
                 ldflags: config.ldflags,
@@ -265,8 +265,8 @@ fn plan_bin_build(
             let output_indices = vec![test_stamp_path_index];
 
             tasks.push(Task {
-                inputs: input_indices.leak(),
-                outputs: output_indices.leak(),
+                inputs: input_indices,
+                outputs: output_indices,
                 command: Some(Command::RunBinary(RunBinary { path: exe_path })),
             });
         }

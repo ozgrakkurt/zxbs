@@ -2,38 +2,27 @@ use std::collections::HashMap;
 
 use crate::interner::{Interner, Str};
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct Entry {
     pub timing_ms: u64,
-    pub outputs: &'static [Str],
+    pub outputs: Vec<Str>,
     pub kind: Str,
 }
 
 pub struct Tracer {
-    enabled: bool,
     data: Vec<Entry>,
 }
 
 impl Tracer {
-    pub fn new(enabled: bool) -> Tracer {
-        Tracer {
-            enabled,
-            data: Vec::new(),
-        }
+    pub fn new() -> Tracer {
+        Tracer { data: Vec::new() }
     }
 
     pub fn record(&mut self, entry: Entry) {
-        if self.enabled {
-            self.data.push(entry);
-        }
+        self.data.push(entry);
     }
 
     pub fn print_by_timing(&mut self, interner: &Interner) -> String {
-        if !self.enabled {
-            assert!(self.data.is_empty());
-            return String::new();
-        }
-
         if self.data.is_empty() {
             return String::new();
         }
@@ -56,11 +45,6 @@ impl Tracer {
     }
 
     pub fn print_by_kind(&mut self, interner: &Interner) -> String {
-        if !self.enabled {
-            assert!(self.data.is_empty());
-            return String::new();
-        }
-
         if self.data.is_empty() {
             return String::new();
         }

@@ -3,18 +3,16 @@ use rand::seq::SliceRandom;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::Mutex;
-use zxbs::{build, command, interner, tracer};
+use zxbs::{build, command, interner};
 
 fn make_task(
     finished: Arc<Mutex<HashSet<Str>>>,
     inputs: Vec<Str>,
     outputs: Vec<Str>,
 ) -> build::Task {
-    let inputs = inputs.leak();
-    let outputs = outputs.leak();
     build::Task {
-        inputs,
-        outputs,
+        inputs: inputs.clone(),
+        outputs: outputs.clone(),
         command: Some(command::Command::TestCmd(command::TestCmd {
             inputs,
             outputs,
@@ -25,9 +23,8 @@ fn make_task(
 
 #[tokio::test]
 async fn empty_run() {
-    let mut tracer = tracer::Tracer::new(false);
     let mut interner = interner::Interner::new();
-    let build = build::Build::new(&mut tracer, &mut interner, Vec::new());
+    let build = build::Build::new(None, &mut interner, Vec::new());
     build.await;
 }
 
@@ -52,8 +49,7 @@ async fn simple_run() {
     let mut rng = rand::rng();
     tasks.shuffle(&mut rng);
 
-    let mut tracer = tracer::Tracer::new(false);
-    let build = build::Build::new(&mut tracer, &mut interner, tasks);
+    let build = build::Build::new(None, &mut interner, tasks);
     build.await;
 
     let finished = finished.lock().unwrap();

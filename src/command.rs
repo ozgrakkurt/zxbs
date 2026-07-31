@@ -293,8 +293,8 @@ impl RunBinary {
 
 pub struct TestCmd {
     pub finished: Arc<Mutex<HashSet<Str>>>,
-    pub inputs: &'static [Str],
-    pub outputs: &'static [Str],
+    pub inputs: Vec<Str>,
+    pub outputs: Vec<Str>,
 }
 
 impl TestCmd {

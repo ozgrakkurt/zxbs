@@ -1,26 +1,42 @@
 #![no_main]
 
-use libfuzzer_sys::fuzz_target;
 use libfuzzer_sys::arbitrary::unstructured::Unstructured;
+use libfuzzer_sys::fuzz_target;
 
-use std::sync::{Mutex, Arc};
+use interner::{Interner, Str};
 use rand::seq::SliceRandom;
 use std::collections::HashSet;
-use zxbs::{build, command, interner, tracer};
-use interner::{Interner, Str};
+use std::sync::OnceLock;
+use std::sync::{Arc, Mutex};
+use zxbs::{build, command, interner};
 
 use rand::SeedableRng as _;
+
+static GLOBAL_PATHS: OnceLock<(Interner, Vec<Str>)> = OnceLock::new();
+
+const N_PATHS: usize = 4096;
+
+fn get_global_paths() -> &'static (Interner, Vec<Str>) {
+    GLOBAL_PATHS.get_or_init(|| {
+        let mut interner = Interner::new();
+        let mut paths = Vec::with_capacity(N_PATHS);
+
+        for i in 0..N_PATHS {
+            paths.push(interner.insert(i.to_string().as_str()));
+        }
+
+        (interner, paths)
+    })
+}
 
 fn make_task(
     finished: Arc<Mutex<HashSet<Str>>>,
     inputs: Vec<Str>,
     outputs: Vec<Str>,
 ) -> build::Task {
-    let inputs = inputs.leak();
-    let outputs = outputs.leak();
     build::Task {
-        inputs,
-        outputs,
+        inputs: inputs.clone(),
+        outputs: outputs.clone(),
         command: Some(command::Command::TestCmd(command::TestCmd {
             inputs,
             outputs,
@@ -30,17 +46,12 @@ fn make_task(
 }
 
 fuzz_target!(|fuzz_input: &[u8]| {
-    const N_PATHS: usize = 4096;
     const MAX_N_TASKS: usize = 1024;
 
+    let (interner, paths) = get_global_paths();
+    let mut interner: Interner = interner.clone();
+
     let mut fuzz_input = Unstructured::new(fuzz_input);
-
-    let mut interner = Interner::new();
-
-    let mut paths = Vec::with_capacity(N_PATHS);
-    for i in 0..N_PATHS {
-        paths.push(interner.insert(i.to_string().as_str()));
-    }
 
     let mut tasks = Vec::with_capacity(MAX_N_TASKS);
 
@@ -58,7 +69,7 @@ fuzz_target!(|fuzz_input: &[u8]| {
             Ok(n_inputs) => n_inputs,
             Err(_) => return,
         };
-        let n_outputs = match fuzz_input.choose_index((N_PATHS - (path_idx+n_inputs)).min(5)) {
+        let n_outputs = match fuzz_input.choose_index((N_PATHS - (path_idx + n_inputs)).min(5)) {
             Ok(n_out) => n_out,
             Err(_) => return,
         };
@@ -90,16 +101,14 @@ fuzz_target!(|fuzz_input: &[u8]| {
 
     tasks.shuffle(&mut rng);
 
-    let mut tracer = tracer::Tracer::new(false);
-    let build = build::Build::new(&mut tracer, &mut interner, tasks);
+    let build = build::Build::new(None, &mut interner, tasks);
 
     let rt = tokio::runtime::Runtime::new().unwrap();
-    
+
     rt.block_on(build);
 
     let finished = finished.lock().unwrap();
-    for i in 0..path_idx {
-        let idx = paths[i];
-        assert!(finished.contains(&idx));
+    for idx in paths.iter().take(path_idx) {
+        assert!(finished.contains(idx));
     }
 });

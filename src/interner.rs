@@ -13,6 +13,7 @@ impl Str {
     }
 }
 
+#[derive(Clone)]
 pub struct Interner {
     map: HashMap<&'static str, Str>,
     list: Vec<&'static str>,

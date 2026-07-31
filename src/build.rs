@@ -21,8 +21,8 @@ impl TaskIndex {
 }
 
 pub struct Task {
-    pub inputs: &'static [Str],
-    pub outputs: &'static [Str],
+    pub inputs: Vec<Str>,
+    pub outputs: Vec<Str>,
     pub command: Option<Command>,
 }
 
@@ -30,7 +30,7 @@ type Handle = Pin<Box<tokio::task::JoinHandle<(Command, TaskIndex, u64)>>>;
 
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct Build<'a> {
-    pub tracer: &'a mut tracer::Tracer,
+    pub tracer: Option<&'a mut tracer::Tracer>,
     pub interner: &'a mut Interner,
     pub is_built: Vec<bool>,
     pub dependencies: Vec<Vec<Str>>,
@@ -45,7 +45,7 @@ pub struct Build<'a> {
 
 impl<'a> Build<'a> {
     pub fn new(
-        tracer: &'a mut tracer::Tracer,
+        tracer: Option<&'a mut tracer::Tracer>,
         interner: &'a mut Interner,
         tasks: Vec<Task>,
     ) -> Build<'a> {
@@ -94,13 +94,15 @@ impl<'a> Build<'a> {
         let task = &self.tasks[task_idx.to_usize()];
         self.n_tasks_finished += 1;
 
-        let kind = self.interner.insert(cmd.kind_str());
+        if let Some(tracer) = self.tracer.as_mut() {
+            let kind = self.interner.insert(cmd.kind_str());
 
-        self.tracer.record(tracer::Entry {
-            timing_ms,
-            kind,
-            outputs: task.outputs,
-        });
+            tracer.record(tracer::Entry {
+                timing_ms,
+                kind,
+                outputs: task.outputs.clone(),
+            });
+        }
 
         for &out_idx in task.outputs.iter() {
             assert!(
