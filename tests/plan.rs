@@ -69,21 +69,20 @@ fn check_link_bin_task(
 ) {
     let folder_name = if is_test { "test" } else { "bin" };
 
-    let mut inputs = vec![
-        interner.insert(&format!(
-            "{}/{}/lib/lib{}.a",
-            build_path, entry_name, entry_name,
-        )),
-        interner.insert(&format!(
-            "{}/{}/{}/{}.o",
-            build_path, entry_name, folder_name, bin_name
-        )),
-    ];
+    let mut inputs = vec![interner.insert(&format!(
+        "{}/{}/lib/lib{}.a",
+        build_path, entry_name, entry_name,
+    ))];
     let mut expected_deps = vec![interner.get(inputs[0]).to_owned()];
     for dn in dep_names.iter() {
         inputs.push(interner.insert(&format!("{}/{}/lib/lib{}.a", build_path, dn, dn)));
         expected_deps.push(format!("{}/{}/lib/lib{}.a", build_path, dn, dn));
     }
+
+    inputs.push(interner.insert(&format!(
+        "{}/{}/{}/{}.o",
+        build_path, entry_name, folder_name, bin_name
+    )));
 
     let expected_deps: Vec<&str> = expected_deps.iter().map(|d| d.as_str()).collect();
 
@@ -253,15 +252,15 @@ fn check_pcm_task(
     ext_deps: &[&str],
 ) {
     let mut expected_inputs = Vec::new();
+    for &extd in ext_deps.iter() {
+        expected_inputs.push(interner.insert(&format!("{}/mod/{}.pcm", build_path, extd)));
+    }
     for &ld in local_deps.iter() {
         expected_inputs.push(interner.insert(&format!(
             "{}/mod/{}",
             build_path,
             make_module_artifact_name(entry_name, ld, "pcm")
         )));
-    }
-    for &extd in ext_deps.iter() {
-        expected_inputs.push(interner.insert(&format!("{}/mod/{}.pcm", build_path, extd)));
     }
     assert_eq!(&task.inputs, &expected_inputs);
 
@@ -385,8 +384,8 @@ fn test_simple() {
 
     info.map.insert(myapp, 2);
     info.name.push(myapp);
-    info.module.push(vec![]);
-    info.mod_dep_matrix.push(vec![]);
+    info.module.push(vec![interner.insert("myapp")]);
+    info.mod_dep_matrix.push(vec![false]);
     info.lib.push(vec![]);
     info.bin.push(vec![myapp]);
     info.test.push(vec![]);
@@ -557,9 +556,184 @@ fn test_simple() {
         false,
         &[],
     );
-    panic!("@@ {}", tasks[19].command.as_ref().unwrap().print());
+    check_pcm_task(
+        &tasks[19],
+        &mut interner,
+        &build_path,
+        &src_path,
+        "io",
+        "io",
+        &["executor", "fs", "net", "base"],
+        &["base"],
+    );
+    check_pcm_task(
+        &tasks[20],
+        &mut interner,
+        &build_path,
+        &src_path,
+        "io",
+        "executor",
+        &[],
+        &["base"],
+    );
+    check_pcm_task(
+        &tasks[21],
+        &mut interner,
+        &build_path,
+        &src_path,
+        "io",
+        "fs",
+        &["executor"],
+        &["base"],
+    );
+    check_pcm_task(
+        &tasks[22],
+        &mut interner,
+        &build_path,
+        &src_path,
+        "io",
+        "net",
+        &["executor"],
+        &["base"],
+    );
+    check_pcm_task(
+        &tasks[23],
+        &mut interner,
+        &build_path,
+        &src_path,
+        "io",
+        "base",
+        &[],
+        &["base"],
+    );
+    check_lib_archive_task(
+        &tasks[24],
+        &mut interner,
+        &build_path,
+        "io",
+        &["io", "executor", "fs", "net", "base"],
+        &[],
+    );
+    check_build_bin_task(
+        &tasks[25],
+        &mut interner,
+        &build_path,
+        &src_path,
+        "io",
+        "executor_ordering",
+        true,
+    );
+    check_link_bin_task(
+        &tasks[26],
+        &mut interner,
+        &build_path,
+        "io",
+        "executor_ordering",
+        true,
+        &["base"],
+    );
+    check_run_bin_task(
+        &tasks[27],
+        &mut interner,
+        &build_path,
+        "io",
+        "executor_ordering",
+        true,
+    );
+    check_build_bin_task(
+        &tasks[28],
+        &mut interner,
+        &build_path,
+        &src_path,
+        "io",
+        "fs",
+        true,
+    );
+    check_link_bin_task(
+        &tasks[29],
+        &mut interner,
+        &build_path,
+        "io",
+        "fs",
+        true,
+        &["base"],
+    );
+    check_run_bin_task(&tasks[30], &mut interner, &build_path, "io", "fs", true);
+    check_build_bin_task(
+        &tasks[31],
+        &mut interner,
+        &build_path,
+        &src_path,
+        "io",
+        "net",
+        true,
+    );
+    check_link_bin_task(
+        &tasks[32],
+        &mut interner,
+        &build_path,
+        "io",
+        "net",
+        true,
+        &["base"],
+    );
+    check_run_bin_task(&tasks[33], &mut interner, &build_path, "io", "net", true);
+    check_build_bin_task(
+        &tasks[34],
+        &mut interner,
+        &build_path,
+        &src_path,
+        "io",
+        "direct_io_example",
+        false,
+    );
+    check_link_bin_task(
+        &tasks[35],
+        &mut interner,
+        &build_path,
+        "io",
+        "direct_io_example",
+        false,
+        &["base"],
+    );
+    check_pcm_task(
+        &tasks[36],
+        &mut interner,
+        &build_path,
+        &src_path,
+        "myapp",
+        "myapp",
+        &[],
+        &["base", "io"],
+    );
+    check_lib_archive_task(
+        &tasks[37],
+        &mut interner,
+        &build_path,
+        "myapp",
+        &["myapp"],
+        &[],
+    );
+    check_build_bin_task(
+        &tasks[38],
+        &mut interner,
+        &build_path,
+        &src_path,
+        "myapp",
+        "myapp",
+        false,
+    );
+    check_link_bin_task(
+        &tasks[39],
+        &mut interner,
+        &build_path,
+        "myapp",
+        "myapp",
+        false,
+        &["io", "base"],
+    );
 
-    assert_eq!(tasks.len(), 39);
+    assert_eq!(tasks.len(), 40);
 
     std::fs::remove_dir_all(format!("/tmp/{}", folder_name)).unwrap();
 }
