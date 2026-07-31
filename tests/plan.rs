@@ -1,9 +1,9 @@
+#![allow(clippy::too_many_arguments)]
+
 use std::collections::HashMap;
 
 use build::Task;
-use command::{
-    ArchiveLib, Command, CompileModule, CompileToObject, LinkBinary, RunBinary, TestCmd,
-};
+use command::Command;
 use interner::Interner;
 use plan::make_module_artifact_name;
 use zxbs::{build, command, config, interner, plan, scan};
@@ -21,11 +21,117 @@ fn test_empty() {
     assert!(tasks.is_empty());
 }
 
-fn check_lib_archive_task(
+fn check_link_bin_task(
+    task: &Task,
+    interner: &mut Interner,
+    build_path: &str,
+    entry_name: &str,
+    bin_name: &str,
+    is_test: bool,
+    dep_names: &[&str],
+) {
+    let folder_name = if is_test { "test" } else { "bin" };
+
+    let mut inputs = vec![
+        interner.insert(&format!(
+            "{}/{}/lib/lib{}.a",
+            build_path, entry_name, entry_name,
+        )),
+        interner.insert(&format!(
+            "{}/{}/{}/{}.o",
+            build_path, entry_name, folder_name, bin_name
+        )),
+    ];
+    let mut expected_deps = vec![
+        interner.get(inputs[0]).to_owned(),
+    ];
+    for dn in dep_names.iter() {
+        inputs.push(interner.insert(&format!("{}/{}/lib/lib{}.a", build_path, dn, dn)));
+        expected_deps.push(format!("{}/{}/lib/lib{}.a", build_path, dn, dn));
+    }
+
+    let expected_deps: Vec<&str> = expected_deps.iter().map(|d| d.as_str()).collect();
+
+    assert_eq!(&task.inputs, &inputs,);
+
+    assert_eq!(
+        &task.outputs,
+        &[interner.insert(&format!(
+            "{}/{}/{}/{}",
+            build_path, entry_name, folder_name, bin_name
+        ))],
+    );
+
+    match &task.command {
+        Some(Command::LinkBinary(lb)) => {
+            assert_eq!(lb.cxx, "clang++");
+            assert_eq!(
+                lb.output,
+                format!("{}/{}/{}/{}", build_path, entry_name, folder_name, bin_name)
+            );
+            assert_eq!(
+                lb.object,
+                format!(
+                    "{}/{}/{}/{}.o",
+                    build_path, entry_name, folder_name, bin_name
+                )
+            );
+            assert_eq!(lb.deps, expected_deps.as_slice());
+        }
+        _ => unreachable!(),
+    }
+}
+
+fn check_build_bin_task(
     task: &Task,
     interner: &mut Interner,
     build_path: &str,
     src_path: &str,
+    entry_name: &str,
+    bin_name: &str,
+    is_test: bool,
+) {
+    let folder_name = if is_test { "test" } else { "bin" };
+
+    assert_eq!(
+        &task.inputs,
+        &[interner.insert(&format!("{}/mod/{}.pcm", build_path, entry_name)),],
+    );
+
+    assert_eq!(
+        &task.outputs,
+        &[interner.insert(&format!(
+            "{}/{}/{}/{}.o",
+            build_path, entry_name, folder_name, bin_name
+        ))],
+    );
+
+    match &task.command {
+        Some(Command::CompileToObject(co)) => {
+            assert_eq!(co.cxx, "clang++");
+            assert_eq!(
+                co.input,
+                format!(
+                    "{}/{}/{}/{}.cc",
+                    src_path, entry_name, folder_name, bin_name
+                ),
+            );
+            assert_eq!(
+                co.output,
+                format!(
+                    "{}/{}/{}/{}.o",
+                    build_path, entry_name, folder_name, bin_name
+                ),
+            );
+        }
+        _ => unreachable!(),
+    }
+}
+
+fn check_lib_archive_task(
+    task: &Task,
+    interner: &mut Interner,
+    build_path: &str,
     entry_name: &str,
     mod_part_names: &[&str],
     lib_part_names: &[&str],
@@ -323,11 +429,29 @@ fn test_simple() {
         &tasks[7],
         &mut interner,
         &build_path,
-        &src_path,
         "base",
         &["base", "vec", "start", "arith", "alloc"],
         &["memcmp", "memcpy"],
     );
+    check_build_bin_task(
+        &tasks[8],
+        &mut interner,
+        &build_path,
+        &src_path,
+        "base",
+        "memcmp",
+        true,
+    );
+    check_link_bin_task(
+        &tasks[9],
+        &mut interner,
+        &build_path,
+        "base",
+        "memcmp",
+        true,
+        &[],
+    );
+    // panic!("@@ {}", tasks[9].command.as_ref().unwrap().print());
 
     assert_eq!(tasks.len(), 39);
 
