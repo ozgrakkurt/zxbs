@@ -1,9 +1,12 @@
 use std::collections::HashMap;
 
+use build::Task;
 use command::{
     ArchiveLib, Command, CompileModule, CompileToObject, LinkBinary, RunBinary, TestCmd,
 };
-use zxbs::{command, config, interner, plan, scan};
+use interner::Interner;
+use plan::make_module_artifact_name;
+use zxbs::{build, command, config, interner, plan, scan};
 
 #[test]
 fn test_empty() {
@@ -16,6 +19,127 @@ fn test_empty() {
     let tasks = plan::plan(&cfg, &mut interner, &info);
 
     assert!(tasks.is_empty());
+}
+
+fn check_lib_archive_task(
+    task: &Task,
+    interner: &mut Interner,
+    build_path: &str,
+    src_path: &str,
+    entry_name: &str,
+    mod_part_names: &[&str],
+    lib_part_names: &[&str],
+) {
+    let mut inputs = Vec::new();
+    for pn in mod_part_names.iter() {
+        inputs.push(interner.insert());
+    }
+
+    assert_eq!(
+        &task.inputs,
+        &[interner.insert()],  
+    );
+}
+
+fn check_lib_obj_task(
+    task: &Task,
+    interner: &mut Interner,
+    build_path: &str,
+    src_path: &str,
+    entry_name: &str,
+    obj_name: &str,
+) {
+    assert_eq!(
+        &task.inputs,
+        &[interner.insert(&format!("{}/mod/{}.pcm", build_path, entry_name,))],
+    );
+
+    assert_eq!(
+        &task.outputs,
+        &[interner.insert(&format!("{}/{}/lib/{}.o", build_path, entry_name, obj_name,))],
+    );
+
+    match &task.command {
+        Some(Command::CompileToObject(co)) => {
+            assert_eq!(co.cxx, "clang++");
+            assert_eq!(
+                co.input,
+                format!("{}/{}/lib/{}.cc", src_path, entry_name, obj_name)
+            );
+            assert_eq!(
+                co.output,
+                format!("{}/{}/lib/{}.o", build_path, entry_name, obj_name),
+            );
+        }
+        _ => unreachable!(),
+    }
+}
+
+fn check_pcm_task(
+    task: &Task,
+    interner: &mut Interner,
+    build_path: &str,
+    src_path: &str,
+    entry_name: &str,
+    part_name: &str,
+    local_deps: &[&str],
+    ext_deps: &[&str],
+) {
+    let mut expected_inputs = Vec::new();
+    for &ld in local_deps.iter() {
+        expected_inputs.push(interner.insert(&format!(
+            "{}/mod/{}",
+            build_path,
+            make_module_artifact_name(entry_name, ld, "pcm")
+        )));
+    }
+    for &extd in ext_deps.iter() {
+        expected_inputs.push(interner.insert(&format!("{}/mod/{}.pcm", build_path, extd)));
+    }
+    assert_eq!(&task.inputs, &expected_inputs);
+
+    assert_eq!(
+        &task.outputs,
+        &[
+            interner.insert(&format!(
+                "{}/mod/{}",
+                build_path,
+                make_module_artifact_name(entry_name, part_name, "pcm")
+            )),
+            interner.insert(&format!(
+                "{}/mod/{}",
+                build_path,
+                make_module_artifact_name(entry_name, part_name, "o")
+            )),
+        ]
+    );
+
+    match &task.command {
+        Some(Command::CompileModule(cm)) => {
+            assert_eq!(cm.cxx, "clang++");
+            assert_eq!(
+                cm.input,
+                format!("{}/{}/mod/{}.cppm", src_path, entry_name, part_name)
+            );
+            assert_eq!(
+                cm.object_output,
+                format!(
+                    "{}/mod/{}",
+                    build_path,
+                    make_module_artifact_name(entry_name, part_name, "o")
+                )
+            );
+            assert_eq!(
+                cm.pcm_output,
+                format!(
+                    "{}/mod/{}",
+                    build_path,
+                    make_module_artifact_name(entry_name, part_name, "pcm")
+                )
+            );
+        }
+        _ => unreachable!(),
+    }
 }
 
 #[test]
@@ -103,15 +227,74 @@ fn test_simple() {
 
     let tasks = plan::plan(&cfg, &mut interner, &info);
 
-    match &tasks[0].command {
-        Some(Command::CompileModule(cm)) => {
-            assert_eq!(cm.cxx, "clang++");
-            assert_eq!(cm.input, format!("{}/base/mod/base.cppm", src_path));
-            assert_eq!(cm.object_output, format!("{}/mod/base.o", build_path));
-            assert_eq!(cm.pcm_output, format!("{}/mod/base.pcm", build_path));
-        }
-        _ => unreachable!(),
-    }
+    check_pcm_task(
+        &tasks[0],
+        &mut interner,
+        &build_path,
+        &src_path,
+        "base",
+        "base",
+        &["vec", "start", "arith", "alloc"],
+        &[],
+    );
+    check_pcm_task(
+        &tasks[1],
+        &mut interner,
+        &build_path,
+        &src_path,
+        "base",
+        "vec",
+        &["arith", "alloc"],
+        &[],
+    );
+    check_pcm_task(
+        &tasks[2],
+        &mut interner,
+        &build_path,
+        &src_path,
+        "base",
+        "start",
+        &[],
+        &[],
+    );
+    check_pcm_task(
+        &tasks[3],
+        &mut interner,
+        &build_path,
+        &src_path,
+        "base",
+        "arith",
+        &["start"],
+        &[],
+    );
+    check_pcm_task(
+        &tasks[4],
+        &mut interner,
+        &build_path,
+        &src_path,
+        "base",
+        "alloc",
+        &["start", "arith"],
+        &[],
+    );
+    check_lib_obj_task(
+        &tasks[5],
+        &mut interner,
+        &build_path,
+        &src_path,
+        "base",
+        "memcmp",
+    );
+    check_lib_obj_task(
+        &tasks[6],
+        &mut interner,
+        &build_path,
+        &src_path,
+        "base",
+        "memcpy",
+    );
+
+    assert_eq!(tasks.len(), 39);
 
     std::fs::remove_dir_all(format!("/tmp/{}", folder_name)).unwrap();
 }

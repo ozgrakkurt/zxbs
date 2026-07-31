@@ -6,7 +6,7 @@ use crate::config::Config;
 use crate::interner::{Interner, Str};
 use crate::scan::BuildInfo;
 
-fn make_module_artifact_name(root_name: &str, part_name: &str, extension: &str) -> String {
+pub fn make_module_artifact_name(root_name: &str, part_name: &str, extension: &str) -> String {
     if root_name == part_name {
         format!("{}.{}", root_name, extension)
     } else {
