@@ -40,26 +40,26 @@ impl BuildInfo {
             entry_info
                 .module
                 .iter()
-                .map(|s| interner.insert(&s))
+                .map(|s| interner.insert(s))
                 .collect(),
         );
         self.mod_dep_matrix.push(entry_info.mod_dep_matrix);
         self.lib
-            .push(entry_info.lib.iter().map(|s| interner.insert(&s)).collect());
+            .push(entry_info.lib.iter().map(|s| interner.insert(s)).collect());
         self.bin
-            .push(entry_info.bin.iter().map(|s| interner.insert(&s)).collect());
+            .push(entry_info.bin.iter().map(|s| interner.insert(s)).collect());
         self.test.push(
             entry_info
                 .test
                 .iter()
-                .map(|s| interner.insert(&s))
+                .map(|s| interner.insert(s))
                 .collect(),
         );
         self.deps.push(
             entry_info
                 .deps
                 .iter()
-                .map(|s| interner.insert(&s))
+                .map(|s| interner.insert(s))
                 .collect(),
         );
     }
@@ -302,7 +302,7 @@ async fn scan_entry(config: &'static Config, path: &Path) -> EntryInfo {
                     entry_name,
                 );
             } else {
-                let is_direct_dep = deps.contains(&mod_dep_name);
+                let is_direct_dep = deps.contains(mod_dep_name);
                 assert!(
                     is_direct_dep,
                     "Module file {}:{} depends on {} but it isn't listed in the deps file of {}",
