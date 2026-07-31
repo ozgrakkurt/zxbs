@@ -3,7 +3,7 @@ use std::time::Instant;
 use zxbs::{build, config, interner, plan, scan, tracer};
 
 async fn run() {
-    let config = config::Config::load_args();
+    let config: &'static config::Config = Box::leak(Box::new(config::Config::load_args()));
 
     let _ = tokio::fs::remove_dir_all(config.build_path).await;
     tokio::fs::create_dir_all(config.build_path).await.unwrap();
@@ -15,14 +15,14 @@ async fn run() {
     let start_time = Instant::now();
 
     let mut t0 = Instant::now();
-    let info = scan::scan(&config, interner).await;
+    let info = scan::scan(config, interner).await;
 
     if config.time_trace {
         eprintln!("scan took {}ms", t0.elapsed().as_millis());
     }
     t0 = Instant::now();
 
-    let tasks = plan::plan(&config, interner, &info);
+    let tasks = plan::plan(config, interner, &info);
     if config.time_trace {
         eprintln!("plan took {}ms", t0.elapsed().as_millis());
     }

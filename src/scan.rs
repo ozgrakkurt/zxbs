@@ -1,8 +1,20 @@
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+use tokio::task::JoinSet;
 
 use crate::config::Config;
 use crate::interner::{Interner, Str};
+
+struct EntryInfo {
+    name: String,
+    module: Vec<String>,
+    mod_dep_matrix: Vec<bool>,
+    lib: Vec<String>,
+    bin: Vec<String>,
+    test: Vec<String>,
+    deps: Vec<String>,
+}
 
 #[derive(Default)]
 pub struct BuildInfo {
@@ -16,6 +28,41 @@ pub struct BuildInfo {
     pub bin: Vec<Vec<Str>>,
     pub test: Vec<Vec<Str>>,
     pub deps: Vec<Vec<Str>>,
+}
+
+impl BuildInfo {
+    fn push_entry_info(&mut self, interner: &mut Interner, entry_info: EntryInfo) {
+        let index = u32::try_from(self.name.len()).unwrap();
+        let name = interner.insert(&entry_info.name);
+        assert!(self.map.insert(name, index).is_none());
+        self.name.push(name);
+        self.module.push(
+            entry_info
+                .module
+                .iter()
+                .map(|s| interner.insert(&s))
+                .collect(),
+        );
+        self.mod_dep_matrix.push(entry_info.mod_dep_matrix);
+        self.lib
+            .push(entry_info.lib.iter().map(|s| interner.insert(&s)).collect());
+        self.bin
+            .push(entry_info.bin.iter().map(|s| interner.insert(&s)).collect());
+        self.test.push(
+            entry_info
+                .test
+                .iter()
+                .map(|s| interner.insert(&s))
+                .collect(),
+        );
+        self.deps.push(
+            entry_info
+                .deps
+                .iter()
+                .map(|s| interner.insert(&s))
+                .collect(),
+        );
+    }
 }
 
 pub fn parse_p1689(contents: &[u8]) -> Vec<String> {
@@ -47,14 +94,14 @@ pub fn parse_p1689(contents: &[u8]) -> Vec<String> {
     deps
 }
 
-async fn scan_deps(config: &Config, path: &Path) -> Vec<String> {
+async fn scan_deps(config: &Config, path: PathBuf) -> Vec<String> {
     let mut cmd = tokio::process::Command::new(config.clang_scan_deps);
     cmd.arg("-format=p1689")
         .arg("--")
         .arg(config.cxx)
         .args(config.cxxflags)
         .arg("-c")
-        .arg(path);
+        .arg(&path);
     let output = match cmd.output().await {
         Ok(out) => out,
         Err(e) => {
@@ -76,20 +123,20 @@ async fn scan_deps(config: &Config, path: &Path) -> Vec<String> {
     parse_p1689(output.stdout.as_slice())
 }
 
-pub fn parse_deps_file(interner: &mut Interner, contents: &str) -> Vec<Str> {
-    let mut indx = Vec::new();
+pub fn parse_deps_file(contents: &str) -> Vec<String> {
+    let mut deps = Vec::new();
     for line in contents.trim().split('\n') {
         let line = line.trim();
         if !line.is_empty() {
             check_name(line);
-            indx.push(interner.insert(line));
+            deps.push(line.to_owned());
         }
     }
-    indx
+    deps
 }
 
-async fn read_deps_file(interner: &mut Interner, path: &Path) -> Vec<Str> {
-    let contents = String::from_utf8(tokio::fs::read(path).await.unwrap_or_else(|e| {
+async fn read_deps_file(path: PathBuf) -> Vec<String> {
+    let contents = String::from_utf8(tokio::fs::read(&path).await.unwrap_or_else(|e| {
         panic!(
             "failed to read deps file at: {}. Error={}",
             path.display(),
@@ -97,7 +144,7 @@ async fn read_deps_file(interner: &mut Interner, path: &Path) -> Vec<Str> {
         )
     }))
     .unwrap();
-    parse_deps_file(interner, contents.as_str())
+    parse_deps_file(contents.as_str())
 }
 
 fn check_name(name_str: &str) {
@@ -151,12 +198,8 @@ pub fn parse_file_name<'name>(
     name
 }
 
-async fn scan_subfolder(
-    expected_extension: &str,
-    interner: &mut Interner,
-    path: &Path,
-) -> Vec<Str> {
-    let mut dir = tokio::fs::read_dir(path).await.unwrap();
+async fn scan_subfolder(expected_extension: &'static str, path: PathBuf) -> Vec<String> {
+    let mut dir = tokio::fs::read_dir(&path).await.unwrap();
     let mut names = Vec::new();
     while let Some(file) = dir.next_entry().await.unwrap() {
         let name = parse_file_name(
@@ -166,124 +209,143 @@ async fn scan_subfolder(
         )
         .to_owned();
         check_name(&name);
-        let name_index = interner.insert(&name);
-        names.push(name_index);
+        names.push(name);
     }
     names
 }
 
-pub async fn scan(config: &Config, interner: &mut Interner) -> BuildInfo {
-    let mut dir = tokio::fs::read_dir(config.src_path).await.unwrap();
+async fn scan_entry(config: &'static Config, path: &Path) -> EntryInfo {
+    let entry_name = path.file_name().unwrap();
+    let entry_name = entry_name.to_str().unwrap().to_owned();
+    check_name(&entry_name);
 
-    let mut info = BuildInfo::default();
+    let deps = tokio::spawn(read_deps_file(path.join("deps")));
 
-    let mut entry_idx: u32 = 0;
-    while let Some(entry) = dir.next_entry().await.unwrap() {
-        let path = entry.path();
-        let entry_name = entry.file_name();
-        let entry_name = entry_name.to_str().unwrap();
-        check_name(entry_name);
-        let entry_name = interner.insert(entry_name);
+    let mod_parts = tokio::spawn(scan_subfolder("cppm", path.join("mod")));
 
-        // name of entries should be unique
-        assert!(info.map.insert(entry_name, entry_idx).is_none());
+    let lib = tokio::task::spawn(scan_subfolder("cc", path.join("lib")));
+    let test = tokio::task::spawn(scan_subfolder("cc", path.join("test")));
+    let bin = tokio::task::spawn(scan_subfolder("cc", path.join("bin")));
 
-        info.name.push(entry_name);
+    let deps = deps.await.unwrap();
+    let mod_parts = mod_parts.await.unwrap();
+    let n_mod_parts = mod_parts.len();
 
-        let deps = read_deps_file(interner, &path.join("deps")).await;
+    // has to have root module
+    assert!(
+        mod_parts.contains(&entry_name),
+        "root module of entry {} not found",
+        entry_name,
+    );
 
-        let mod_parts = scan_subfolder("cppm", interner, &path.join("mod")).await;
-        let n_mod_parts = mod_parts.len();
+    let mod_path = path.join("mod");
 
-        // has to have root module
-        assert!(
-            mod_parts.contains(&entry_name),
-            "root module of entry {} not found",
-            interner.get(entry_name),
-        );
+    let concurrency = 16;
+    let mut join_set = JoinSet::new();
+    let mut mod_dep_names = vec![Vec::new(); mod_parts.len()];
+    for (pos, part_name) in mod_parts.iter().enumerate() {
+        if join_set.len() >= concurrency {
+            let (idx, deps) = join_set.join_next().await.unwrap().unwrap();
+            mod_dep_names[idx] = deps;
+        }
+        let part_name = part_name.to_owned();
+        let cppm_path = mod_path.join(format!("{}.cppm", part_name));
+        join_set.spawn(async move {
+            let deps = scan_deps(config, cppm_path).await;
+            (pos, deps)
+        });
+    }
+    while let Some(res) = join_set.join_next().await {
+        let (idx, deps) = res.unwrap();
+        mod_dep_names[idx] = deps;
+    }
 
-        let mod_path = path.join("mod");
+    let mut mod_dep_matrix = vec![false; n_mod_parts * n_mod_parts];
+    for (part_pos, part_name) in mod_parts.iter().enumerate() {
+        let mod_dep_names = &mod_dep_names[part_pos];
+        for mod_dep_name in mod_dep_names.iter() {
+            if mod_dep_name.contains(':') {
+                let parts: Vec<_> = mod_dep_name.split(':').collect();
+                assert_eq!(parts.len(), 2);
+                check_name(parts[0]);
+                check_name(parts[1]);
+                let part0 = parts[0];
+                let part1 = parts[1];
 
-        let mut mod_dep_matrix = vec![false; n_mod_parts * n_mod_parts];
-        for (part_pos, &part_name) in mod_parts.iter().enumerate() {
-            let mod_dep_names = scan_deps(
-                config,
-                &mod_path.join(format!("{}.cppm", interner.get(part_name))),
-            )
-            .await;
-            for mod_dep_name in mod_dep_names.iter() {
-                if mod_dep_name.contains(':') {
-                    let parts: Vec<_> = mod_dep_name.split(':').collect();
-                    assert_eq!(parts.len(), 2);
-                    check_name(parts[0]);
-                    check_name(parts[1]);
-                    let part0 = interner.insert(parts[0]);
-                    let part1 = interner.insert(parts[1]);
+                assert_eq!(
+                    part0, entry_name,
+                    "part of entry {} doesn't define a module under it. It instead defines under {}",
+                    entry_name, part0,
+                );
+                assert_ne!(
+                    part1, part_name,
+                    "part {} of entry {} doesn't define expected module {}:{}",
+                    part_name, entry_name, entry_name, part_name,
+                );
 
-                    assert_eq!(
-                        part0,
-                        entry_name,
-                        "part of entry {} doesn't define a module under it. It instead defines under {}",
-                        interner.get(entry_name),
-                        interner.get(part0),
-                    );
-                    assert_ne!(
-                        part1,
-                        part_name,
-                        "part {} of entry {} doesn't define expected module {}:{}",
-                        interner.get(part_name),
-                        interner.get(entry_name),
-                        interner.get(entry_name),
-                        interner.get(part_name),
-                    );
-
-                    let dep_pos = mod_parts
+                let dep_pos = mod_parts
                         .iter()
                         .position(|nidx| *nidx == part1)
                         .unwrap_or_else(||
                             panic!(
                                 "dependency with name {} of part with name {} not found in entry with name {}",
-                                mod_dep_name, interner.get(part_name), interner.get(entry_name),
+                                mod_dep_name, part_name, entry_name,
                             )
                         );
 
-                    mod_dep_matrix[part_pos * n_mod_parts + dep_pos] = true;
-                    assert!(
-                        !mod_dep_matrix[dep_pos * n_mod_parts + part_pos],
-                        "cyclic dependency between {} and {} in entry {}",
-                        interner.get(part_name),
-                        mod_dep_name,
-                        interner.get(entry_name),
-                    );
-                } else {
-                    let mod_dep_name_idx = interner.insert(mod_dep_name);
-                    let is_direct_dep = deps.contains(&mod_dep_name_idx);
-                    assert!(
-                        is_direct_dep,
-                        "Module file {}:{} depends on {} but it isn't listed in the deps file of {}",
-                        interner.get(entry_name),
-                        interner.get(part_name),
-                        mod_dep_name,
-                        interner.get(entry_name),
-                    );
-                }
+                mod_dep_matrix[part_pos * n_mod_parts + dep_pos] = true;
+                assert!(
+                    !mod_dep_matrix[dep_pos * n_mod_parts + part_pos],
+                    "cyclic dependency between {} and {} in entry {}",
+                    part_name,
+                    mod_dep_name,
+                    entry_name,
+                );
+            } else {
+                let is_direct_dep = deps.contains(&mod_dep_name);
+                assert!(
+                    is_direct_dep,
+                    "Module file {}:{} depends on {} but it isn't listed in the deps file of {}",
+                    entry_name, part_name, mod_dep_name, entry_name,
+                );
             }
         }
+    }
 
-        info.deps.push(deps);
-        info.mod_dep_matrix.push(mod_dep_matrix);
-        info.module.push(mod_parts);
+    let lib = lib.await.unwrap();
+    let test = test.await.unwrap();
+    let bin = bin.await.unwrap();
 
-        let lib = scan_subfolder("cc", interner, &path.join("lib")).await;
-        info.lib.push(lib);
+    EntryInfo {
+        name: entry_name,
+        module: mod_parts,
+        mod_dep_matrix,
+        lib,
+        bin,
+        test,
+        deps,
+    }
+}
 
-        let test = scan_subfolder("cc", interner, &path.join("test")).await;
-        info.test.push(test);
+pub async fn scan(config: &'static Config, interner: &mut Interner) -> BuildInfo {
+    let mut dir = tokio::fs::read_dir(config.src_path).await.unwrap();
 
-        let bin = scan_subfolder("cc", interner, &path.join("bin")).await;
-        info.bin.push(bin);
+    let mut info = BuildInfo::default();
 
-        entry_idx += 1;
+    let mut join_set = JoinSet::new();
+    let concurrency = 16;
+
+    while let Some(entry) = dir.next_entry().await.unwrap() {
+        if join_set.len() >= concurrency {
+            let entry_info = join_set.join_next().await.unwrap().unwrap();
+            info.push_entry_info(interner, entry_info);
+        }
+        join_set.spawn(async move { scan_entry(config, &entry.path()).await });
+    }
+
+    while let Some(res) = join_set.join_next().await {
+        let entry_info = res.unwrap();
+        info.push_entry_info(interner, entry_info);
     }
 
     info
