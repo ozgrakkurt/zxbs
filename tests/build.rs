@@ -1,9 +1,29 @@
+use interner::Str;
 use rand::seq::SliceRandom;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::Mutex;
 use zxbs::{build, command, interner, tracer};
 
+fn make_task(
+    finished: Arc<Mutex<HashSet<Str>>>,
+    inputs: Vec<Str>,
+    outputs: Vec<Str>,
+) -> build::Task {
+    let inputs = inputs.leak();
+    let outputs = outputs.leak();
+    build::Task {
+        inputs,
+        outputs,
+        command: Some(command::Command::TestCmd(command::TestCmd {
+            inputs,
+            outputs,
+            finished,
+        })),
+    }
+}
+
+#[tokio::test]
 async fn empty_run() {
     let mut tracer = tracer::Tracer::new(false);
     let mut interner = interner::Interner::new();
@@ -11,6 +31,7 @@ async fn empty_run() {
     build.await;
 }
 
+#[tokio::test]
 async fn simple_run() {
     let mut interner = interner::Interner::new();
 
@@ -22,54 +43,10 @@ async fn simple_run() {
     let finished = Arc::new(Mutex::new(HashSet::new()));
 
     let mut tasks = vec![
-        build::Task {
-            inputs: vec![].leak(),
-            outputs: vec![one].leak(),
-            command: Some(command::Command::Dyn(Box::pin({
-                let finished = finished.clone();
-                async move {
-                    let mut finished = finished.lock().unwrap();
-                    finished.insert(one);
-                }
-            }))),
-        },
-        build::Task {
-            inputs: vec![one].leak(),
-            outputs: vec![two].leak(),
-            command: Some(command::Command::Dyn(Box::pin({
-                let finished = finished.clone();
-                async move {
-                    let mut finished = finished.lock().unwrap();
-                    assert!(finished.contains(&one));
-                    finished.insert(two);
-                }
-            }))),
-        },
-        build::Task {
-            inputs: vec![one, two].leak(),
-            outputs: vec![three].leak(),
-            command: Some(command::Command::Dyn(Box::pin({
-                let finished = finished.clone();
-                async move {
-                    let mut finished = finished.lock().unwrap();
-                    assert!(finished.contains(&one));
-                    assert!(finished.contains(&two));
-                    finished.insert(three);
-                }
-            }))),
-        },
-        build::Task {
-            inputs: vec![three].leak(),
-            outputs: vec![four].leak(),
-            command: Some(command::Command::Dyn(Box::pin({
-                let finished = finished.clone();
-                async move {
-                    let mut finished = finished.lock().unwrap();
-                    assert!(finished.contains(&three));
-                    finished.insert(four);
-                }
-            }))),
-        },
+        make_task(finished.clone(), vec![], vec![one]),
+        make_task(finished.clone(), vec![one], vec![two]),
+        make_task(finished.clone(), vec![one, two], vec![three]),
+        make_task(finished.clone(), vec![three], vec![four]),
     ];
 
     let mut rng = rand::rng();
@@ -84,10 +61,4 @@ async fn simple_run() {
     assert!(finished.contains(&two));
     assert!(finished.contains(&three));
     assert!(finished.contains(&four));
-}
-
-#[tokio::test]
-async fn test_all() {
-    empty_run().await;
-    simple_run().await;
 }

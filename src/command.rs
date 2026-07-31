@@ -1,7 +1,7 @@
-use std::future::Future;
-use std::pin::Pin;
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
 
-type BoxedFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
+use crate::interner::Str;
 
 pub struct CompileModule {
     pub cxx: &'static str,
@@ -291,13 +291,41 @@ impl RunBinary {
     }
 }
 
+pub struct TestCmd {
+    pub finished: Arc<Mutex<HashSet<Str>>>,
+    pub inputs: &'static [Str],
+    pub outputs: &'static [Str],
+}
+
+impl TestCmd {
+    pub fn print(&self) -> String {
+        let mut out = String::with_capacity(1024);
+
+        out.push_str("");
+
+        out
+    }
+
+    pub async fn run(&self) {
+        let mut finished = self.finished.lock().unwrap();
+
+        for input in self.inputs.iter() {
+            assert!(finished.contains(input));
+        }
+
+        for &output in self.outputs.iter() {
+            assert!(!finished.insert(output));
+        }
+    }
+}
+
 pub enum Command {
     CompileModule(CompileModule),
     CompileToObject(CompileToObject),
     ArchiveLib(ArchiveLib),
     LinkBinary(LinkBinary),
     RunBinary(RunBinary),
-    Dyn(BoxedFuture<()>),
+    TestCmd(TestCmd),
 }
 
 impl Command {
@@ -308,7 +336,7 @@ impl Command {
             Command::ArchiveLib(x) => x.print(),
             Command::LinkBinary(x) => x.print(),
             Command::RunBinary(x) => x.print(),
-            Command::Dyn(_) => "<Dyn Command>".to_owned(),
+            Command::TestCmd(x) => x.print(),
         }
     }
 
@@ -319,7 +347,7 @@ impl Command {
             Command::ArchiveLib(x) => x.run().await,
             Command::LinkBinary(x) => x.run().await,
             Command::RunBinary(x) => x.run().await,
-            Command::Dyn(x) => x.await,
+            Command::TestCmd(x) => x.run().await,
         }
     }
 
@@ -330,7 +358,7 @@ impl Command {
             Command::ArchiveLib(_) => "ArchiveLib",
             Command::LinkBinary(_) => "LinkBinary",
             Command::RunBinary(_) => "RunBinary",
-            Command::Dyn(_) => "Dyn",
+            Command::TestCmd(_) => "TestCmd",
         }
     }
 }
