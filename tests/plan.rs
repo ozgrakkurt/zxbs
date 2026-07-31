@@ -1,6 +1,9 @@
 use std::collections::HashMap;
 
-use zxbs::{config, interner, plan, scan};
+use command::{
+    ArchiveLib, Command, CompileModule, CompileToObject, LinkBinary, RunBinary, TestCmd,
+};
+use zxbs::{command, config, interner, plan, scan};
 
 #[test]
 fn test_empty() {
@@ -17,7 +20,16 @@ fn test_empty() {
 
 #[test]
 fn test_simple() {
-    let cfg = config::Config::parse_args(HashMap::new());
+    let folder_name: u128 = rand::random();
+    let build_path = format!("/tmp/{}/build", folder_name);
+    let src_path = format!("/tmp/{}/src", folder_name);
+    std::fs::create_dir_all(&build_path).unwrap();
+    std::fs::create_dir_all(&src_path).unwrap();
+
+    let mut args = HashMap::new();
+    args.insert("--build-dir".to_owned(), build_path.clone());
+    args.insert("--src-dir".to_owned(), src_path.clone());
+    let cfg = config::Config::parse_args(args);
 
     let mut interner = interner::Interner::new();
 
@@ -61,13 +73,15 @@ fn test_simple() {
         interner.insert("executor"),
         interner.insert("fs"),
         interner.insert("net"),
+        interner.insert("base"),
     ]);
     #[rustfmt::skip]
     info.mod_dep_matrix.push(vec![
-        false, true, true, true,
-        false, false, false, false,
-        false, true, false, false,
-        false, true, false, false,
+        false, true, true, true, true,
+        false, false, false, false, false,
+        false, true, false, false, false,
+        false, true, false, false, false,
+        false, false, false, false, false,
     ]);
     info.lib.push(vec![]);
     info.bin.push(vec![interner.insert("direct_io_example")]);
@@ -89,4 +103,15 @@ fn test_simple() {
 
     let tasks = plan::plan(&cfg, &mut interner, &info);
 
+    match &tasks[0].command {
+        Some(Command::CompileModule(cm)) => {
+            assert_eq!(cm.cxx, "clang++");
+            assert_eq!(cm.input, format!("{}/base/mod/base.cppm", src_path));
+            assert_eq!(cm.object_output, format!("{}/mod/base.o", build_path));
+            assert_eq!(cm.pcm_output, format!("{}/mod/base.pcm", build_path));
+        }
+        _ => unreachable!(),
+    }
+
+    std::fs::remove_dir_all(format!("/tmp/{}", folder_name)).unwrap();
 }
