@@ -32,13 +32,39 @@ fn check_lib_archive_task(
 ) {
     let mut inputs = Vec::new();
     for pn in mod_part_names.iter() {
-        inputs.push(interner.insert());
+        inputs.push(interner.insert(&format!(
+            "{}/mod/{}",
+            build_path,
+            make_module_artifact_name(entry_name, pn, "o"),
+        )));
+    }
+    for ln in lib_part_names.iter() {
+        inputs.push(interner.insert(&format!("{}/{}/lib/{}.o", build_path, entry_name, ln,)));
     }
 
+    assert_eq!(&task.inputs, &inputs);
+
     assert_eq!(
-        &task.inputs,
-        &[interner.insert()],  
+        &task.outputs,
+        &[interner.insert(&format!(
+            "{}/{}/lib/lib{}.a",
+            build_path, entry_name, entry_name
+        )),]
     );
+
+    let expected_input_names: Vec<&'static str> = inputs.iter().map(|&x| interner.get(x)).collect();
+
+    match &task.command {
+        Some(Command::ArchiveLib(al)) => {
+            assert_eq!(al.ar, "llvm-ar");
+            assert_eq!(
+                al.output,
+                format!("{}/{}/lib/lib{}.a", build_path, entry_name, entry_name)
+            );
+            assert_eq!(al.inputs, expected_input_names);
+        }
+        _ => unreachable!(),
+    }
 }
 
 fn check_lib_obj_task(
@@ -292,6 +318,15 @@ fn test_simple() {
         &src_path,
         "base",
         "memcpy",
+    );
+    check_lib_archive_task(
+        &tasks[7],
+        &mut interner,
+        &build_path,
+        &src_path,
+        "base",
+        &["base", "vec", "start", "arith", "alloc"],
+        &["memcmp", "memcpy"],
     );
 
     assert_eq!(tasks.len(), 39);
