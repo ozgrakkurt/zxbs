@@ -1,9 +1,11 @@
+#![allow(clippy::single_element_loop)]
+
 use std::collections::HashMap;
 use std::path::Path;
 
 use zxbs::config::Config;
 use zxbs::interner::Interner;
-use zxbs::scan;
+use zxbs::scan::{BuildInfo, scan};
 
 #[tokio::test]
 async fn test_empty() {
@@ -20,7 +22,7 @@ async fn test_empty() {
 
     let mut interner = Interner::new();
 
-    let info = scan::scan(cfg, &mut interner).await;
+    let info = scan(cfg, &mut interner).await;
 
     assert!(info.map.is_empty());
     assert!(info.name.is_empty());
@@ -349,6 +351,175 @@ async fn make_myapp(src_path: &Path) {
     .unwrap();
 }
 
+fn check_baselib_info(info: &BuildInfo, interner: &mut Interner) {
+    let name_idx = interner.insert("base");
+    let i = info.name.iter().position(|&n| n == name_idx).unwrap();
+
+    assert_eq!(
+        usize::try_from(*info.map.get(&name_idx).unwrap()).unwrap(),
+        i,
+    );
+
+    let mut part_idx_map: HashMap<&'static str, usize> = HashMap::new();
+
+    assert_eq!(info.module[i].len(), 5);
+    for name in ["base", "vec", "start", "arith", "alloc"] {
+        let n_i = interner.insert(name);
+        let pos = info.module[i].iter().position(|x| *x == n_i).unwrap();
+        part_idx_map.insert(name, pos);
+    }
+
+    let mut mod_dep_matrix = vec![false; 25];
+
+    {
+        let idx = *part_idx_map.get("base").unwrap();
+        for name in ["vec", "start", "arith", "alloc"] {
+            let dep_idx = *part_idx_map.get(name).unwrap();
+            mod_dep_matrix[idx * 5 + dep_idx] = true;
+        }
+    }
+
+    {
+        let idx = *part_idx_map.get("vec").unwrap();
+        for name in ["arith", "alloc"] {
+            let dep_idx = *part_idx_map.get(name).unwrap();
+            mod_dep_matrix[idx * 5 + dep_idx] = true;
+        }
+    }
+
+    {
+        let idx = *part_idx_map.get("arith").unwrap();
+        for name in ["start"] {
+            let dep_idx = *part_idx_map.get(name).unwrap();
+            mod_dep_matrix[idx * 5 + dep_idx] = true;
+        }
+    }
+
+    {
+        let idx = *part_idx_map.get("alloc").unwrap();
+        for name in ["start", "arith"] {
+            let dep_idx = *part_idx_map.get(name).unwrap();
+            mod_dep_matrix[idx * 5 + dep_idx] = true;
+        }
+    }
+
+    assert_eq!(&mod_dep_matrix, &info.mod_dep_matrix[i],);
+
+    assert_eq!(info.lib[i].len(), 2);
+    for name in ["memcmp", "memcpy"] {
+        assert!(info.lib[i].contains(&interner.insert(name)));
+    }
+
+    assert_eq!(info.bin[i].len(), 1);
+    for name in ["memcpy_bench"] {
+        assert!(info.bin[i].contains(&interner.insert(name)));
+    }
+
+    assert_eq!(info.test[i].len(), 3);
+    for name in ["memcmp", "vec", "arith"] {
+        assert!(info.test[i].contains(&interner.insert(name)));
+    }
+
+    assert!(info.deps[i].is_empty());
+}
+
+fn check_iolib_info(info: &BuildInfo, interner: &mut Interner) {
+    let name_idx = interner.insert("io");
+    let i = info.name.iter().position(|&n| n == name_idx).unwrap();
+
+    assert_eq!(
+        usize::try_from(*info.map.get(&name_idx).unwrap()).unwrap(),
+        i,
+    );
+
+    let mut part_idx_map: HashMap<&'static str, usize> = HashMap::new();
+
+    assert_eq!(info.module[i].len(), 5);
+    for name in ["io", "executor", "fs", "net", "base"] {
+        let n_i = interner.insert(name);
+        let pos = info.module[i].iter().position(|x| *x == n_i).unwrap();
+        part_idx_map.insert(name, pos);
+    }
+
+    let mut mod_dep_matrix = vec![false; 25];
+
+    {
+        let idx = *part_idx_map.get("io").unwrap();
+        for name in ["executor", "fs", "net", "base"] {
+            let dep_idx = *part_idx_map.get(name).unwrap();
+            mod_dep_matrix[idx * 5 + dep_idx] = true;
+        }
+    }
+
+    {
+        let idx = *part_idx_map.get("fs").unwrap();
+        for name in ["executor"] {
+            let dep_idx = *part_idx_map.get(name).unwrap();
+            mod_dep_matrix[idx * 5 + dep_idx] = true;
+        }
+    }
+
+    {
+        let idx = *part_idx_map.get("net").unwrap();
+        for name in ["executor"] {
+            let dep_idx = *part_idx_map.get(name).unwrap();
+            mod_dep_matrix[idx * 5 + dep_idx] = true;
+        }
+    }
+
+    assert_eq!(&mod_dep_matrix, &info.mod_dep_matrix[i]);
+
+    assert!(info.lib[i].is_empty());
+
+    assert_eq!(info.bin[i].len(), 1);
+    for name in ["direct_io_example"] {
+        assert!(info.bin[i].contains(&interner.insert(name)));
+    }
+
+    assert_eq!(info.test[i].len(), 3);
+    for name in ["executor_ordering", "fs", "net"] {
+        assert!(info.test[i].contains(&interner.insert(name)));
+    }
+
+    assert_eq!(info.deps[i], &[interner.insert("base")]);
+}
+
+fn check_myapp_info(info: &BuildInfo, interner: &mut Interner) {
+    let name_idx = interner.insert("myapp");
+    let i = info.name.iter().position(|&n| n == name_idx).unwrap();
+
+    assert_eq!(
+        usize::try_from(*info.map.get(&name_idx).unwrap()).unwrap(),
+        i,
+    );
+
+    let mut part_idx_map: HashMap<&'static str, usize> = HashMap::new();
+
+    assert_eq!(info.module[i].len(), 1);
+    for name in ["myapp"] {
+        let n_i = interner.insert(name);
+        let pos = info.module[i].iter().position(|x| *x == n_i).unwrap();
+        part_idx_map.insert(name, pos);
+    }
+
+    let mod_dep_matrix = vec![false; 1];
+
+    assert_eq!(&mod_dep_matrix, &info.mod_dep_matrix[i]);
+
+    assert!(info.lib[i].is_empty());
+
+    assert_eq!(info.bin[i].len(), 1);
+    for name in ["myapp"] {
+        assert!(info.bin[i].contains(&interner.insert(name)));
+    }
+
+    assert!(info.test[i].is_empty());
+
+    for name in ["base", "io"] {
+        assert!(info.deps[i].contains(&interner.insert(name)));
+    }
+}
+
 #[tokio::test]
 async fn test_simple() {
     let folder_name: u128 = rand::random();
@@ -369,77 +540,22 @@ async fn test_simple() {
 
     let mut interner = Interner::new();
 
-    let info = scan::scan(cfg, &mut interner).await;
+    let info = scan(cfg, &mut interner).await;
 
-    // TODO: check that we got the right info
-    //
+    assert_eq!(info.map.len(), 3);
+    assert_eq!(info.name.len(), 3);
+    assert_eq!(info.module.len(), 3);
+    assert_eq!(info.mod_dep_matrix.len(), 3);
+    assert_eq!(info.lib.len(), 3);
+    assert_eq!(info.bin.len(), 3);
+    assert_eq!(info.test.len(), 3);
+    assert_eq!(info.deps.len(), 3);
+
+    check_baselib_info(&info, &mut interner);
+    check_iolib_info(&info, &mut interner);
+    check_myapp_info(&info, &mut interner);
 
     tokio::fs::remove_dir_all(format!("/tmp/{}", folder_name))
         .await
         .unwrap();
 }
-// let baselib = interner.insert("base");
-// let iolib = interner.insert("io");
-// let myapp = interner.insert("myapp");
-
-// info.map.insert(baselib, 0);
-// info.name.push(baselib);
-// info.module.push(vec![
-//     interner.insert("base"),
-//     interner.insert("vec"),
-//     interner.insert("start"),
-//     interner.insert("arith"),
-//     interner.insert("alloc"),
-// ]);
-// #[rustfmt::skip]
-// info.mod_dep_matrix.push(vec![
-//     false, true, true, true, true,
-//     false, false, false, true, true,
-//     false, false, false, false, false,
-//     false, false, true, false, false,
-//     false, false, true, true, false,
-// ]);
-// info.lib
-//     .push(vec![interner.insert("memcmp"), interner.insert("memcpy")]);
-// info.bin.push(vec![interner.insert("memcpy_bench")]);
-// info.test.push(vec![
-//     interner.insert("memcmp"),
-//     interner.insert("vec"),
-//     interner.insert("arith"),
-// ]);
-// info.deps.push(vec![]);
-
-// info.map.insert(iolib, 1);
-// info.name.push(iolib);
-// info.module.push(vec![
-//     interner.insert("io"),
-//     interner.insert("executor"),
-//     interner.insert("fs"),
-//     interner.insert("net"),
-//     interner.insert("base"),
-// ]);
-// #[rustfmt::skip]
-// info.mod_dep_matrix.push(vec![
-//     false, true, true, true, true,
-//     false, false, false, false, false,
-//     false, true, false, false, false,
-//     false, true, false, false, false,
-//     false, false, false, false, false,
-// ]);
-// info.lib.push(vec![]);
-// info.bin.push(vec![interner.insert("direct_io_example")]);
-// info.test.push(vec![
-//     interner.insert("executor_ordering"),
-//     interner.insert("fs"),
-//     interner.insert("net"),
-// ]);
-// info.deps.push(vec![baselib]);
-
-// info.map.insert(myapp, 2);
-// info.name.push(myapp);
-// info.module.push(vec![interner.insert("myapp")]);
-// info.mod_dep_matrix.push(vec![false]);
-// info.lib.push(vec![]);
-// info.bin.push(vec![myapp]);
-// info.test.push(vec![]);
-// info.deps.push(vec![baselib, iolib]);
