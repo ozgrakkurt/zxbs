@@ -48,20 +48,10 @@ impl BuildInfo {
             .push(entry_info.lib.iter().map(|s| interner.insert(s)).collect());
         self.bin
             .push(entry_info.bin.iter().map(|s| interner.insert(s)).collect());
-        self.test.push(
-            entry_info
-                .test
-                .iter()
-                .map(|s| interner.insert(s))
-                .collect(),
-        );
-        self.deps.push(
-            entry_info
-                .deps
-                .iter()
-                .map(|s| interner.insert(s))
-                .collect(),
-        );
+        self.test
+            .push(entry_info.test.iter().map(|s| interner.insert(s)).collect());
+        self.deps
+            .push(entry_info.deps.iter().map(|s| interner.insert(s)).collect());
     }
 }
 
