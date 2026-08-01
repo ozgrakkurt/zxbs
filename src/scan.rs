@@ -6,6 +6,14 @@ use tokio::task::JoinSet;
 use crate::config::Config;
 use crate::interner::{Interner, Str};
 
+pub fn make_module_name(root_name: &str, part_name: &str) -> String {
+    if root_name == part_name {
+        root_name.to_owned()
+    } else {
+        format!("{}:{}", root_name, part_name)
+    }
+}
+
 struct EntryInfo {
     name: String,
     module: Vec<String>,
@@ -55,43 +63,61 @@ impl BuildInfo {
     }
 }
 
-pub fn parse_p1689(contents: &[u8]) -> Vec<String> {
+pub struct CppmDeps {
+    pub deps: Vec<String>,
+    pub provides: Vec<String>,
+}
+
+pub fn parse_p1689(contents: &[u8]) -> CppmDeps {
     let root = serde_json::from_slice::<serde_json::Value>(contents).unwrap();
     let root = root.as_object().unwrap();
 
     let mut deps = Vec::new();
+    let mut provides = Vec::new();
 
     if let Some(rules) = root.get("rules") {
         for rule in rules.as_array().unwrap().iter() {
             let rule = rule.as_object().unwrap();
-            let reqs = match rule.get("requires") {
-                Some(req) => req,
-                None => continue,
-            };
-            for p in reqs.as_array().unwrap().iter() {
-                let name = p
-                    .as_object()
-                    .unwrap()
-                    .get("logical-name")
-                    .unwrap()
-                    .as_str()
-                    .unwrap();
-                deps.push(name.to_owned());
+
+            if let Some(prov) = rule.get("provides") {
+                for p in prov.as_array().unwrap().iter() {
+                    let name = p
+                        .as_object()
+                        .unwrap()
+                        .get("logical-name")
+                        .unwrap()
+                        .as_str()
+                        .unwrap();
+                    provides.push(name.to_owned());
+                }
+            }
+
+            if let Some(reqs) = rule.get("requires") {
+                for p in reqs.as_array().unwrap().iter() {
+                    let name = p
+                        .as_object()
+                        .unwrap()
+                        .get("logical-name")
+                        .unwrap()
+                        .as_str()
+                        .unwrap();
+                    deps.push(name.to_owned());
+                }
             }
         }
     }
 
-    deps
+    CppmDeps { deps, provides }
 }
 
-async fn scan_deps(config: &Config, path: PathBuf) -> Vec<String> {
+async fn scan_deps(config: &Config, path: &Path) -> CppmDeps {
     let mut cmd = tokio::process::Command::new(config.clang_scan_deps);
     cmd.arg("-format=p1689")
         .arg("--")
         .arg(config.cxx)
         .args(config.cxxflags)
         .arg("-c")
-        .arg(&path);
+        .arg(path);
     let output = match cmd.output().await {
         Ok(out) => out,
         Err(e) => {
@@ -188,7 +214,7 @@ pub fn parse_file_name<'name>(
     name
 }
 
-async fn scan_subfolder(expected_extension: &'static str, path: PathBuf) -> Vec<String> {
+async fn scan_subfolder(expected_extension: &'static str, path: &Path) -> Vec<String> {
     let mut dir = tokio::fs::read_dir(&path).await.unwrap();
     let mut names = Vec::new();
     while let Some(file) = dir.next_entry().await.unwrap() {
@@ -204,6 +230,86 @@ async fn scan_subfolder(expected_extension: &'static str, path: PathBuf) -> Vec<
     names
 }
 
+struct ObjectFolderInfo {
+    parts: Vec<String>,
+    deps: Vec<Vec<String>>,
+}
+
+// For scanning bin/test/lib folders for cc files and scanning their module dependencies
+async fn scan_object_folder(config: &'static Config, path: &Path) -> ObjectFolderInfo {
+    let parts = scan_subfolder("cc", path).await;
+
+    let mut futs = JoinSet::new();
+
+    for part in parts {
+        let cppm_path = path.join(format!("{}.cc", part));
+        futs.spawn(async move {
+            let cppm_deps = scan_deps(config, &cppm_path).await;
+
+            if !cppm_deps.provides.is_empty() {
+                panic!(
+                    "Didn't expect {} to provide any module interface. But it provides: {:?}",
+                    cppm_path.display(),
+                    cppm_deps.provides
+                );
+            }
+
+            (part, cppm_deps.deps)
+        });
+    }
+
+    let dep_infos = futs.join_all().await;
+
+    let mut parts = Vec::new();
+    let mut deps = Vec::new();
+
+    for info in dep_infos {
+        parts.push(info.0);
+        deps.push(info.1);
+    }
+
+    ObjectFolderInfo { parts, deps }
+}
+
+fn check_object_folder_info(
+    entry_name: &str,
+    self_module_parts: &[String],
+    ext_deps: &[String],
+    info: &ObjectFolderInfo,
+) {
+    assert_eq!(info.parts.len(), info.deps.len());
+    for i in 0..info.parts.len() {
+        for dep in info.deps[i].iter() {
+            if dep.contains(':') {
+                let parts: Vec<&str> = dep.split(':').collect();
+                if parts.len() != 2 {
+                    panic!(
+                        "invalid dependency name '{}' in part '{}' of entry '{}'. Failed to parse.",
+                        dep, &info.parts[i], entry_name
+                    );
+                }
+                if parts[0] != entry_name {
+                    panic!(
+                        "invalid dependency name '{}' in part '{}' of entry '{}'. Expected root part to be self entry name since depending directly on partitions of external modules isn't supported.",
+                        dep, &info.parts[i], entry_name
+                    );
+                }
+                if !self_module_parts.contains(&parts[1].to_owned()) {
+                    panic!(
+                        "invalid dependency name '{}' in part '{}' of entry '{}'. Parition isn't a member of the partitions of current entry. Available partitions are: {:?}",
+                        dep, &info.parts[i], entry_name, self_module_parts,
+                    );
+                }
+            } else if dep != entry_name && !ext_deps.contains(dep) {
+                panic!(
+                    "Dependency '{}' of part '{}' of entry '{}' is invalid. External dependencies are: {:?}",
+                    dep, &info.parts[i], entry_name, ext_deps
+                );
+            }
+        }
+    }
+}
+
 async fn scan_entry(config: &'static Config, path: &Path) -> EntryInfo {
     let entry_name = path.file_name().unwrap();
     let entry_name = entry_name.to_str().unwrap().to_owned();
@@ -211,11 +317,22 @@ async fn scan_entry(config: &'static Config, path: &Path) -> EntryInfo {
 
     let deps = tokio::spawn(read_deps_file(path.join("deps")));
 
-    let mod_parts = tokio::spawn(scan_subfolder("cppm", path.join("mod")));
-
-    let lib = tokio::task::spawn(scan_subfolder("cc", path.join("lib")));
-    let test = tokio::task::spawn(scan_subfolder("cc", path.join("test")));
-    let bin = tokio::task::spawn(scan_subfolder("cc", path.join("bin")));
+    let mod_parts = tokio::spawn({
+        let path = path.join("mod");
+        async move { scan_subfolder("cppm", &path).await }
+    });
+    let lib = tokio::task::spawn({
+        let path = path.join("lib");
+        async move { scan_object_folder(config, &path).await }
+    });
+    let test = tokio::task::spawn({
+        let path = path.join("test");
+        async move { scan_object_folder(config, &path).await }
+    });
+    let bin = tokio::task::spawn({
+        let path = path.join("bin");
+        async move { scan_object_folder(config, &path).await }
+    });
 
     let deps = deps.await.unwrap();
     let mod_parts = mod_parts.await.unwrap();
@@ -239,10 +356,23 @@ async fn scan_entry(config: &'static Config, path: &Path) -> EntryInfo {
             mod_dep_names[idx] = deps;
         }
         let part_name = part_name.to_owned();
-        let cppm_path = mod_path.join(format!("{}.cppm", part_name));
+        let cppm_path = mod_path.join(format!("{}.cppm", &part_name));
+        let expected_provides = make_module_name(&entry_name, &part_name);
         join_set.spawn(async move {
-            let deps = scan_deps(config, cppm_path).await;
-            (pos, deps)
+            let cppm_deps = scan_deps(config, &cppm_path).await;
+
+            if cppm_deps.provides.len() != 1
+                || cppm_deps.provides[0].as_str() != expected_provides.as_str()
+            {
+                panic!(
+                    "expected {} to only provide {}, but it provides: {:?}",
+                    cppm_path.display(),
+                    expected_provides,
+                    cppm_deps.provides
+                );
+            }
+
+            (pos, cppm_deps.deps)
         });
     }
     while let Some(res) = join_set.join_next().await {
@@ -303,16 +433,19 @@ async fn scan_entry(config: &'static Config, path: &Path) -> EntryInfo {
     }
 
     let lib = lib.await.unwrap();
+    check_object_folder_info(&entry_name, &mod_parts, &deps, &lib);
+
     let test = test.await.unwrap();
+
     let bin = bin.await.unwrap();
 
     EntryInfo {
         name: entry_name,
         module: mod_parts,
         mod_dep_matrix,
-        lib,
-        bin,
-        test,
+        lib: lib.parts,
+        bin: bin.parts,
+        test: test.parts,
         deps,
     }
 }
