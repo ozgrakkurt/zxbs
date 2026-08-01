@@ -10,7 +10,16 @@ use zxbs::{build, command, config, interner, plan, scan};
 
 #[test]
 fn test_empty() {
-    let cfg = config::Config::parse_args(HashMap::new());
+    let folder_name: u128 = rand::random();
+    let build_path = format!("/tmp/{}/build", folder_name);
+    let src_path = format!("/tmp/{}/src", folder_name);
+    std::fs::create_dir_all(&build_path).unwrap();
+    std::fs::create_dir_all(&src_path).unwrap();
+
+    let mut args = HashMap::new();
+    args.insert("--build-dir".to_owned(), build_path.clone());
+    args.insert("--src-dir".to_owned(), src_path.clone());
+    let cfg = config::Config::parse_args(args);
 
     let mut interner = interner::Interner::new();
 
@@ -19,6 +28,8 @@ fn test_empty() {
     let tasks = plan::plan(&cfg, &mut interner, &info);
 
     assert!(tasks.is_empty());
+
+    std::fs::remove_dir_all(format!("/tmp/{}", folder_name)).unwrap();
 }
 
 fn check_run_bin_task(
