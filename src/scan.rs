@@ -404,14 +404,14 @@ async fn scan_entry(config: &'static Config, path: &Path) -> EntryInfo {
                 );
 
                 let dep_pos = mod_parts
-                        .iter()
-                        .position(|nidx| *nidx == part1)
-                        .unwrap_or_else(||
-                            panic!(
-                                "dependency with name {} of part with name {} not found in entry with name {}",
-                                mod_dep_name, part_name, entry_name,
-                            )
-                        );
+                    .iter()
+                    .position(|nidx| *nidx == part1)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "dependency with name `{}` of `{}:{}` can't be found",
+                            mod_dep_name, entry_name, part_name,
+                        )
+                    });
 
                 mod_dep_matrix[part_pos * n_mod_parts + dep_pos] = true;
                 assert!(
