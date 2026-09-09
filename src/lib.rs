@@ -10,4 +10,5 @@ pub mod config;
 pub mod interner;
 pub mod plan;
 pub mod scan;
+pub mod timestamp;
 pub mod tracer;

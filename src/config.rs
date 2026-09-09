@@ -65,7 +65,7 @@ struct FlagCfg {
     debug_info: bool,
     fuzz: bool,
     build_path: &'static Path,
-    time_trace: bool,
+    cxx_time_trace: bool,
 }
 
 fn make_cxxflags(cfg: &FlagCfg) -> Vec<&'static str> {
@@ -137,7 +137,7 @@ fn make_cxxflags(cfg: &FlagCfg) -> Vec<&'static str> {
         .leak(),
     );
 
-    if cfg.time_trace {
+    if cfg.cxx_time_trace {
         cxxflags.push("-ftime-trace");
     }
 
@@ -254,6 +254,7 @@ impl Config {
         let src_dir = args.remove("--src-dir").map(leak_str).unwrap_or("src");
         let build_dir: &'static str = args.remove("--build-dir").map(leak_str).unwrap_or("build");
         let time_trace = get_bool_arg(&mut args, "time-trace", false);
+        let cxx_time_trace = get_bool_arg(&mut args, "cxx-time-trace", false);
 
         if !args.is_empty() {
             eprintln!("Found unexpected flags: ");
@@ -273,7 +274,7 @@ impl Config {
             debug_info,
             fuzz,
             build_path,
-            time_trace,
+            cxx_time_trace,
         };
         let cxxflags = make_cxxflags(&flag_cfg).leak();
         let ldflags = make_ldflags(&flag_cfg).leak();

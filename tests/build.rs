@@ -18,6 +18,7 @@ fn make_task(
             outputs,
             finished,
         })),
+        entry_index: 69,
     }
 }
 

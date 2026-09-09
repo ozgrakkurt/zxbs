@@ -86,6 +86,7 @@ fn plan_module_build(
                 object_output: interner.get(local_object_paths[part_idx]),
                 pcm_output: interner.get(local_pcm_paths[part_idx]),
             })),
+            entry_index,
         });
     }
 }
@@ -154,6 +155,7 @@ fn plan_lib_build(
                 input: cc_path,
                 output: obj_path,
             })),
+            entry_index,
         })
     }
 
@@ -172,6 +174,7 @@ fn plan_lib_build(
             output: lib_output_path,
             inputs: obj_paths,
         })),
+        entry_index,
     });
 }
 
@@ -242,6 +245,7 @@ fn plan_bin_build(
                 input: cc_path,
                 output: obj_path,
             })),
+            entry_index,
         });
 
         let mut input_indices = lib_path_indices.to_vec();
@@ -258,6 +262,7 @@ fn plan_bin_build(
                 object: obj_path,
                 deps: lib_paths,
             })),
+            entry_index,
         });
 
         if is_test {
@@ -268,6 +273,7 @@ fn plan_bin_build(
                 inputs: input_indices,
                 outputs: output_indices,
                 command: Some(Command::RunBinary(RunBinary { path: exe_path })),
+                entry_index,
             });
         }
     }

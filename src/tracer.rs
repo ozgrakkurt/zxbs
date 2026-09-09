@@ -1,73 +1,95 @@
-use std::collections::HashMap;
-
 use crate::interner::{Interner, Str};
 
 #[derive(Clone)]
 pub struct Entry {
-    pub timing_ms: u64,
+    pub timestamp: u64,
     pub outputs: Vec<Str>,
     pub kind: Str,
+    pub entry_index: usize,
 }
 
 pub struct Tracer {
     data: Vec<Entry>,
+    begin_timestamp: u64,
 }
 
 impl Tracer {
-    pub fn new() -> Tracer {
-        Tracer { data: Vec::new() }
+    pub fn new(begin_timestamp: u64) -> Tracer {
+        Tracer {
+            data: Vec::new(),
+            begin_timestamp,
+        }
     }
 
     pub fn record(&mut self, entry: Entry) {
         self.data.push(entry);
     }
 
-    pub fn print_by_timing(&mut self, interner: &Interner) -> String {
-        if self.data.is_empty() {
-            return String::new();
-        }
+    fn make_trace_event(
+        &self,
+        thread_id: usize,
+        timestamp: u64,
+        name: String,
+    ) -> serde_json::Value {
+        let mut obj = serde_json::Map::<String, serde_json::Value>::new();
 
-        self.data.sort_unstable_by_key(|l| l.timing_ms);
+        obj.insert(
+            "pid".to_owned(),
+            serde_json::Value::Number(serde_json::Number::from(69)),
+        );
+        obj.insert(
+            "tid".to_owned(),
+            serde_json::Value::Number(serde_json::Number::from(thread_id)),
+        );
+        obj.insert(
+            "ts".to_owned(),
+            serde_json::Value::Number(serde_json::Number::from(timestamp)),
+        );
+        obj.insert(
+            "ph".to_owned(),
+            serde_json::Value::String(String::from("X")),
+        );
+        obj.insert(
+            "dur".to_owned(),
+            serde_json::Value::Number(serde_json::Number::from(
+                timestamp.checked_sub(self.begin_timestamp).unwrap(),
+            )),
+        );
+        obj.insert("name".to_owned(), serde_json::Value::String(name));
 
-        let mut out = String::with_capacity(1024);
-
-        for entry in self.data.iter().rev().take(30) {
-            for &output in entry.outputs.iter() {
-                out.push('\n');
-                out.push_str(interner.get(output));
-            }
-            out.push_str(": ");
-            out.push_str(entry.timing_ms.to_string().as_str());
-            out.push_str("ms\n");
-        }
-
-        out
+        serde_json::Value::Object(obj)
     }
 
-    pub fn print_by_kind(&mut self, interner: &Interner) -> String {
-        if self.data.is_empty() {
-            return String::new();
-        }
+    pub fn print_json(
+        &self,
+        interner: &Interner,
+        scan_timestamp: u64,
+        plan_timestamp: u64,
+        build_timestamp: u64,
+    ) -> String {
+        let mut events: Vec<serde_json::Value> = Vec::with_capacity(self.data.len());
 
-        let mut by_kind: HashMap<Str, u64> = HashMap::new();
+        events.push(self.make_trace_event(0, scan_timestamp, "Scan".to_owned()));
+        events.push(self.make_trace_event(0, plan_timestamp, "Plan".to_owned()));
+        events.push(self.make_trace_event(0, build_timestamp, "Build".to_owned()));
 
         for entry in self.data.iter() {
-            *by_kind.entry(entry.kind).or_insert(0) += entry.timing_ms;
+            let name: String = entry
+                .outputs
+                .iter()
+                .map(|&s| interner.get(s))
+                .collect::<Vec<_>>()
+                .join("-");
+            events.push(self.make_trace_event(entry.entry_index + 1, entry.timestamp, name));
         }
 
-        let mut by_kind = by_kind.into_iter().collect::<Vec<(Str, u64)>>();
+        let mut out = serde_json::Map::<String, serde_json::Value>::new();
+        out.insert("traceEvents".to_owned(), serde_json::Value::Array(events));
+        out.insert(
+            "beginningOfTime".to_owned(),
+            serde_json::Value::Number(serde_json::Number::from(self.begin_timestamp)),
+        );
 
-        by_kind.sort_unstable_by_key(|l| l.1);
-
-        let mut out = String::with_capacity(1024);
-
-        for &(kind, timing_ms) in by_kind.iter().rev() {
-            out.push_str(interner.get(kind));
-            out.push_str(": ");
-            out.push_str(timing_ms.to_string().as_str());
-            out.push_str("ms\n");
-        }
-
-        out
+        serde_json::to_string(&out).unwrap()
     }
 }

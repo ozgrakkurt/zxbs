@@ -1,10 +1,10 @@
 use std::collections::VecDeque;
 use std::pin::Pin;
 use std::task::{Context, Poll};
-use std::time::Instant;
 
 use crate::command::Command;
 use crate::interner::{Interner, Str};
+use crate::timestamp::timestamp;
 use crate::tracer;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -24,6 +24,7 @@ pub struct Task {
     pub inputs: Vec<Str>,
     pub outputs: Vec<Str>,
     pub command: Option<Command>,
+    pub entry_index: usize,
 }
 
 type Handle = Pin<Box<tokio::task::JoinHandle<(Command, TaskIndex, u64)>>>;
@@ -90,7 +91,7 @@ impl<'a> Build<'a> {
         }
     }
 
-    fn process_task_finished(&mut self, (cmd, task_idx, timing_ms): (Command, TaskIndex, u64)) {
+    fn process_task_finished(&mut self, (cmd, task_idx, timestamp): (Command, TaskIndex, u64)) {
         let task = &self.tasks[task_idx.to_usize()];
         self.n_tasks_finished += 1;
 
@@ -98,9 +99,10 @@ impl<'a> Build<'a> {
             let kind = self.interner.insert(cmd.kind_str());
 
             tracer.record(tracer::Entry {
-                timing_ms,
+                timestamp,
                 kind,
                 outputs: task.outputs.clone(),
+                entry_index: task.entry_index,
             });
         }
 
@@ -156,13 +158,8 @@ impl<'a> Future for Build<'a> {
 
             let mut command = fut.tasks[task_idx.to_usize()].command.take().unwrap();
             let mut handle = Box::pin(tokio::task::spawn(async move {
-                let t0 = Instant::now();
                 command.run().await;
-                (
-                    command,
-                    task_idx,
-                    u64::try_from(t0.elapsed().as_millis()).unwrap(),
-                )
+                (command, task_idx, timestamp())
             }));
 
             match handle.as_mut().poll(cx) {
