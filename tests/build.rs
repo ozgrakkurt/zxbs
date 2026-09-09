@@ -3,6 +3,7 @@ use rand::seq::SliceRandom;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::time::Instant;
 use zxbs::{build, command, interner};
 
 fn make_task(
@@ -25,7 +26,7 @@ fn make_task(
 #[tokio::test]
 async fn empty_run() {
     let mut interner = interner::Interner::new();
-    let build = build::Build::new(None, &mut interner, Vec::new());
+    let build = build::Build::new(None, &mut interner, Vec::new(), Instant::now());
     build.await;
 }
 
@@ -50,7 +51,7 @@ async fn simple_run() {
     let mut rng = rand::rng();
     tasks.shuffle(&mut rng);
 
-    let build = build::Build::new(None, &mut interner, tasks);
+    let build = build::Build::new(None, &mut interner, tasks, Instant::now());
     build.await;
 
     let finished = finished.lock().unwrap();

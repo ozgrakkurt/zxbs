@@ -1,10 +1,10 @@
 use std::collections::VecDeque;
 use std::pin::Pin;
 use std::task::{Context, Poll};
+use std::time::Instant;
 
 use crate::command::Command;
 use crate::interner::{Interner, Str};
-use crate::timestamp::timestamp;
 use crate::tracer;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -27,7 +27,7 @@ pub struct Task {
     pub entry_index: usize,
 }
 
-type Handle = Pin<Box<tokio::task::JoinHandle<(Command, TaskIndex, u64)>>>;
+type Handle = Pin<Box<tokio::task::JoinHandle<(Command, TaskIndex, u64, u64)>>>;
 
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct Build<'a> {
@@ -42,6 +42,7 @@ pub struct Build<'a> {
     pub concurrency: usize,
     pub n_tasks_finished: usize,
     pub done: bool,
+    pub beginning: Instant,
 }
 
 impl<'a> Build<'a> {
@@ -49,6 +50,7 @@ impl<'a> Build<'a> {
         tracer: Option<&'a mut tracer::Tracer>,
         interner: &'a mut Interner,
         tasks: Vec<Task>,
+        beginning: Instant,
     ) -> Build<'a> {
         let mut dependencies = Vec::with_capacity(tasks.len());
 
@@ -88,10 +90,14 @@ impl<'a> Build<'a> {
             concurrency: num_cpus::get(),
             n_tasks_finished: 0,
             done: false,
+            beginning,
         }
     }
 
-    fn process_task_finished(&mut self, (cmd, task_idx, timestamp): (Command, TaskIndex, u64)) {
+    fn process_task_finished(
+        &mut self,
+        (cmd, task_idx, start, duration): (Command, TaskIndex, u64, u64),
+    ) {
         let task = &self.tasks[task_idx.to_usize()];
         self.n_tasks_finished += 1;
 
@@ -99,7 +105,8 @@ impl<'a> Build<'a> {
             let kind = self.interner.insert(cmd.kind_str());
 
             tracer.record(tracer::Entry {
-                timestamp,
+                start,
+                duration,
                 kind,
                 outputs: task.outputs.clone(),
                 entry_index: task.entry_index,
@@ -157,9 +164,12 @@ impl<'a> Future for Build<'a> {
             };
 
             let mut command = fut.tasks[task_idx.to_usize()].command.take().unwrap();
+            let task_start = u64::try_from(fut.beginning.elapsed().as_micros()).unwrap();
+            let task_begin = Instant::now();
             let mut handle = Box::pin(tokio::task::spawn(async move {
                 command.run().await;
-                (command, task_idx, timestamp())
+                let duration = u64::try_from(task_begin.elapsed().as_micros()).unwrap();
+                (command, task_idx, task_start, duration)
             }));
 
             match handle.as_mut().poll(cx) {

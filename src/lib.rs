@@ -3,6 +3,7 @@
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::manual_range_contains)]
 #![allow(clippy::len_without_is_empty)]
+#![allow(clippy::explicit_counter_loop)]
 
 pub mod build;
 pub mod command;

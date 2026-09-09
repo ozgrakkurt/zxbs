@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::Path;
+use std::time::Instant;
 
 use config::Config;
 use interner::Interner;
@@ -33,7 +34,7 @@ async fn test_smoke() {
     let info = scan::scan(cfg, &mut interner).await;
     let tasks = plan::plan(cfg, &mut interner, &info);
     {
-        let build = build::Build::new(None, &mut interner, tasks);
+        let build = build::Build::new(None, &mut interner, tasks, Instant::now());
         build.await;
     }
 
