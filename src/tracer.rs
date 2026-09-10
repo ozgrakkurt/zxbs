@@ -1,4 +1,5 @@
 use crate::interner::{Interner, Str};
+use std::collections::HashMap;
 
 #[derive(Clone)]
 pub struct Entry {
@@ -13,6 +14,14 @@ pub struct Tracer {
     data: Vec<Entry>,
     begin_timestamp: u64,
 }
+
+const COLORS: [&str; 5] = [
+    "thread_state_iowait",
+    "thread_state_running",
+    "thread_state_runnable",
+    "thread_state_sleeping",
+    "thread_state_unknown",
+];
 
 impl Tracer {
     pub fn new(begin_timestamp: u64) -> Tracer {
@@ -32,6 +41,8 @@ impl Tracer {
         start: u64,
         duration: u64,
         name: String,
+        category: String,
+        color: String,
     ) -> serde_json::Value {
         let mut obj = serde_json::Map::<String, serde_json::Value>::new();
 
@@ -56,6 +67,8 @@ impl Tracer {
             serde_json::Value::Number(serde_json::Number::from(duration)),
         );
         obj.insert("name".to_owned(), serde_json::Value::String(name));
+        obj.insert("cat".to_owned(), serde_json::Value::String(category));
+        obj.insert("cname".to_owned(), serde_json::Value::String(color));
 
         serde_json::Value::Object(obj)
     }
@@ -69,11 +82,34 @@ impl Tracer {
     ) -> String {
         let mut events: Vec<serde_json::Value> = Vec::with_capacity(self.data.len());
 
-        events.push(self.make_trace_event(0, scan_timing.0, scan_timing.1, "Scan".to_owned()));
-        events.push(self.make_trace_event(0, plan_timing.0, plan_timing.1, "Plan".to_owned()));
-        events.push(self.make_trace_event(0, build_timing.0, build_timing.1, "Build".to_owned()));
+        events.push(self.make_trace_event(
+            0,
+            scan_timing.0,
+            scan_timing.1,
+            "Scan".to_owned(),
+            "Scan".to_owned(),
+            "generic_work".to_owned(),
+        ));
+        events.push(self.make_trace_event(
+            0,
+            plan_timing.0,
+            plan_timing.1,
+            "Plan".to_owned(),
+            "Plan".to_owned(),
+            "generic_work".to_owned(),
+        ));
+        events.push(self.make_trace_event(
+            0,
+            build_timing.0,
+            build_timing.1,
+            "Build".to_owned(),
+            "Build".to_owned(),
+            "generic_work".to_owned(),
+        ));
 
         let mut thread_id: u64 = 1;
+        let mut color_mapping = HashMap::<Str, usize>::new();
+        let mut color_slot: usize = 0;
         for entry in self.data.iter() {
             let name: String = entry
                 .outputs
@@ -81,7 +117,23 @@ impl Tracer {
                 .map(|&s| interner.get(s))
                 .collect::<Vec<_>>()
                 .join("-");
-            events.push(self.make_trace_event(thread_id, entry.start, entry.duration, name));
+            let color: String = match color_mapping.get(&entry.kind) {
+                Some(v) => COLORS[*v].to_owned(),
+                None => {
+                    color_mapping.insert(entry.kind, color_slot);
+                    let out = COLORS[color_slot].to_owned();
+                    color_slot = (color_slot + 1) % COLORS.len();
+                    out
+                }
+            };
+            events.push(self.make_trace_event(
+                thread_id,
+                entry.start,
+                entry.duration,
+                name,
+                interner.get(entry.kind).to_owned(),
+                color,
+            ));
             thread_id += 1;
         }
 
