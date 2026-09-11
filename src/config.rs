@@ -125,6 +125,11 @@ fn make_cxxflags(cfg: &FlagCfg) -> Vec<&'static str> {
         "-nostdinc",
         "--target=x86_64-linux-none",
         "-fmodules-reduced-bmi",
+        // Limit max number of errors to collect before quitting compilation.
+        // Having less errors printed is nice since it means it is no necessary to scroll upwards to find
+        // the first errors.
+        // This might be a problem if the compilation is too slow but it shouldn't be.
+        "-ferror-limit=2",
     ];
 
     cxxflags.push(format!("-O{}", cfg.opt_level).leak());
