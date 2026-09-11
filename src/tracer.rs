@@ -8,6 +8,7 @@ pub struct Entry {
     pub outputs: Vec<Str>,
     pub kind: Str,
     pub entry_index: usize,
+    pub slot_index: usize,
 }
 
 pub struct Tracer {
@@ -37,7 +38,7 @@ impl Tracer {
 
     fn make_trace_event(
         &self,
-        thread_id: u64,
+        thread_id: usize,
         start: u64,
         duration: u64,
         name: String,
@@ -107,7 +108,6 @@ impl Tracer {
             "generic_work".to_owned(),
         ));
 
-        let mut thread_id: u64 = 1;
         let mut color_mapping = HashMap::<Str, usize>::new();
         let mut color_slot: usize = 0;
         for entry in self.data.iter() {
@@ -127,14 +127,13 @@ impl Tracer {
                 }
             };
             events.push(self.make_trace_event(
-                thread_id,
+                entry.slot_index + 1,
                 entry.start,
                 entry.duration,
                 name,
                 interner.get(entry.kind).to_owned(),
                 color,
             ));
-            thread_id += 1;
         }
 
         let mut out = serde_json::Map::<String, serde_json::Value>::new();
