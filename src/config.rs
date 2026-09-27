@@ -150,7 +150,6 @@ fn make_cxxflags(cfg: &FlagCfg) -> Vec<&'static str> {
         cxxflags.push("-g1");
         cxxflags.push("-gdwarf64");
         cxxflags.push("-gdwarf-5");
-        cxxflags.push("-funwind-tables");
         cxxflags.push("-fasynchronous-unwind-tables");
         cxxflags.push("-DZX_DEBUG_INFO");
     } else {
