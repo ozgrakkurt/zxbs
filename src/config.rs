@@ -76,6 +76,7 @@ fn make_cxxflags(cfg: &FlagCfg) -> Vec<&'static str> {
         "-Wconversion",
         "-Wsign-conversion",
         "-Wmissing-field-initializers",
+        "-Wmissing-designated-field-initializers",
         "-Wshadow",
         "-Wimplicit-fallthrough",
         // We only use C style structs so this is not an issue. This can cause bugs
