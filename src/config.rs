@@ -198,7 +198,6 @@ fn make_ldflags(cfg: &FlagCfg) -> Vec<&'static str> {
         ldflags.push("-g1");
         ldflags.push("-gdwarf64");
         ldflags.push("-gdwarf-5");
-        ldflags.push("-funwind-tables");
         ldflags.push("-fasynchronous-unwind-tables");
         ldflags.push("-DZX_DEBUG_INFO");
     } else {
