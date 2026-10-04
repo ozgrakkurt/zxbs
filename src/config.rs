@@ -131,6 +131,9 @@ fn make_cxxflags(cfg: &FlagCfg) -> Vec<&'static str> {
         // the first errors.
         // This might be a problem if the compilation is too slow but it shouldn't be.
         "-ferror-limit=2",
+        // no pie
+        "-fno-pic",
+        "-fno-pie",
     ];
 
     cxxflags.push(format!("-O{}", cfg.opt_level).leak());
@@ -149,7 +152,7 @@ fn make_cxxflags(cfg: &FlagCfg) -> Vec<&'static str> {
 
     if cfg.debug_info {
         cxxflags.push("-g1");
-        cxxflags.push("-gdwarf64");
+        cxxflags.push("-gdwarf32");
         cxxflags.push("-gdwarf-5");
         cxxflags.push("-fasynchronous-unwind-tables");
         cxxflags.push("-DZX_DEBUG_INFO");
@@ -191,13 +194,16 @@ fn make_ldflags(cfg: &FlagCfg) -> Vec<&'static str> {
         "-nostdlib",
         "-nostdinc",
         "--target=x86_64-linux-none",
+        // no pie
+        "-fno-pic",
+        "-fno-pie",
     ];
 
     ldflags.push(format!("-O{}", cfg.opt_level).leak());
 
     if cfg.debug_info {
         ldflags.push("-g1");
-        ldflags.push("-gdwarf64");
+        ldflags.push("-gdwarf32");
         ldflags.push("-gdwarf-5");
         ldflags.push("-fasynchronous-unwind-tables");
         ldflags.push("-DZX_DEBUG_INFO");
