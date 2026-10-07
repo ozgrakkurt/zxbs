@@ -49,7 +49,7 @@ impl Tracer {
 
         obj.insert(
             "pid".to_owned(),
-            serde_json::Value::Number(serde_json::Number::from(69)),
+            serde_json::Value::Number(serde_json::Number::from(0)),
         );
         obj.insert(
             "tid".to_owned(),
