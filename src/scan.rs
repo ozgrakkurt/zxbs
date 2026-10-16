@@ -285,25 +285,25 @@ fn check_object_folder_info(
                 if parts.len() != 2 {
                     panic!(
                         "invalid dependency name '{}' in part '{}' of entry '{}'. Failed to parse.",
-                        dep, &info.parts[i], entry_name
+                        dep, info.parts[i], entry_name
                     );
                 }
                 if parts[0] != entry_name {
                     panic!(
                         "invalid dependency name '{}' in part '{}' of entry '{}'. Expected root part to be self entry name since depending directly on partitions of external modules isn't supported.",
-                        dep, &info.parts[i], entry_name
+                        dep, info.parts[i], entry_name
                     );
                 }
                 if !self_module_parts.contains(&parts[1].to_owned()) {
                     panic!(
                         "invalid dependency name '{}' in part '{}' of entry '{}'. Parition isn't a member of the partitions of current entry. Available partitions are: {:?}",
-                        dep, &info.parts[i], entry_name, self_module_parts,
+                        dep, info.parts[i], entry_name, self_module_parts,
                     );
                 }
             } else if dep != entry_name && !ext_deps.contains(dep) {
                 panic!(
                     "Dependency '{}' of part '{}' of entry '{}' is invalid. External dependencies are: {:?}",
-                    dep, &info.parts[i], entry_name, ext_deps
+                    dep, info.parts[i], entry_name, ext_deps
                 );
             }
         }
@@ -356,7 +356,7 @@ async fn scan_entry(config: &'static Config, path: &Path) -> EntryInfo {
             mod_dep_names[idx] = deps;
         }
         let part_name = part_name.to_owned();
-        let cppm_path = mod_path.join(format!("{}.cppm", &part_name));
+        let cppm_path = mod_path.join(format!("{}.cppm", part_name));
         let expected_provides = make_module_name(&entry_name, &part_name);
         join_set.spawn(async move {
             let cppm_deps = scan_deps(config, &cppm_path).await;
