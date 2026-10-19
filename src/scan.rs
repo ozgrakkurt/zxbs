@@ -370,7 +370,7 @@ async fn scan_entry(config: &'static Config, path: &Path) -> EntryInfo {
                 || cppm_deps.provides[0].as_str() != expected_provides.as_str()
             {
                 panic!(
-                    "expected {} to only provide {}, but it provides: {:?}",
+                    "expected `{}` to only provide `{}`, but it provides: `{:?}``",
                     cppm_path.display(),
                     expected_provides,
                     cppm_deps.provides
