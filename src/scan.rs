@@ -215,7 +215,12 @@ pub fn parse_file_name<'name>(
 }
 
 async fn scan_subfolder(expected_extension: &'static str, path: &Path) -> Vec<String> {
-    let mut dir = tokio::fs::read_dir(&path).await.unwrap();
+    let mut dir = match tokio::fs::read_dir(&path).await {
+        Ok(v) => v,
+        Err(e) => {
+            panic!("Failed to read_dir on '{}'. Error: {}", path.display(), e);
+        }
+    };
     let mut names = Vec::new();
     while let Some(file) = dir.next_entry().await.unwrap() {
         let name = parse_file_name(
