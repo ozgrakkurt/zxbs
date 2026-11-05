@@ -24,6 +24,8 @@ async fn run() {
     let info = scan::scan(config, interner).await;
     let scan_duration = make_duration(&t0);
 
+    info.check_subcommand(interner, &subcommand);
+
     t0 = Instant::now();
     let plan_start = make_duration(&beginning);
     let tasks = plan::plan(config, &subcommand, interner, &info);

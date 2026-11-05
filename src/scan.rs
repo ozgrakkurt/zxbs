@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use tokio::task::JoinSet;
 
 use crate::check::check_name;
-use crate::config::Config;
+use crate::config::{Config, Subcommand};
 use crate::interner::{Interner, Str};
 
 pub fn make_module_name(root_name: &str, part_name: &str) -> String {
@@ -27,6 +27,7 @@ struct EntryInfo {
 
 #[derive(Default)]
 pub struct BuildInfo {
+    // maps entry_name => entry_index
     pub map: HashMap<Str, u32>,
     pub name: Vec<Str>,
     pub module: Vec<Vec<Str>>,
@@ -40,6 +41,53 @@ pub struct BuildInfo {
 }
 
 impl BuildInfo {
+    pub fn check_subcommand(&self, interner: &mut Interner, subcommand: &Subcommand) {
+        let (entry_name, part_name, is_test) = match subcommand {
+            Subcommand::RunBinary {
+                entry_name,
+                bin_name,
+                ..
+            } => (entry_name, bin_name, false),
+            Subcommand::TestAll => return,
+            Subcommand::Test {
+                entry_name,
+                test_name,
+            } => (entry_name, test_name, true),
+            Subcommand::Build => return,
+            Subcommand::Fmt => return,
+        };
+
+        let entry = interner.insert(entry_name);
+        let part = interner.insert(part_name);
+
+        let eidx = match self.map.get(&entry) {
+            Some(eidx) => usize::try_from(*eidx).unwrap(),
+            None => panic!(
+                "Subcommand argument `{}:{}` has entry as `{}`. But an entry with this name wasn't found after scanning.",
+                entry_name, part_name, entry_name
+            ),
+        };
+
+        let kind_name = if is_test { "test" } else { "binary" };
+
+        let list = if is_test {
+            &self.test[eidx]
+        } else {
+            &self.bin[eidx]
+        };
+
+        for p in list.iter() {
+            if *p == part {
+                return;
+            }
+        }
+
+        panic!(
+            "Subcommand argument has entry `{}:{}. But the entry `{}` doesn't have a {} named `{}`",
+            entry_name, part_name, entry_name, kind_name, part_name
+        );
+    }
+
     fn push_entry_info(&mut self, interner: &mut Interner, entry_info: EntryInfo) {
         let index = u32::try_from(self.name.len()).unwrap();
         let name = interner.insert(&entry_info.name);
