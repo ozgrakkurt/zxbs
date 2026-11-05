@@ -24,6 +24,7 @@ pub struct Config {
     pub cxx: &'static str,
     pub ar: &'static str,
     pub clang_scan_deps: &'static str,
+    pub clang_format: &'static str,
     pub cxxflags: &'static [&'static str],
     pub ldflags: &'static [&'static str],
     pub build_path: &'static Path,
@@ -336,6 +337,10 @@ impl Config {
             .remove("--clang-scan-deps")
             .map(leak_str)
             .unwrap_or("clang-scan-deps");
+        let clang_format = flags
+            .remove("--clang-format")
+            .map(leak_str)
+            .unwrap_or("clang-format");
         let opt_level = flags.remove("--opt-level").map(leak_str).unwrap_or("0");
         let dev_mode = parse_bool_arg(&mut flags, "dev-mode", true);
         let debug_info = parse_bool_arg(&mut flags, "debug-info", true);
@@ -369,9 +374,10 @@ impl Config {
         let ldflags = make_ldflags(&flag_cfg).leak();
 
         Config {
-            cxx: cxx.to_owned().leak(),
-            ar: ar.to_owned().leak(),
-            clang_scan_deps: clang_scan_deps.to_owned().leak(),
+            cxx,
+            ar,
+            clang_scan_deps,
+            clang_format,
             build_path,
             src_path,
             cxxflags,

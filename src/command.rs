@@ -296,6 +296,56 @@ impl RunBinary {
     }
 }
 
+pub struct Format {
+    pub clang_format: &'static str,
+    pub path: &'static str,
+}
+
+impl Format {
+    pub fn print(&self) -> String {
+        let mut out = String::with_capacity(1024);
+
+        out.push_str("FMT ");
+        out.push_str(self.path);
+
+        out
+    }
+
+    pub async fn run(&self) {
+        let output = match tokio::process::Command::new(self.clang_format)
+            .arg("-i")
+            .arg("--style={BasedOnStyle: LLVM, IndentWidth: 4}")
+            .arg(self.path)
+            .output()
+            .await
+        {
+            Ok(out) => out,
+            Err(e) => {
+                panic!(
+                    "Failed to run command. Command:\n\t{}\nError = {:?}\n",
+                    self.print(),
+                    e,
+                );
+            }
+        };
+
+        if !output.status.success() {
+            let stderr = String::from_utf8(output.stderr).unwrap();
+            panic!(
+                "Running clang format failed. Command:\n\t{}\nStatus: {}\nStdErr:\n{}\n",
+                self.print(),
+                output.status,
+                stderr,
+            );
+        }
+
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        if !stdout.trim().is_empty() {
+            eprintln!("STDOUT of {}:\n{}", self.print(), stdout.as_str());
+        }
+    }
+}
+
 pub struct TestCmd {
     pub finished: Arc<Mutex<HashSet<Str>>>,
     pub inputs: Vec<Str>,
@@ -330,6 +380,7 @@ pub enum Command {
     ArchiveLib(ArchiveLib),
     LinkBinary(LinkBinary),
     RunBinary(RunBinary),
+    Format(Format),
     TestCmd(TestCmd),
 }
 
@@ -341,6 +392,7 @@ impl Command {
             Command::ArchiveLib(x) => x.print(),
             Command::LinkBinary(x) => x.print(),
             Command::RunBinary(x) => x.print(),
+            Command::Format(x) => x.print(),
             Command::TestCmd(x) => x.print(),
         }
     }
@@ -352,6 +404,7 @@ impl Command {
             Command::ArchiveLib(x) => x.run().await,
             Command::LinkBinary(x) => x.run().await,
             Command::RunBinary(x) => x.run().await,
+            Command::Format(x) => x.run().await,
             Command::TestCmd(x) => x.run().await,
         }
     }
@@ -363,6 +416,7 @@ impl Command {
             Command::ArchiveLib(_) => "ArchiveLib",
             Command::LinkBinary(_) => "LinkBinary",
             Command::RunBinary(_) => "RunBinary",
+            Command::Format(_) => "Format",
             Command::TestCmd(_) => "TestCmd",
         }
     }

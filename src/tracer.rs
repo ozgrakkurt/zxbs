@@ -16,6 +16,10 @@ pub struct Tracer {
     begin_timestamp: u64,
 }
 
+// These are defined somewhere in chrome://tracing format documentation/source code somewhere.
+// Unfortunately I can't remember where it is at the time of writing this comment.
+//
+// Yes, just using 'gray' 'orange' etc. doesn't work.
 const COLORS: [&str; 5] = [
     "thread_state_iowait",
     "thread_state_running",

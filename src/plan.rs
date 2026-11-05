@@ -1,7 +1,9 @@
 use std::collections::HashSet;
 
 use crate::build::Task;
-use crate::command::{ArchiveLib, Command, CompileModule, CompileToObject, LinkBinary, RunBinary};
+use crate::command::{
+    ArchiveLib, Command, CompileModule, CompileToObject, Format, LinkBinary, RunBinary,
+};
 use crate::config::{Config, Subcommand};
 use crate::interner::{Interner, Str};
 use crate::scan::BuildInfo;
@@ -369,6 +371,88 @@ fn collect_lib_path_list(
     path_list.leak()
 }
 
+fn plan_subfolder_fmt(
+    config: &Config,
+    interner: &mut Interner,
+    entry_index: usize,
+    entry_name: Str,
+    sub_name: &str,
+    parts: &[Str],
+    extension: &str,
+    tasks: &mut Vec<Task>,
+) {
+    for &part_name in parts.iter() {
+        let src_path = config
+            .src_path
+            .join(interner.get(entry_name))
+            .join(sub_name)
+            .join(format!("{}.{}", interner.get(part_name), extension));
+        let src_path_index = interner.insert(src_path.to_str().unwrap());
+        let src_path = interner.get(src_path_index);
+
+        tasks.push(Task {
+            inputs: Vec::new(),
+            outputs: Vec::new(),
+            command: Some(Command::Format(Format {
+                clang_format: config.clang_format,
+                path: src_path,
+            })),
+            entry_index,
+        });
+    }
+}
+
+fn plan_fmt(config: &Config, interner: &mut Interner, info: &BuildInfo) -> Vec<Task> {
+    let mut tasks = Vec::new();
+
+    for eidx in 0..info.name.len() {
+        let entry_name = info.name[eidx];
+
+        plan_subfolder_fmt(
+            config,
+            interner,
+            eidx,
+            entry_name,
+            "lib",
+            &info.lib[eidx],
+            "cc",
+            &mut tasks,
+        );
+        plan_subfolder_fmt(
+            config,
+            interner,
+            eidx,
+            entry_name,
+            "mod",
+            &info.module[eidx],
+            "cppm",
+            &mut tasks,
+        );
+        plan_subfolder_fmt(
+            config,
+            interner,
+            eidx,
+            entry_name,
+            "bin",
+            &info.bin[eidx],
+            "cc",
+            &mut tasks,
+        );
+        plan_subfolder_fmt(
+            config,
+            interner,
+            eidx,
+            entry_name,
+            "test",
+            &info.test[eidx],
+            "cc",
+            &mut tasks,
+        );
+    }
+
+    tasks
+}
+
 pub fn plan(
     config: &Config,
     subcommand: &Subcommand,
@@ -381,6 +465,10 @@ pub fn plan(
     assert_eq!(info.name.len(), info.bin.len());
     assert_eq!(info.name.len(), info.test.len());
     assert_eq!(info.name.len(), info.deps.len());
+
+    if subcommand == &Subcommand::Fmt {
+        return plan_fmt(config, interner, info);
+    }
 
     let mut tasks = Vec::new();
 
