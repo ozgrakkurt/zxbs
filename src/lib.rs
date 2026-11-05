@@ -4,6 +4,7 @@
 #![allow(clippy::manual_range_contains)]
 #![allow(clippy::len_without_is_empty)]
 #![allow(clippy::explicit_counter_loop)]
+#![allow(clippy::while_let_on_iterator)]
 
 pub mod build;
 pub mod check;

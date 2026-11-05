@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use crate::check::check_name;
+
 #[derive(Debug, PartialEq)]
 pub enum Subcommand {
     RunBinary {
@@ -236,12 +238,12 @@ fn leak_str(s: String) -> &'static str {
     s.leak()
 }
 
-fn parse_subcommand_arg(arg: &str) -> (&str, &str) {
+pub fn parse_subcommand_arg(arg: &str) -> (String, String) {
     let parts: Vec<_> = arg.split(':').collect();
     assert_eq!(parts.len(), 2, "invalid subcommand argument: `{}`", arg);
     check_name(parts[0]);
     check_name(parts[1]);
-    (parts[0], parts[1])
+    (parts[0].to_owned(), parts[1].to_owned())
 }
 
 impl Config {
@@ -252,9 +254,8 @@ impl Config {
     ) -> Subcommand {
         match subcommand {
             "run" => {
-                let (entry_name, bin_name) = parse_subcommand_arg(
-                    args.next().expect("Expected argument for `run` sucommand."),
-                );
+                let arg = args.next().expect("Expected argument for `run` sucommand.");
+                let (entry_name, bin_name) = parse_subcommand_arg(&arg);
                 Subcommand::RunBinary {
                     entry_name,
                     bin_name,
@@ -263,7 +264,7 @@ impl Config {
             }
             "test" => {
                 if let Some(arg) = args.next() {
-                    let (entry_name, test_name) = parse_subcommand_arg(arg);
+                    let (entry_name, test_name) = parse_subcommand_arg(&arg);
                     Subcommand::Test {
                         entry_name,
                         test_name,
@@ -336,13 +337,13 @@ impl Config {
             .map(leak_str)
             .unwrap_or("clang-scan-deps");
         let opt_level = flags.remove("--opt-level").map(leak_str).unwrap_or("0");
-        let dev_mode = get_bool_arg(&mut flags, "dev-mode", true);
-        let debug_info = get_bool_arg(&mut flags, "debug-info", true);
-        let fuzz = get_bool_arg(&mut flags, "fuzz", false);
+        let dev_mode = parse_bool_arg(&mut flags, "dev-mode", true);
+        let debug_info = parse_bool_arg(&mut flags, "debug-info", true);
+        let fuzz = parse_bool_arg(&mut flags, "fuzz", false);
         let src_dir = flags.remove("--src-dir").map(leak_str).unwrap_or("src");
         let build_dir: &'static str = flags.remove("--build-dir").map(leak_str).unwrap_or("build");
-        let time_trace = get_bool_arg(&mut flags, "time-trace", false);
-        let cxx_time_trace = get_bool_arg(&mut flags, "cxx-time-trace", false);
+        let time_trace = parse_bool_arg(&mut flags, "time-trace", false);
+        let cxx_time_trace = parse_bool_arg(&mut flags, "cxx-time-trace", false);
 
         if !flags.is_empty() {
             eprintln!("Found unexpected flags: ");
@@ -379,15 +380,15 @@ impl Config {
         }
     }
 
-    fn parse_cli() -> (Config, Subcommand) {
+    pub fn parse_cli() -> (Config, Subcommand) {
         let mut args = std::env::args();
         args.next().unwrap();
 
-        let (mut flags, subcommand_name) = parse_flags(&mut args);
+        let (flags, subcommand_name) = Self::parse_flags(&mut args);
 
-        let subcommand = parse_subcommand(flags.is_empty(), subcommand_name, &mut args);
+        let subcommand = Self::parse_subcommand(flags.is_empty(), &subcommand_name, &mut args);
 
-        let config = parse_config(&mut flags);
+        let config = Self::parse_config(flags);
 
         (config, subcommand)
     }

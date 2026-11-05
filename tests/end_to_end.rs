@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::time::Instant;
 
-use config::Config;
+use config::{Config, Subcommand};
 use interner::Interner;
 use zxbs::{build, config, interner, plan, scan};
 
@@ -22,17 +22,17 @@ async fn test_smoke() {
     make_iolib(Path::new(&src_path)).await;
     make_myapp(Path::new(&src_path)).await;
 
-    let mut args = HashMap::new();
-    args.insert("--build-dir".to_owned(), build_path.clone());
-    args.insert("--src-dir".to_owned(), src_path.clone());
-    let cfg: &'static Config = Box::leak(Box::new(Config::parse_args(args)));
+    let mut flags = HashMap::new();
+    flags.insert("--build-dir".to_owned(), build_path.clone());
+    flags.insert("--src-dir".to_owned(), src_path.clone());
+    let cfg: &'static Config = Box::leak(Box::new(Config::parse_config(flags)));
 
     let mut interner = Interner::new();
 
     // run entire build and then check that the files actually exist
 
     let info = scan::scan(cfg, &mut interner).await;
-    let tasks = plan::plan(cfg, &mut interner, &info);
+    let tasks = plan::plan(cfg, &Subcommand::TestAll, &mut interner, &info);
     {
         let build = build::Build::new(None, &mut interner, tasks, Instant::now());
         build.await;

@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use crate::build::Task;
 use crate::command::{ArchiveLib, Command, CompileModule, CompileToObject, LinkBinary, RunBinary};
-use crate::config::Config;
+use crate::config::{Config, Subcommand};
 use crate::interner::{Interner, Str};
 use crate::scan::BuildInfo;
 
@@ -11,6 +11,28 @@ pub fn make_module_artifact_name(root_name: &str, part_name: &str, extension: &s
         format!("{}.{}", root_name, extension)
     } else {
         format!("{}-{}.{}", root_name, part_name, extension)
+    }
+}
+
+pub fn should_run(subcommand: &Subcommand, is_test: bool, entry: &str, part: &str) -> bool {
+    if is_test {
+        match subcommand {
+            Subcommand::TestAll => true,
+            Subcommand::Test {
+                entry_name,
+                test_name,
+            } => entry == entry_name && part == test_name,
+            _ => false,
+        }
+    } else {
+        match subcommand {
+            Subcommand::RunBinary {
+                entry_name,
+                bin_name,
+                ..
+            } => entry == entry_name && part == bin_name,
+            _ => false,
+        }
     }
 }
 
@@ -180,6 +202,7 @@ fn plan_lib_build(
 
 fn plan_bin_build(
     config: &Config,
+    subcommand: &Subcommand,
     interner: &mut Interner,
     tasks: &mut Vec<Task>,
     info: &BuildInfo,
@@ -230,8 +253,8 @@ fn plan_bin_build(
         let exe_path_index = interner.insert(exe_path.to_str().unwrap());
         let exe_path = interner.get(exe_path_index);
 
-        let test_stamp_path = build_path.join("stamp").join(bin_name);
-        let test_stamp_path_index = interner.insert(test_stamp_path.to_str().unwrap());
+        let stamp_path = build_path.join("stamp").join(bin_name);
+        let stamp_path_index = interner.insert(stamp_path.to_str().unwrap());
 
         let input_indices = vec![self_pcm_path_idx];
         let output_indices = vec![obj_path_index];
@@ -265,9 +288,9 @@ fn plan_bin_build(
             entry_index,
         });
 
-        if is_test {
+        if should_run(subcommand, is_test, entry_name, bin_name) {
             let input_indices = vec![exe_path_index];
-            let output_indices = vec![test_stamp_path_index];
+            let output_indices = vec![stamp_path_index];
 
             tasks.push(Task {
                 inputs: input_indices,
@@ -323,7 +346,12 @@ fn collect_lib_path_list(
     path_list.leak()
 }
 
-pub fn plan(config: &Config, interner: &mut Interner, info: &BuildInfo) -> Vec<Task> {
+pub fn plan(
+    config: &Config,
+    subcommand: &Subcommand,
+    interner: &mut Interner,
+    info: &BuildInfo,
+) -> Vec<Task> {
     assert_eq!(info.name.len(), info.mod_dep_matrix.len());
     assert_eq!(info.name.len(), info.module.len());
     assert_eq!(info.name.len(), info.lib.len());
@@ -345,6 +373,7 @@ pub fn plan(config: &Config, interner: &mut Interner, info: &BuildInfo) -> Vec<T
         for is_test in [true, false] {
             plan_bin_build(
                 config,
+                subcommand,
                 interner,
                 &mut tasks,
                 info,

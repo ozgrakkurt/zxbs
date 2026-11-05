@@ -16,16 +16,16 @@ fn test_empty() {
     std::fs::create_dir_all(&build_path).unwrap();
     std::fs::create_dir_all(&src_path).unwrap();
 
-    let mut args = HashMap::new();
-    args.insert("--build-dir".to_owned(), build_path.clone());
-    args.insert("--src-dir".to_owned(), src_path.clone());
-    let cfg = config::Config::parse_args(args);
+    let mut flags = HashMap::new();
+    flags.insert("--build-dir".to_owned(), build_path.clone());
+    flags.insert("--src-dir".to_owned(), src_path.clone());
+    let cfg = config::Config::parse_config(flags);
 
     let mut interner = interner::Interner::new();
 
     let info = scan::BuildInfo::default();
 
-    let tasks = plan::plan(&cfg, &mut interner, &info);
+    let tasks = plan::plan(&cfg, &config::Subcommand::TestAll, &mut interner, &info);
 
     assert!(tasks.is_empty());
 
@@ -327,10 +327,10 @@ fn test_simple() {
     std::fs::create_dir_all(&build_path).unwrap();
     std::fs::create_dir_all(&src_path).unwrap();
 
-    let mut args = HashMap::new();
-    args.insert("--build-dir".to_owned(), build_path.clone());
-    args.insert("--src-dir".to_owned(), src_path.clone());
-    let cfg = config::Config::parse_args(args);
+    let mut flags = HashMap::new();
+    flags.insert("--build-dir".to_owned(), build_path.clone());
+    flags.insert("--src-dir".to_owned(), src_path.clone());
+    let cfg = config::Config::parse_config(flags);
 
     let mut interner = interner::Interner::new();
 
@@ -402,7 +402,7 @@ fn test_simple() {
     info.test.push(vec![]);
     info.deps.push(vec![baselib, iolib]);
 
-    let tasks = plan::plan(&cfg, &mut interner, &info);
+    let tasks = plan::plan(&cfg, &config::Subcommand::TestAll, &mut interner, &info);
 
     check_pcm_task(
         &tasks[0],

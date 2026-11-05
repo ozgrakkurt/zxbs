@@ -6,7 +6,9 @@ fn make_duration(start: &Instant) -> u64 {
 }
 
 async fn run() {
-    let config: &'static config::Config = Box::leak(Box::new(config::Config::load_args()));
+    let (config, subcommand) = config::Config::parse_cli();
+
+    let config: &'static config::Config = Box::leak(Box::new(config));
 
     let _ = tokio::fs::remove_dir_all(config.build_path).await;
     tokio::fs::create_dir_all(config.build_path).await.unwrap();
@@ -24,7 +26,7 @@ async fn run() {
 
     t0 = Instant::now();
     let plan_start = make_duration(&beginning);
-    let tasks = plan::plan(config, interner, &info);
+    let tasks = plan::plan(config, &subcommand, interner, &info);
     let plan_duration = make_duration(&t0);
 
     t0 = Instant::now();
