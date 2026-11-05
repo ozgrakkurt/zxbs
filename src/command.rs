@@ -250,6 +250,7 @@ impl LinkBinary {
 
 pub struct RunBinary {
     pub path: &'static str,
+    pub args: &'static [&'static str],
 }
 
 impl RunBinary {
@@ -263,7 +264,11 @@ impl RunBinary {
     }
 
     pub async fn run(&self) {
-        let output = match tokio::process::Command::new(self.path).output().await {
+        let output = match tokio::process::Command::new(self.path)
+            .args(self.args)
+            .output()
+            .await
+        {
             Ok(out) => out,
             Err(e) => {
                 panic!(

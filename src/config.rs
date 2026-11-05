@@ -8,7 +8,7 @@ pub enum Subcommand {
     RunBinary {
         entry_name: String,
         bin_name: String,
-        args: Vec<String>,
+        args: &'static [&'static str],
     },
     TestAll,
     Test {
@@ -259,7 +259,7 @@ impl Config {
                 Subcommand::RunBinary {
                     entry_name,
                     bin_name,
-                    args: args.collect::<Vec<String>>(),
+                    args: args.map(leak_str).collect::<Vec<&'static str>>().leak(),
                 }
             }
             "test" => {

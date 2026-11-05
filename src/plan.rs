@@ -14,24 +14,44 @@ pub fn make_module_artifact_name(root_name: &str, part_name: &str, extension: &s
     }
 }
 
-pub fn should_run(subcommand: &Subcommand, is_test: bool, entry: &str, part: &str) -> bool {
+// checks if given binary part should run according to the subcommand.
+// Returns None if it shouldn't run.
+// Returns Some(arguments) if it should run. The arguments are supposed to be passed as cli arguments into the binary.
+pub fn should_run(
+    subcommand: &Subcommand,
+    is_test: bool,
+    entry: &str,
+    part: &str,
+) -> Option<&'static [&'static str]> {
     if is_test {
         match subcommand {
-            Subcommand::TestAll => true,
+            Subcommand::TestAll => Some(&[]),
             Subcommand::Test {
                 entry_name,
                 test_name,
-            } => entry == entry_name && part == test_name,
-            _ => false,
+            } => {
+                if entry == entry_name && part == test_name {
+                    Some(&[])
+                } else {
+                    None
+                }
+            }
+            _ => None,
         }
     } else {
         match subcommand {
             Subcommand::RunBinary {
                 entry_name,
                 bin_name,
-                ..
-            } => entry == entry_name && part == bin_name,
-            _ => false,
+                args,
+            } => {
+                if entry == entry_name && part == bin_name {
+                    Some(args)
+                } else {
+                    None
+                }
+            }
+            _ => None,
         }
     }
 }
@@ -288,14 +308,17 @@ fn plan_bin_build(
             entry_index,
         });
 
-        if should_run(subcommand, is_test, entry_name, bin_name) {
+        if let Some(args) = should_run(subcommand, is_test, entry_name, bin_name) {
             let input_indices = vec![exe_path_index];
             let output_indices = vec![stamp_path_index];
 
             tasks.push(Task {
                 inputs: input_indices,
                 outputs: output_indices,
-                command: Some(Command::RunBinary(RunBinary { path: exe_path })),
+                command: Some(Command::RunBinary(RunBinary {
+                    path: exe_path,
+                    args,
+                })),
                 entry_index,
             });
         }
