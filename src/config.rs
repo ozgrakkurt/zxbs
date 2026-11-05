@@ -2,6 +2,22 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, PartialEq)]
+pub enum Subcommand {
+    RunBinary {
+        entry_name: String,
+        bin_name: String,
+        args: Vec<String>,
+    },
+    TestAll,
+    Test {
+        entry_name: String,
+        test_name: String,
+    },
+    Build,
+    Fmt,
+}
+
+#[derive(Debug, PartialEq)]
 pub struct Config {
     pub cxx: &'static str,
     pub ar: &'static str,
@@ -13,7 +29,7 @@ pub struct Config {
     pub time_trace: bool,
 }
 
-fn get_bool_arg(args: &mut HashMap<String, String>, name: &str, default: bool) -> bool {
+fn parse_bool_arg(args: &mut HashMap<String, String>, name: &str, default: bool) -> bool {
     let positive = format!("--{}", name);
     let negative = format!("--no-{}", name);
 
@@ -220,21 +236,83 @@ fn leak_str(s: String) -> &'static str {
     s.leak()
 }
 
-impl Config {
-    fn load_cli_args() -> HashMap<String, String> {
-        let mut args = HashMap::<String, String>::new();
+fn parse_subcommand_arg(arg: &str) -> (&str, &str) {
+    let parts: Vec<_> = arg.split(':').collect();
+    assert_eq!(parts.len(), 2, "invalid subcommand argument: `{}`", arg);
+    check_name(parts[0]);
+    check_name(parts[1]);
+    (parts[0], parts[1])
+}
 
-        for arg in std::env::args().skip(1) {
+impl Config {
+    fn parse_subcommand(
+        flags_is_empty: bool,
+        subcommand: &str,
+        args: &mut std::env::Args,
+    ) -> Subcommand {
+        match subcommand {
+            "run" => {
+                let (entry_name, bin_name) = parse_subcommand_arg(
+                    args.next().expect("Expected argument for `run` sucommand."),
+                );
+                Subcommand::RunBinary {
+                    entry_name,
+                    bin_name,
+                    args: args.collect::<Vec<String>>(),
+                }
+            }
+            "test" => {
+                if let Some(arg) = args.next() {
+                    let (entry_name, test_name) = parse_subcommand_arg(arg);
+                    Subcommand::Test {
+                        entry_name,
+                        test_name,
+                    }
+                } else {
+                    Subcommand::TestAll
+                }
+            }
+            "build" => {
+                assert!(
+                    args.next().is_none(),
+                    "Didn't expect arguments for `build` subcommand"
+                );
+                Subcommand::Build
+            }
+            "fmt" => {
+                assert!(
+                    flags_is_empty,
+                    "expected no flags while running the `fmt` subcommand"
+                );
+                assert!(
+                    args.next().is_none(),
+                    "Didn't expect arguments for `fmt` subcommand"
+                );
+                Subcommand::Fmt
+            }
+            sc => panic!("unexpected subcommand name: `{}`", sc),
+        }
+    }
+
+    // returns parsed flag map and the subcommand name
+    fn parse_flags(args: &mut std::env::Args) -> (HashMap<String, String>, String) {
+        let mut flags = HashMap::<String, String>::new();
+
+        while let Some(arg) = args.next() {
+            if !arg.starts_with("--") {
+                return (flags, arg);
+            }
+
             let parts = arg.split('=').collect::<Vec<&str>>();
 
             match parts.len() {
                 1 => {
-                    if args.insert(arg.clone(), "".to_owned()).is_some() {
+                    if flags.insert(arg.clone(), "".to_owned()).is_some() {
                         panic!("Duplicate argument: {}", arg);
                     }
                 }
                 2 => {
-                    if args
+                    if flags
                         .insert(parts[0].to_owned(), parts[1].to_owned())
                         .is_some()
                     {
@@ -247,28 +325,28 @@ impl Config {
             }
         }
 
-        args
+        panic!("Expected a subcommand.");
     }
 
-    pub fn parse_args(mut args: HashMap<String, String>) -> Config {
-        let cxx = args.remove("--cxx").map(leak_str).unwrap_or("clang++");
-        let ar = args.remove("--ar").map(leak_str).unwrap_or("llvm-ar");
-        let clang_scan_deps = args
+    pub fn parse_config(mut flags: HashMap<String, String>) -> Config {
+        let cxx = flags.remove("--cxx").map(leak_str).unwrap_or("clang++");
+        let ar = flags.remove("--ar").map(leak_str).unwrap_or("llvm-ar");
+        let clang_scan_deps = flags
             .remove("--clang-scan-deps")
             .map(leak_str)
             .unwrap_or("clang-scan-deps");
-        let opt_level = args.remove("--opt-level").map(leak_str).unwrap_or("0");
-        let dev_mode = get_bool_arg(&mut args, "dev-mode", true);
-        let debug_info = get_bool_arg(&mut args, "debug-info", true);
-        let fuzz = get_bool_arg(&mut args, "fuzz", false);
-        let src_dir = args.remove("--src-dir").map(leak_str).unwrap_or("src");
-        let build_dir: &'static str = args.remove("--build-dir").map(leak_str).unwrap_or("build");
-        let time_trace = get_bool_arg(&mut args, "time-trace", false);
-        let cxx_time_trace = get_bool_arg(&mut args, "cxx-time-trace", false);
+        let opt_level = flags.remove("--opt-level").map(leak_str).unwrap_or("0");
+        let dev_mode = get_bool_arg(&mut flags, "dev-mode", true);
+        let debug_info = get_bool_arg(&mut flags, "debug-info", true);
+        let fuzz = get_bool_arg(&mut flags, "fuzz", false);
+        let src_dir = flags.remove("--src-dir").map(leak_str).unwrap_or("src");
+        let build_dir: &'static str = flags.remove("--build-dir").map(leak_str).unwrap_or("build");
+        let time_trace = get_bool_arg(&mut flags, "time-trace", false);
+        let cxx_time_trace = get_bool_arg(&mut flags, "cxx-time-trace", false);
 
-        if !args.is_empty() {
+        if !flags.is_empty() {
             eprintln!("Found unexpected flags: ");
-            for arg in args.keys() {
+            for arg in flags.keys() {
                 eprintln!("{}", arg);
             }
             panic!("It is not allowed to pass unexpected flags, aborting build...");
@@ -301,7 +379,16 @@ impl Config {
         }
     }
 
-    pub fn load_args() -> Config {
-        Self::parse_args(Self::load_cli_args())
+    fn parse_cli() -> (Config, Subcommand) {
+        let mut args = std::env::args();
+        args.next().unwrap();
+
+        let (mut flags, subcommand_name) = parse_flags(&mut args);
+
+        let subcommand = parse_subcommand(flags.is_empty(), subcommand_name, &mut args);
+
+        let config = parse_config(&mut flags);
+
+        (config, subcommand)
     }
 }

@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use tokio::task::JoinSet;
 
+use crate::check::check_name;
 use crate::config::Config;
 use crate::interner::{Interner, Str};
 
@@ -161,26 +162,6 @@ async fn read_deps_file(path: PathBuf) -> Vec<String> {
     }))
     .unwrap();
     parse_deps_file(contents.as_str())
-}
-
-fn check_name(name_str: &str) {
-    let name = name_str.as_bytes();
-    assert!(!name.is_empty(), "invalid name: {}", name_str);
-    assert!(
-        name[0] >= b'a' && name[0] <= b'z',
-        "invalid name: {}",
-        name_str
-    );
-    for &byte in name {
-        let is_char = byte >= b'a' && byte <= b'z';
-        let is_digit = byte.is_ascii_digit();
-        let is_underscore = byte == b'_';
-        assert!(
-            is_char || is_digit || is_underscore,
-            "invalid name: {}",
-            name_str,
-        );
-    }
 }
 
 pub fn parse_file_name<'name>(

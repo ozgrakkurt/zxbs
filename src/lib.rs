@@ -6,6 +6,7 @@
 #![allow(clippy::explicit_counter_loop)]
 
 pub mod build;
+pub mod check;
 pub mod command;
 pub mod config;
 pub mod interner;
