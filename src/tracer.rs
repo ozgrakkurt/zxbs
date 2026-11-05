@@ -5,7 +5,8 @@ use std::collections::HashMap;
 pub struct Entry {
     pub start: u64,
     pub duration: u64,
-    pub outputs: Vec<Str>,
+    pub entry_name: Str,
+    pub part_name: Str,
     pub kind: Str,
     pub entry_index: usize,
     pub slot_index: usize,
@@ -115,12 +116,6 @@ impl Tracer {
         let mut color_mapping = HashMap::<Str, usize>::new();
         let mut color_slot: usize = 0;
         for entry in self.data.iter() {
-            let name: String = entry
-                .outputs
-                .iter()
-                .map(|&s| interner.get(s))
-                .collect::<Vec<_>>()
-                .join("-");
             let color: String = match color_mapping.get(&entry.kind) {
                 Some(v) => COLORS[*v].to_owned(),
                 None => {
@@ -134,7 +129,11 @@ impl Tracer {
                 entry.slot_index + 1,
                 entry.start,
                 entry.duration,
-                name,
+                format!(
+                    "{}:{}",
+                    interner.get(entry.entry_name),
+                    interner.get(entry.part_name)
+                ),
                 interner.get(entry.kind).to_owned(),
                 color,
             ));

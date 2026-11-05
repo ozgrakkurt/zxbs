@@ -21,6 +21,8 @@ impl TaskIndex {
 }
 
 pub struct Task {
+    pub entry_name: Str,
+    pub part_name: Str,
     pub inputs: Vec<Str>,
     pub outputs: Vec<Str>,
     pub command: Option<Command>,
@@ -121,7 +123,8 @@ impl<'a> Build<'a> {
                 start,
                 duration,
                 kind,
-                outputs: task.outputs.clone(),
+                entry_name: task.entry_name,
+                part_name: task.part_name,
                 entry_index: task.entry_index,
                 slot_index,
             });

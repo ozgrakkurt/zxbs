@@ -8,6 +8,7 @@ use rand::seq::SliceRandom;
 use std::collections::HashSet;
 use std::sync::OnceLock;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 use zxbs::{build, command, interner};
 
 use rand::SeedableRng as _;
@@ -35,6 +36,9 @@ fn make_task(
     outputs: Vec<Str>,
 ) -> build::Task {
     build::Task {
+        entry_name: Str::from_usize(0),
+        part_name: Str::from_usize(0),
+        entry_index: 69,
         inputs: inputs.clone(),
         outputs: outputs.clone(),
         command: Some(command::Command::TestCmd(command::TestCmd {
@@ -103,7 +107,7 @@ fuzz_target!(|fuzz_input: &[u8]| {
 
     tasks.shuffle(&mut rng);
 
-    let build = build::Build::new(None, &mut interner, tasks);
+    let build = build::Build::new(None, &mut interner, tasks, Instant::now());
 
     let rt = tokio::runtime::Runtime::new().unwrap();
 

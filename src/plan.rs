@@ -121,6 +121,8 @@ fn plan_module_build(
         let cppm_path = interner.get(cppm_path);
 
         tasks.push(Task {
+            entry_name: info.name[entry_index],
+            part_name: part,
             inputs: input_indices,
             outputs: output_indices,
             command: Some(Command::CompileModule(CompileModule {
@@ -191,6 +193,8 @@ fn plan_lib_build(
         let output_indices = vec![obj_path_index];
 
         tasks.push(Task {
+            entry_name: info.name[entry_index],
+            part_name: part_name_idx,
             inputs: input_indices,
             outputs: output_indices,
             command: Some(Command::CompileToObject(CompileToObject {
@@ -211,6 +215,8 @@ fn plan_lib_build(
     let output_indices = vec![lib_output_path_idx];
 
     tasks.push(Task {
+        entry_name: info.name[entry_index],
+        part_name: interner.insert("@ARCHIVE_LIB@"),
         inputs: input_indices,
         outputs: output_indices,
         command: Some(Command::ArchiveLib(ArchiveLib {
@@ -282,6 +288,8 @@ fn plan_bin_build(
         let output_indices = vec![obj_path_index];
 
         tasks.push(Task {
+            entry_name: info.name[entry_index],
+            part_name: bin_name_idx,
             inputs: input_indices,
             outputs: output_indices,
             command: Some(Command::CompileToObject(CompileToObject {
@@ -298,6 +306,8 @@ fn plan_bin_build(
         let output_indices = vec![exe_path_index];
 
         tasks.push(Task {
+            entry_name: info.name[entry_index],
+            part_name: bin_name_idx,
             inputs: input_indices,
             outputs: output_indices,
             command: Some(Command::LinkBinary(LinkBinary {
@@ -315,6 +325,8 @@ fn plan_bin_build(
             let output_indices = vec![stamp_path_index];
 
             tasks.push(Task {
+                entry_name: info.name[entry_index],
+                part_name: bin_name_idx,
                 inputs: input_indices,
                 outputs: output_indices,
                 command: Some(Command::RunBinary(RunBinary {
@@ -391,6 +403,8 @@ fn plan_subfolder_fmt(
         let src_path = interner.get(src_path_index);
 
         tasks.push(Task {
+            entry_name,
+            part_name,
             inputs: Vec::new(),
             outputs: Vec::new(),
             command: Some(Command::Format(Format {

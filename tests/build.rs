@@ -1,4 +1,4 @@
-use interner::Str;
+use interner::{Interner, Str};
 use rand::seq::SliceRandom;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -7,11 +7,14 @@ use std::time::Instant;
 use zxbs::{build, command, interner};
 
 fn make_task(
+    interner: &mut Interner,
     finished: Arc<Mutex<HashSet<Str>>>,
     inputs: Vec<Str>,
     outputs: Vec<Str>,
 ) -> build::Task {
     build::Task {
+        entry_name: interner.insert("dummy_entry"),
+        part_name: interner.insert("dummy_part"),
         inputs: inputs.clone(),
         outputs: outputs.clone(),
         command: Some(command::Command::TestCmd(command::TestCmd {
@@ -42,10 +45,10 @@ async fn simple_run() {
     let finished = Arc::new(Mutex::new(HashSet::new()));
 
     let mut tasks = vec![
-        make_task(finished.clone(), vec![], vec![one]),
-        make_task(finished.clone(), vec![one], vec![two]),
-        make_task(finished.clone(), vec![one, two], vec![three]),
-        make_task(finished.clone(), vec![three], vec![four]),
+        make_task(&mut interner, finished.clone(), vec![], vec![one]),
+        make_task(&mut interner, finished.clone(), vec![one], vec![two]),
+        make_task(&mut interner, finished.clone(), vec![one, two], vec![three]),
+        make_task(&mut interner, finished.clone(), vec![three], vec![four]),
     ];
 
     let mut rng = rand::rng();
