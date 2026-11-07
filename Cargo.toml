@@ -8,6 +8,7 @@ serde_json = "1"
 num_cpus = "1"
 tokio = { version = "1.53.1", features = ["full"] }
 futures = "0.3"
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
 
 [dev-dependencies]
 rand = { version = "0.10.2", features = ["thread_rng"] }

@@ -180,7 +180,7 @@ impl<'a> Future for Build<'a> {
                 None => break,
             };
 
-            let mut command = fut.tasks[task_idx.to_usize()].command.take().unwrap();
+            let command = fut.tasks[task_idx.to_usize()].command.take().unwrap();
             let task_start = u64::try_from(fut.beginning.elapsed().as_micros()).unwrap();
             let task_begin = Instant::now();
             let slot_index = fut.free_slot_indices.pop().unwrap();

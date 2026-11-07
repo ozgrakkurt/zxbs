@@ -1,5 +1,8 @@
 use std::collections::HashSet;
+use std::io::ErrorKind as IoErrorKind;
 use std::sync::{Arc, Mutex};
+
+use xxhash_rust::xxh3::xxh3_64 as hash_bytes;
 
 use crate::interner::Str;
 
@@ -346,6 +349,10 @@ impl Format {
     }
 }
 
+// Dummy command to be used when running tests.
+//
+// Just checks that everything is consistent and the build isn't running
+// in the wrong order.
 pub struct TestCmd {
     pub finished: Arc<Mutex<HashSet<Str>>>,
     pub inputs: Vec<Str>,
@@ -379,15 +386,33 @@ pub struct CacheLoad {
     pub output_path: &'static str,
     pub input_hash: u64,
     pub expected_hash: u64,
+    pub expected_size: u32,
 }
 
-impl CacheLoad {}
+impl CacheLoad {
+    pub fn print(&self) -> String {
+        let mut out = String::with_capacity(1024);
+
+        out.push_str("CACHE_LOAD ");
+        out.push_str(&format!("{:x}", self.input_hash));
+
+        out
+    }
+
+    pub async fn run(&self) {
+        let cache_path = format!("{}/{:x}", self.cache_files_path, self.input_hash);
+        let data = tokio::fs::read(&cache_path).await.unwrap();
+        assert!(u32::try_from(data.len()).unwrap() == self.expected_size);
+        let hash = hash_bytes(&data);
+        assert!(hash == self.expected_hash);
+        tokio::fs::write(self.output_path, &data).await.unwrap();
+    }
+}
 
 pub struct CacheStore {
     pub cache_files_path: &'static str,
     pub file_path: &'static str,
     pub input_hash: u64,
-    pub expected_hash: u64,
 }
 
 // CACHE STORES MIGHT BE INTERRUPTED BECAUSE OTHER TASKS FAIL WHILE
@@ -399,7 +424,48 @@ pub struct CacheStore {
 // Doing this should cover (compilation etc.) failure resistence. Don't care about actual crash resistence.
 //
 // We need to do this since any failure causes program abort.
-impl CacheStore {}
+impl CacheStore {
+    pub fn print(&self) -> String {
+        let mut out = String::with_capacity(1024);
+
+        out.push_str("CACHE_STORE ");
+        out.push_str(&format!("{:x}", self.input_hash));
+
+        out
+    }
+
+    pub async fn run(&self) {
+        let data = tokio::fs::read(self.file_path).await.unwrap();
+        let expected_hash = hash_bytes(&data);
+
+        let cache_path = format!("{}/{:x}", self.cache_files_path, self.input_hash);
+        // check if the file we are intending to store is already there.
+        // we need to do this instead of "just overwriting" so we don't mess up the file in case
+        // of interruption.
+        match tokio::fs::read(&cache_path).await {
+            Ok(data) => {
+                let hash = hash_bytes(&data);
+                assert!(hash == expected_hash);
+                return;
+            }
+            Err(e) => {
+                if e.kind() != IoErrorKind::NotFound {
+                    panic!(
+                        "Unexpected err while checking cached file: {}: {:?}",
+                        cache_path,
+                        e.kind()
+                    );
+                }
+            }
+        };
+
+        // at this point we know there is no file at the destination path so we can freely write what we want.
+        // it is ok if our write gets interrupted because of program close because the existence of the file won't be
+        // registered until the build finishes and we are sure there won't be any failures.
+
+        tokio::fs::write(&cache_path, &data).await.unwrap();
+    }
+}
 
 // # before scan -> Load cache state.
 // # scan -> do basic hash.
@@ -436,7 +502,7 @@ impl Command {
         }
     }
 
-    pub async fn run(&mut self) {
+    pub async fn run(&self) {
         match self {
             Command::CompileModule(x) => x.run().await,
             Command::CompileToObject(x) => x.run().await,
