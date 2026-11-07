@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use xxhash_rust::xxh3::xxh3_64 as hash_bytes;
+use xxhash_rust::xxh3::Xxh3 as HashBuilder;
 
 use crate::build::Task;
 use crate::command::{
@@ -496,7 +496,68 @@ fn plan_fmt(config: &Config, interner: &mut Interner, info: &BuildInfo) -> Vec<T
 // - hash of self binary byte content, which is the binary of `zxbs`.
 //    Basically just read "/proc/self/exe" and hash it.
 pub struct DeepHashes {
-    
+    // deep hash of entry at index.
+    //
+    // This "should?" be split into two hashes, one for
+    // the module (interface) and lib (implementation) so changing a lib file
+    // doesn't cause cascading recompilation. But we strive to keep the fresh build time
+    // good enough. So using a single hash "should?" be fine for now?
+    pub entry: Vec<u64>,
+    // Deep hash per module file at index.
+    pub module: Vec<Vec<u64>>,
+    pub lib: Vec<Vec<u64>>,
+    pub bin: Vec<Vec<u64>>,
+    pub test: Vec<Vec<u64>>,
+}
+
+impl DeepHashes {
+    pub fn new(len: usize) -> DeepHashes {
+        DeepHashes {
+            entry: vec![0; len],
+            module: vec![Vec::new(); len],
+            lib: vec![Vec::new(); len],
+            bin: vec![Vec::new(); len],
+            test: vec![Vec::new(); len],
+        }
+    }
+}
+
+// #[derive(Default)]
+// pub struct BuildInfo {
+//     // maps entry_name => entry_index
+//     pub map: HashMap<Str, u32>,
+//     pub name: Vec<Str>,
+//     pub module: Vec<Vec<Str>>,
+//     // matrix of mod_count * mod_count.
+//     // matrix[i * mod_count + j] is true if mod no i depends on mod no j.
+//     pub mod_dep_matrix: Vec<Vec<bool>>,
+//     pub lib: Vec<Vec<Str>>,
+//     pub bin: Vec<Vec<Str>>,
+//     pub test: Vec<Vec<Str>>,
+//     pub deps: Vec<Vec<Str>>,
+//     // As explained in EntryInfo. This field is just an aggregate of all basic hashes in individual
+//     // EntryInfos.
+//     pub basic_hash: HashMap<Str, u64>,
+// }
+
+pub fn construct_base_deep_hash(config: &Config) -> u64 {
+    let mut b = HashBuilder::new();
+
+    // Try to include EVERYTHING that might effect the generated artifacts.
+    b.update(config.cxx.as_bytes());
+    b.update(config.ar.as_bytes());
+    b.update(config.clang_scan_deps.as_bytes());
+
+    for flags in [config.cxxflags, config.ldflags] {
+        for flag in flags {
+            b.update(flag.as_bytes());
+        }
+    }
+
+    let self_bin_data = std::fs::read("/proc/self/exe").unwrap();
+    b.update(&self_bin_data);
+
+    b.digest()
 }
 
 // Construct "deep" hashes from "basic" hashes by following the dependency graph.
@@ -505,6 +566,72 @@ pub fn construct_deep_hashes(
     interner: &mut Interner,
     info: &BuildInfo,
 ) -> DeepHashes {
+    let base_hash = construct_base_deep_hash(config);
+
+    let num_entries = info.name.len();
+
+    if num_entries == 0 {
+        return DeepHashes {
+            entry: Vec::new(),
+            module: Vec::new(),
+            lib: Vec::new(),
+            bin: Vec::new(),
+            test: Vec::new(),
+        };
+    }
+
+    let mut remaining_deps: Vec<Vec<usize>> = vec![Vec::new(); num_entries];
+    // this will be used to do a reverse lookup as we calcuate a deep has of an entry so
+    // we want to update the `remaining deps` accordingly.
+    let mut rev_deps: Vec<Vec<usize>> = vec![Vec::new(); num_entries];
+    for (entry_idx, deps) in info.deps.iter().enumerate() {
+        for dep_name in deps.iter() {
+            let dep_idx = usize::try_from(*info.map.get(dep_name).unwrap()).unwrap();
+            remaining_deps[entry_idx].push(dep_idx);
+            rev_deps[dep_idx].push(entry_idx);
+        }
+    }
+
+    let rev_deps = rev_deps;
+
+    let mut num_calculated = 0;
+
+    let mut out = DeepHashes::new(num_entries);
+
+    let initial_entry_idx: usize = remaining_deps
+        .iter()
+        .enumerate()
+        .find(|(_, x)| x.is_empty())
+        .map(|(i, _)| i)
+        .expect("There should be at least one entry that doesn't depend on other entries.");
+    let mut backlog: Vec<usize> = Vec::new();
+    backlog.push(initial_entry_idx);
+    while let Some(entry_idx) = backlog.pop() {
+        assert_eq!(out.entry[entry_idx], 0);
+        // construct_entry_deep_hash(config, interner, info, base_hash, entry_idx, &mut out);
+        //
+
+        for &dependee_idx in rev_deps[entry_idx].iter() {
+            let rem_deps: &mut Vec<usize> = &mut remaining_deps[dependee_idx];
+            let pos = rem_deps
+                .iter()
+                .enumerate()
+                .find(|(_, x)| **x == entry_idx)
+                .map(|(i, _)| i)
+                .unwrap();
+            rem_deps.swap_remove(pos);
+
+            if rem_deps.is_empty() {
+                backlog.push(dependee_idx);
+            }
+        }
+
+        num_calculated += 1;
+    }
+
+    assert_eq!(num_calculated, num_entries);
+
+    out
 }
 
 pub fn plan(
