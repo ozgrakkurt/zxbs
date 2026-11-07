@@ -374,12 +374,49 @@ impl TestCmd {
     }
 }
 
+pub struct CacheLoad {
+    pub cache_files_path: &'static str,
+    pub output_path: &'static str,
+    pub input_hash: u64,
+    pub expected_hash: u64,
+}
+
+impl CacheLoad {}
+
+pub struct CacheStore {
+    pub cache_files_path: &'static str,
+    pub file_path: &'static str,
+    pub input_hash: u64,
+    pub expected_hash: u64,
+}
+
+// CACHE STORES MIGHT BE INTERRUPTED BECAUSE OTHER TASKS FAIL WHILE
+// CACHE STORE IS RUNNING.
+//
+// THEY SHOULD ALWAYS CHECK if the target file is already there and do nothing
+// if it is.
+//
+// Doing this should cover (compilation etc.) failure resistence. Don't care about actual crash resistence.
+//
+// We need to do this since any failure causes program abort.
+impl CacheStore {}
+
+// # before scan -> Load cache state.
+// # scan -> do basic hash.
+// # plan -> calculate aggregate hashes and check against db to
+// emit either CacheLoad or regular build + cacheStore. Update cache use
+// timestamps in state. Also save cached file size into the cache state.
+// # after build -> Save cache state and cleanup old stuff if cache
+// is too big.
+
 pub enum Command {
     CompileModule(CompileModule),
     CompileToObject(CompileToObject),
     ArchiveLib(ArchiveLib),
     LinkBinary(LinkBinary),
     RunBinary(RunBinary),
+    CacheLoad(CacheLoad),
+    CacheStore(CacheStore),
     Format(Format),
     TestCmd(TestCmd),
 }
@@ -392,6 +429,8 @@ impl Command {
             Command::ArchiveLib(x) => x.print(),
             Command::LinkBinary(x) => x.print(),
             Command::RunBinary(x) => x.print(),
+            Command::CacheLoad(x) => x.print(),
+            Command::CacheStore(x) => x.print(),
             Command::Format(x) => x.print(),
             Command::TestCmd(x) => x.print(),
         }
@@ -404,6 +443,8 @@ impl Command {
             Command::ArchiveLib(x) => x.run().await,
             Command::LinkBinary(x) => x.run().await,
             Command::RunBinary(x) => x.run().await,
+            Command::CacheLoad(x) => x.run().await,
+            Command::CacheStore(x) => x.run().await,
             Command::Format(x) => x.run().await,
             Command::TestCmd(x) => x.run().await,
         }
@@ -416,6 +457,8 @@ impl Command {
             Command::ArchiveLib(_) => "ArchiveLib",
             Command::LinkBinary(_) => "LinkBinary",
             Command::RunBinary(_) => "RunBinary",
+            Command::CacheLoad(_) => "CacheLoad",
+            Command::CacheStore(_) => "CacheStore",
             Command::Format(_) => "Format",
             Command::TestCmd(_) => "TestCmd",
         }
