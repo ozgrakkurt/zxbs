@@ -381,6 +381,18 @@ impl TestCmd {
     }
 }
 
+// ### HOW CACHING WORKS
+// # before scan -> Load cache state.
+// # scan -> do basic hash of individual files.
+// # plan -> calculate aggregate hashes and check against db to
+// emit either CacheLoad or regular build + CacheStore. Update cache use
+// timestamps in state. Also save cached file size into the cache state.
+// # after build -> Save cache state and cleanup old stuff if cache
+// is too big.
+//
+
+// Load a file to output from cache.
+// Checks the file in the cache is expected size and has the expected hash.
 pub struct CacheLoad {
     pub cache_files_path: &'static str,
     pub output_path: &'static str,
@@ -418,7 +430,7 @@ pub struct CacheStore {
 // CACHE STORES MIGHT BE INTERRUPTED BECAUSE OTHER TASKS FAIL WHILE
 // CACHE STORE IS RUNNING.
 //
-// THEY SHOULD ALWAYS CHECK if the target file is already there and do nothing
+// CacheStore SHOULD ALWAYS CHECK if the target file is already there and do nothing
 // if it is.
 //
 // Doing this should cover (compilation etc.) failure resistence. Don't care about actual crash resistence.
@@ -466,14 +478,6 @@ impl CacheStore {
         tokio::fs::write(&cache_path, &data).await.unwrap();
     }
 }
-
-// # before scan -> Load cache state.
-// # scan -> do basic hash.
-// # plan -> calculate aggregate hashes and check against db to
-// emit either CacheLoad or regular build + cacheStore. Update cache use
-// timestamps in state. Also save cached file size into the cache state.
-// # after build -> Save cache state and cleanup old stuff if cache
-// is too big.
 
 pub enum Command {
     CompileModule(CompileModule),

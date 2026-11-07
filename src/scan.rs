@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use tokio::task::JoinSet;
+use xxhash_rust::xxh3::xxh3_64 as hash_bytes;
 
 use crate::check::check_name;
 use crate::config::{Config, Subcommand};
@@ -23,6 +24,16 @@ struct EntryInfo {
     bin: Vec<String>,
     test: Vec<String>,
     deps: Vec<String>,
+    // Maps source file path -> basic hash of the file at that path.
+    // Basic hash as opposed to the "input" hash which means the hash is an
+    // aggregate of everything that the file depends on including build flags and
+    // build system executable.
+    //
+    // The more complicated "input" hash will be calculated based on these basic hashes
+    // at the "plan" stage after the scanning is finished.
+    //
+    // Hashes are used for implementing caching.
+    basic_hash: HashMap<String, u64>,
 }
 
 #[derive(Default)]
@@ -38,6 +49,9 @@ pub struct BuildInfo {
     pub bin: Vec<Vec<Str>>,
     pub test: Vec<Vec<Str>>,
     pub deps: Vec<Vec<Str>>,
+    // As explained in EntryInfo. This field is just an aggregate of all basic hashes in individual
+    // EntryInfos.
+    pub basic_hash: HashMap<Str, u64>,
 }
 
 impl BuildInfo {
@@ -109,6 +123,14 @@ impl BuildInfo {
             .push(entry_info.test.iter().map(|s| interner.insert(s)).collect());
         self.deps
             .push(entry_info.deps.iter().map(|s| interner.insert(s)).collect());
+
+        for (path, hash) in entry_info.basic_hash.iter() {
+            assert!(
+                self.basic_hash
+                    .insert(interner.insert(path), *hash)
+                    .is_none()
+            );
+        }
     }
 }
 
@@ -344,6 +366,40 @@ fn check_object_folder_info(
     }
 }
 
+async fn spawn_collect_basic_hashes(
+    config: &'static Config,
+    kind_name: &str,
+    entry_name: &str,
+    names: &[String],
+    extension: &str,
+    concurrency: usize,
+    join_set: &mut JoinSet<(String, u64)>,
+    basic_hash: &mut HashMap<String, u64>,
+) {
+    for part_name in names.iter() {
+        // don't go over the concurrency limit
+        while join_set.len() >= concurrency {
+            let (p, hash) = join_set.join_next().await.unwrap().unwrap();
+
+            assert!(basic_hash.insert(p, hash).is_none());
+        }
+
+        let path = config
+            .src_path
+            .join(entry_name)
+            .join(kind_name)
+            .join(format!("{}.{}", part_name, extension));
+        let path = path.to_str().unwrap().to_owned();
+
+        join_set.spawn(async move {
+            let data = tokio::fs::read(&path).await.unwrap();
+            let hash = hash_bytes(&data);
+
+            (path, hash)
+        });
+    }
+}
+
 async fn scan_entry(config: &'static Config, path: &Path) -> EntryInfo {
     let entry_name = path.file_name().unwrap();
     let entry_name = entry_name.to_str().unwrap().to_owned();
@@ -385,7 +441,7 @@ async fn scan_entry(config: &'static Config, path: &Path) -> EntryInfo {
     let mut join_set = JoinSet::new();
     let mut mod_dep_names = vec![Vec::new(); mod_parts.len()];
     for (pos, part_name) in mod_parts.iter().enumerate() {
-        if join_set.len() >= concurrency {
+        while join_set.len() >= concurrency {
             let (idx, deps) = join_set.join_next().await.unwrap().unwrap();
             mod_dep_names[idx] = deps;
         }
@@ -473,6 +529,59 @@ async fn scan_entry(config: &'static Config, path: &Path) -> EntryInfo {
 
     let bin = bin.await.unwrap();
 
+    // Collect the basic hashes of all source files in parallel.
+    let mut basic_hash = HashMap::<String, u64>::new();
+    let mut join_set = JoinSet::new();
+    spawn_collect_basic_hashes(
+        config,
+        "lib",
+        &entry_name,
+        &lib.parts,
+        "cc",
+        concurrency,
+        &mut join_set,
+        &mut basic_hash,
+    )
+    .await;
+    spawn_collect_basic_hashes(
+        config,
+        "test",
+        &entry_name,
+        &test.parts,
+        "cc",
+        concurrency,
+        &mut join_set,
+        &mut basic_hash,
+    )
+    .await;
+    spawn_collect_basic_hashes(
+        config,
+        "bin",
+        &entry_name,
+        &bin.parts,
+        "cc",
+        concurrency,
+        &mut join_set,
+        &mut basic_hash,
+    )
+    .await;
+    spawn_collect_basic_hashes(
+        config,
+        "mod",
+        &entry_name,
+        &mod_parts,
+        "cppm",
+        concurrency,
+        &mut join_set,
+        &mut basic_hash,
+    )
+    .await;
+
+    while let Some(res) = join_set.join_next().await {
+        let (path, hash) = res.unwrap();
+        assert!(basic_hash.insert(path, hash).is_none());
+    }
+
     EntryInfo {
         name: entry_name,
         module: mod_parts,
@@ -481,6 +590,7 @@ async fn scan_entry(config: &'static Config, path: &Path) -> EntryInfo {
         bin: bin.parts,
         test: test.parts,
         deps,
+        basic_hash,
     }
 }
 
@@ -493,7 +603,7 @@ pub async fn scan(config: &'static Config, interner: &mut Interner) -> BuildInfo
     let concurrency = 16;
 
     while let Some(entry) = dir.next_entry().await.unwrap() {
-        if join_set.len() >= concurrency {
+        while join_set.len() >= concurrency {
             let entry_info = join_set.join_next().await.unwrap().unwrap();
             info.push_entry_info(interner, entry_info);
         }
