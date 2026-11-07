@@ -1,5 +1,7 @@
 use std::collections::HashSet;
 
+use xxhash_rust::xxh3::xxh3_64 as hash_bytes;
+
 use crate::build::Task;
 use crate::command::{
     ArchiveLib, Command, CompileModule, CompileToObject, Format, LinkBinary, RunBinary,
@@ -465,6 +467,44 @@ fn plan_fmt(config: &Config, interner: &mut Interner, info: &BuildInfo) -> Vec<T
     }
 
     tasks
+}
+
+// TODO:
+// -> Define cache state.
+// -> Implement cache state loading and storing.
+// -> Implement cache pruning based on size and entry count limit. Use "last used" timestamps to
+//    decide what to remove.
+// -> Planning should actually update the "last used" timestamps in cache state if it emits CacheLoad tasks for
+//    the item.
+// -> modify the existing planning functions to account for cache_state + DeepHashes.
+
+// "Parallel" struct to Build Info.
+// Hash the corresponding deephash for output artifacts including modules, librari archives, object files etc.
+//
+// Is intended to be used in planning along with the cache state to decide to emit cache load or real compilation + cache store.
+//
+// A "deep" hash is defined as aggregate of:
+// - hash of input source file path if there is a specific input source file.
+// - hash of output artifact path(s). there should always be atleast one output path, otherwise
+//    why are we even doing caching for this thing?
+//    Some stuff like module file compilation might have multiple outputs because they emit both a pcm file
+//    and an object file.
+// - hash of input source file content, if there is an input source file.
+// - "deep" hashes of the module files that this file depends on in the same entry.
+// - "deep" hashes of other entries that the current entry depends on.
+// - "deep" hash of the build configuration including anything that effects the behavior of the build.
+// - hash of self binary byte content, which is the binary of `zxbs`.
+//    Basically just read "/proc/self/exe" and hash it.
+pub struct DeepHashes {
+    
+}
+
+// Construct "deep" hashes from "basic" hashes by following the dependency graph.
+pub fn construct_deep_hashes(
+    config: &Config,
+    interner: &mut Interner,
+    info: &BuildInfo,
+) -> DeepHashes {
 }
 
 pub fn plan(

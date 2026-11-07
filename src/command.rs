@@ -396,7 +396,7 @@ impl TestCmd {
 pub struct CacheLoad {
     pub cache_files_path: &'static str,
     pub output_path: &'static str,
-    pub input_hash: u64,
+    pub deep_hash: u64,
     pub expected_hash: u64,
     pub expected_size: u32,
 }
@@ -406,13 +406,13 @@ impl CacheLoad {
         let mut out = String::with_capacity(1024);
 
         out.push_str("CACHE_LOAD ");
-        out.push_str(&format!("{:x}", self.input_hash));
+        out.push_str(&format!("{:x}", self.deep_hash));
 
         out
     }
 
     pub async fn run(&self) {
-        let cache_path = format!("{}/{:x}", self.cache_files_path, self.input_hash);
+        let cache_path = format!("{}/{:x}", self.cache_files_path, self.deep_hash);
         let data = tokio::fs::read(&cache_path).await.unwrap();
         assert!(u32::try_from(data.len()).unwrap() == self.expected_size);
         let hash = hash_bytes(&data);
@@ -424,7 +424,7 @@ impl CacheLoad {
 pub struct CacheStore {
     pub cache_files_path: &'static str,
     pub file_path: &'static str,
-    pub input_hash: u64,
+    pub deep_hash: u64,
 }
 
 // CACHE STORES MIGHT BE INTERRUPTED BECAUSE OTHER TASKS FAIL WHILE
@@ -441,7 +441,7 @@ impl CacheStore {
         let mut out = String::with_capacity(1024);
 
         out.push_str("CACHE_STORE ");
-        out.push_str(&format!("{:x}", self.input_hash));
+        out.push_str(&format!("{:x}", self.deep_hash));
 
         out
     }
@@ -450,7 +450,7 @@ impl CacheStore {
         let data = tokio::fs::read(self.file_path).await.unwrap();
         let expected_hash = hash_bytes(&data);
 
-        let cache_path = format!("{}/{:x}", self.cache_files_path, self.input_hash);
+        let cache_path = format!("{}/{:x}", self.cache_files_path, self.deep_hash);
         // check if the file we are intending to store is already there.
         // we need to do this instead of "just overwriting" so we don't mess up the file in case
         // of interruption.

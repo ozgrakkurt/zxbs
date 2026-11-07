@@ -25,11 +25,15 @@ struct EntryInfo {
     test: Vec<String>,
     deps: Vec<String>,
     // Maps source file path -> basic hash of the file at that path.
-    // Basic hash as opposed to the "input" hash which means the hash is an
+    // Basic hash as opposed to the "deep" hash.
+    //
+    // Deep hash means the hash is an
     // aggregate of everything that the file depends on including build flags and
     // build system executable.
     //
-    // The more complicated "input" hash will be calculated based on these basic hashes
+    // Basic hash means the hash is just the hash of the source file contents.
+    //
+    // The more complicated "deep" hash will be calculated based on these basic hashes
     // at the "plan" stage after the scanning is finished.
     //
     // Hashes are used for implementing caching.
