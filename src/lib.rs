@@ -8,6 +8,7 @@
 #![allow(clippy::needless_range_loop)]
 
 pub mod build;
+pub mod cache;
 pub mod check;
 pub mod command;
 pub mod config;

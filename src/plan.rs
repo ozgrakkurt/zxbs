@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use xxhash_rust::xxh3::Xxh3 as HashBuilder;
 
 use crate::build::Task;
+use crate::cache::CacheState;
 use crate::command::{
     ArchiveLib, Command, CompileModule, CompileToObject, Format, LinkBinary, RunBinary,
 };
@@ -485,10 +486,6 @@ fn plan_fmt(config: &Config, interner: &mut Interner, info: &BuildInfo) -> Vec<T
 //
 // A "deep" hash is defined roughly as aggregate of:
 // - hash of input source file path if there is a specific input source file.
-// - hash of output artifact path(s). there should always be atleast one output path, otherwise
-//    why are we even doing caching for this thing?
-//    Some stuff like module file compilation might have multiple outputs because they emit both a pcm file
-//    and an object file.
 // - hash of input source file content, if there is an input source file.
 // - "deep" hashes of the module files that this file depends on in the same entry.
 // - "deep" hashes of other entries that the current entry depends on.
@@ -927,6 +924,7 @@ pub fn plan(
     subcommand: &Subcommand,
     interner: &mut Interner,
     info: &BuildInfo,
+    cache_state: &mut CacheState,
 ) -> Vec<Task> {
     assert_eq!(info.name.len(), info.mod_dep_matrix.len());
     assert_eq!(info.name.len(), info.module.len());
@@ -938,6 +936,8 @@ pub fn plan(
     if subcommand == &Subcommand::Fmt {
         return plan_fmt(config, interner, info);
     }
+
+    let deep_hashes = construct_deep_hashes(config, interner, info);
 
     let mut tasks = Vec::new();
 
