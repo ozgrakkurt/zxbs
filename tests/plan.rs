@@ -410,8 +410,8 @@ fn test_simple() {
     check_pcm_task(
         &tasks[0],
         &mut interner,
-        &build_path,
-        &src_path,
+        build_path,
+        src_path,
         "base",
         "base",
         &["vec", "start", "arith", "alloc"],
@@ -420,8 +420,8 @@ fn test_simple() {
     check_pcm_task(
         &tasks[1],
         &mut interner,
-        &build_path,
-        &src_path,
+        build_path,
+        src_path,
         "base",
         "vec",
         &["arith", "alloc"],
@@ -430,8 +430,8 @@ fn test_simple() {
     check_pcm_task(
         &tasks[2],
         &mut interner,
-        &build_path,
-        &src_path,
+        build_path,
+        src_path,
         "base",
         "start",
         &[],
@@ -440,8 +440,8 @@ fn test_simple() {
     check_pcm_task(
         &tasks[3],
         &mut interner,
-        &build_path,
-        &src_path,
+        build_path,
+        src_path,
         "base",
         "arith",
         &["start"],
@@ -450,8 +450,8 @@ fn test_simple() {
     check_pcm_task(
         &tasks[4],
         &mut interner,
-        &build_path,
-        &src_path,
+        build_path,
+        src_path,
         "base",
         "alloc",
         &["start", "arith"],
@@ -460,23 +460,23 @@ fn test_simple() {
     check_lib_obj_task(
         &tasks[5],
         &mut interner,
-        &build_path,
-        &src_path,
+        build_path,
+        src_path,
         "base",
         "memcmp",
     );
     check_lib_obj_task(
         &tasks[6],
         &mut interner,
-        &build_path,
-        &src_path,
+        build_path,
+        src_path,
         "base",
         "memcpy",
     );
     check_lib_archive_task(
         &tasks[7],
         &mut interner,
-        &build_path,
+        build_path,
         "base",
         &["base", "vec", "start", "arith", "alloc"],
         &["memcmp", "memcpy"],
@@ -484,8 +484,8 @@ fn test_simple() {
     check_build_bin_task(
         &tasks[8],
         &mut interner,
-        &build_path,
-        &src_path,
+        build_path,
+        src_path,
         "base",
         "memcmp",
         true,
@@ -493,7 +493,7 @@ fn test_simple() {
     check_link_bin_task(
         &tasks[9],
         &mut interner,
-        &build_path,
+        build_path,
         "base",
         "memcmp",
         true,
@@ -502,7 +502,7 @@ fn test_simple() {
     check_run_bin_task(
         &tasks[10],
         &mut interner,
-        &build_path,
+        build_path,
         "base",
         "memcmp",
         true,
@@ -510,8 +510,8 @@ fn test_simple() {
     check_build_bin_task(
         &tasks[11],
         &mut interner,
-        &build_path,
-        &src_path,
+        build_path,
+        src_path,
         "base",
         "vec",
         true,
@@ -519,18 +519,18 @@ fn test_simple() {
     check_link_bin_task(
         &tasks[12],
         &mut interner,
-        &build_path,
+        build_path,
         "base",
         "vec",
         true,
         &[],
     );
-    check_run_bin_task(&tasks[13], &mut interner, &build_path, "base", "vec", true);
+    check_run_bin_task(&tasks[13], &mut interner, build_path, "base", "vec", true);
     check_build_bin_task(
         &tasks[14],
         &mut interner,
-        &build_path,
-        &src_path,
+        build_path,
+        src_path,
         "base",
         "arith",
         true,
@@ -538,25 +538,18 @@ fn test_simple() {
     check_link_bin_task(
         &tasks[15],
         &mut interner,
-        &build_path,
+        build_path,
         "base",
         "arith",
         true,
         &[],
     );
-    check_run_bin_task(
-        &tasks[16],
-        &mut interner,
-        &build_path,
-        "base",
-        "arith",
-        true,
-    );
+    check_run_bin_task(&tasks[16], &mut interner, build_path, "base", "arith", true);
     check_build_bin_task(
         &tasks[17],
         &mut interner,
-        &build_path,
-        &src_path,
+        build_path,
+        src_path,
         "base",
         "memcpy_bench",
         false,
@@ -564,7 +557,7 @@ fn test_simple() {
     check_link_bin_task(
         &tasks[18],
         &mut interner,
-        &build_path,
+        build_path,
         "base",
         "memcpy_bench",
         false,
@@ -573,8 +566,8 @@ fn test_simple() {
     check_pcm_task(
         &tasks[19],
         &mut interner,
-        &build_path,
-        &src_path,
+        build_path,
+        src_path,
         "io",
         "io",
         &["executor", "fs", "net", "base"],
@@ -583,8 +576,8 @@ fn test_simple() {
     check_pcm_task(
         &tasks[20],
         &mut interner,
-        &build_path,
-        &src_path,
+        build_path,
+        src_path,
         "io",
         "executor",
         &[],
@@ -593,8 +586,8 @@ fn test_simple() {
     check_pcm_task(
         &tasks[21],
         &mut interner,
-        &build_path,
-        &src_path,
+        build_path,
+        src_path,
         "io",
         "fs",
         &["executor"],
@@ -603,8 +596,8 @@ fn test_simple() {
     check_pcm_task(
         &tasks[22],
         &mut interner,
-        &build_path,
-        &src_path,
+        build_path,
+        src_path,
         "io",
         "net",
         &["executor"],
@@ -613,8 +606,8 @@ fn test_simple() {
     check_pcm_task(
         &tasks[23],
         &mut interner,
-        &build_path,
-        &src_path,
+        build_path,
+        src_path,
         "io",
         "base",
         &[],
@@ -623,7 +616,7 @@ fn test_simple() {
     check_lib_archive_task(
         &tasks[24],
         &mut interner,
-        &build_path,
+        build_path,
         "io",
         &["io", "executor", "fs", "net", "base"],
         &[],
@@ -631,8 +624,8 @@ fn test_simple() {
     check_build_bin_task(
         &tasks[25],
         &mut interner,
-        &build_path,
-        &src_path,
+        build_path,
+        src_path,
         "io",
         "executor_ordering",
         true,
@@ -640,7 +633,7 @@ fn test_simple() {
     check_link_bin_task(
         &tasks[26],
         &mut interner,
-        &build_path,
+        build_path,
         "io",
         "executor_ordering",
         true,
@@ -649,7 +642,7 @@ fn test_simple() {
     check_run_bin_task(
         &tasks[27],
         &mut interner,
-        &build_path,
+        build_path,
         "io",
         "executor_ordering",
         true,
@@ -657,8 +650,8 @@ fn test_simple() {
     check_build_bin_task(
         &tasks[28],
         &mut interner,
-        &build_path,
-        &src_path,
+        build_path,
+        src_path,
         "io",
         "fs",
         true,
@@ -666,18 +659,18 @@ fn test_simple() {
     check_link_bin_task(
         &tasks[29],
         &mut interner,
-        &build_path,
+        build_path,
         "io",
         "fs",
         true,
         &["base"],
     );
-    check_run_bin_task(&tasks[30], &mut interner, &build_path, "io", "fs", true);
+    check_run_bin_task(&tasks[30], &mut interner, build_path, "io", "fs", true);
     check_build_bin_task(
         &tasks[31],
         &mut interner,
-        &build_path,
-        &src_path,
+        build_path,
+        src_path,
         "io",
         "net",
         true,
@@ -685,18 +678,18 @@ fn test_simple() {
     check_link_bin_task(
         &tasks[32],
         &mut interner,
-        &build_path,
+        build_path,
         "io",
         "net",
         true,
         &["base"],
     );
-    check_run_bin_task(&tasks[33], &mut interner, &build_path, "io", "net", true);
+    check_run_bin_task(&tasks[33], &mut interner, build_path, "io", "net", true);
     check_build_bin_task(
         &tasks[34],
         &mut interner,
-        &build_path,
-        &src_path,
+        build_path,
+        src_path,
         "io",
         "direct_io_example",
         false,
@@ -704,7 +697,7 @@ fn test_simple() {
     check_link_bin_task(
         &tasks[35],
         &mut interner,
-        &build_path,
+        build_path,
         "io",
         "direct_io_example",
         false,
@@ -713,8 +706,8 @@ fn test_simple() {
     check_pcm_task(
         &tasks[36],
         &mut interner,
-        &build_path,
-        &src_path,
+        build_path,
+        src_path,
         "myapp",
         "myapp",
         &[],
@@ -723,7 +716,7 @@ fn test_simple() {
     check_lib_archive_task(
         &tasks[37],
         &mut interner,
-        &build_path,
+        build_path,
         "myapp",
         &["myapp"],
         &[],
@@ -731,8 +724,8 @@ fn test_simple() {
     check_build_bin_task(
         &tasks[38],
         &mut interner,
-        &build_path,
-        &src_path,
+        build_path,
+        src_path,
         "myapp",
         "myapp",
         false,
@@ -740,7 +733,7 @@ fn test_simple() {
     check_link_bin_task(
         &tasks[39],
         &mut interner,
-        &build_path,
+        build_path,
         "myapp",
         "myapp",
         false,
