@@ -5,7 +5,8 @@ use xxhash_rust::xxh3::Xxh3 as HashBuilder;
 use crate::build::Task;
 use crate::cache::CacheState;
 use crate::command::{
-    ArchiveLib, Command, CompileModule, CompileToObject, Format, LinkBinary, RunBinary,
+    ArchiveLib, CacheLoad, CacheStore, Command, CompileModule, CompileToObject, Format, LinkBinary,
+    RunBinary, RunTest,
 };
 use crate::config::{Config, Subcommand};
 use crate::interner::{Interner, Str};
@@ -61,13 +62,18 @@ pub fn should_run(
     }
 }
 
-fn plan_module_build(
-    config: &Config,
-    interner: &mut Interner,
-    tasks: &mut Vec<Task>,
-    info: &BuildInfo,
-    entry_index: usize,
-) {
+struct Params<'a> {
+    config: &'a Config,
+    subcommand: &'a Subcommand,
+    interner: &'a mut Interner,
+    info: &'a BuildInfo,
+    cache_state: &'a mut CacheState,
+    entry_idx: usize,
+    deep_hashes: &'a DeepHashes,
+    tasks: &'a mut Vec<Task>,
+}
+
+fn plan_module_build(params: Params) {
     let mod_parts = info.module[entry_index].as_slice();
     let n_mod_parts = mod_parts.len();
 
@@ -942,27 +948,30 @@ pub fn plan(
     let mut tasks = Vec::new();
 
     for eidx in 0..info.name.len() {
-        plan_module_build(config, interner, &mut tasks, info, eidx);
-        plan_lib_build(config, interner, &mut tasks, info, eidx);
+        let params = Params {
+            config,
+            subcommand,
+            interner,
+            info,
+            cache_state,
+            entry_idx: eidx,
+            deep_hashes: &deep_hashes,
+            tasks: &mut tasks,
+        };
+
+        plan_module_build(params);
+        plan_lib_build(params);
 
         // collect the library path list for doing static linking.
         let lib_path_list = collect_lib_path_list(config, interner, info, eidx);
 
         let lib_path_indices: Vec<Str> = lib_path_list.iter().map(|p| interner.insert(p)).collect();
 
-        for is_test in [true, false] {
-            plan_bin_build(
-                config,
-                subcommand,
-                interner,
-                &mut tasks,
-                info,
-                eidx,
-                lib_path_list,
-                &lib_path_indices,
-                is_test,
-            );
-        }
+        plan_test_build(params, &lib_path_indices);
+        plan_bin_build(params, &lib_path_indices);
+
+        plan_module_build(config, interner, &mut tasks, info, eidx);
+        plan_lib_build(config, interner, &mut tasks, info, eidx);
     }
 
     tasks
