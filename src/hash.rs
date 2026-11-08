@@ -1,9 +1,9 @@
 use std::collections::BTreeSet;
-use std::hash::Hasher as _;
 use std::collections::HashMap as StdHashMap;
+use std::hash::Hasher as _;
 
-use xxhash_rust::xxh3::Xxh3 as HashBuilder;
-use xxhash_rust::xxh3::Xxh3Builder as HashMapHashBuilder;
+use xxhash_rust::xxh3::Xxh3Default as HashBuilder;
+use xxhash_rust::xxh3::Xxh3DefaultBuilder as HashMapHashBuilder;
 
 // Use u128 unless it causes real problems, we really don't want these
 // hashes to collide.
@@ -11,6 +11,15 @@ pub type Hash = u128;
 
 pub fn hash_bytes(bytes: &[u8]) -> Hash {
     xxhash_rust::xxh3::xxh3_128(bytes)
+}
+
+// Order DEPENDENT hashing of multiple buffers into a single hash value.
+pub fn hash_ordered(buffers: &[&[u8]]) -> Hash {
+    let mut builder = HashBuilder::new();
+    for &buf in buffers.iter() {
+        builder.update(buf);
+    }
+    builder.digest128()
 }
 
 // Hash combiner to combine a set of unique hashes in an order independent

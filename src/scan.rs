@@ -1,11 +1,10 @@
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use tokio::task::JoinSet;
-use xxhash_rust::xxh3::Xxh3 as HashBuilder;
 
 use crate::check::check_name;
 use crate::config::{Config, Subcommand};
+use crate::hash::{Hash, HashMap, hash_bytes, hash_ordered};
 use crate::interner::{Interner, Str};
 
 pub fn make_module_name(root_name: &str, part_name: &str) -> String {
@@ -31,13 +30,13 @@ struct EntryInfo {
     // aggregate of everything that the file depends on including build flags and
     // build system executable.
     //
-    // Basic hash means the hash is just the hash of the source file contents.
+    // Basic hash means the hash is just the hash of the source file contents combined with the hash of the source file path.
     //
     // The more complicated "deep" hash will be calculated based on these basic hashes
     // at the "plan" stage after the scanning is finished.
     //
     // Hashes are used for implementing caching.
-    basic_hash: HashMap<String, u64>,
+    basic_hash: HashMap<String, Hash>,
 }
 
 #[derive(Default)]
@@ -55,7 +54,7 @@ pub struct BuildInfo {
     pub deps: Vec<Vec<Str>>,
     // As explained in EntryInfo. This field is just an aggregate of all basic hashes in individual
     // EntryInfos.
-    pub basic_hash: HashMap<Str, u64>,
+    pub basic_hash: HashMap<Str, Hash>,
 }
 
 impl BuildInfo {
@@ -377,8 +376,8 @@ async fn spawn_collect_basic_hashes(
     names: &[String],
     extension: &str,
     concurrency: usize,
-    join_set: &mut JoinSet<(String, u64)>,
-    basic_hash: &mut HashMap<String, u64>,
+    join_set: &mut JoinSet<(String, Hash)>,
+    basic_hash: &mut HashMap<String, Hash>,
 ) {
     for part_name in names.iter() {
         // don't go over the concurrency limit
@@ -397,11 +396,8 @@ async fn spawn_collect_basic_hashes(
 
         join_set.spawn(async move {
             let data = tokio::fs::read(&path).await.unwrap();
-            let mut hash_builder = HashBuilder::new();
-            hash_builder.update(path.as_bytes());
-            hash_builder.update(&data);
-
-            (path, hash_builder.digest())
+            let hash = hash_ordered(&[path.as_bytes(), data.as_slice()]);
+            (path, hash)
         });
     }
 }
@@ -536,7 +532,7 @@ async fn scan_entry(config: &'static Config, path: &Path) -> EntryInfo {
     let bin = bin.await.unwrap();
 
     // Collect the basic hashes of all source files in parallel.
-    let mut basic_hash = HashMap::<String, u64>::new();
+    let mut basic_hash = HashMap::<String, Hash>::default();
     let mut join_set = JoinSet::new();
     spawn_collect_basic_hashes(
         config,

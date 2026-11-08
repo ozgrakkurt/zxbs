@@ -1,9 +1,9 @@
 #![allow(clippy::single_element_loop)]
 
-use std::collections::HashMap;
 use std::path::Path;
 
 use zxbs::config::Config;
+use zxbs::hash::HashMap;
 use zxbs::interner::Interner;
 use zxbs::scan::{BuildInfo, scan};
 
@@ -18,7 +18,7 @@ async fn test_empty() {
     std::fs::create_dir_all(&build_path).unwrap();
     std::fs::create_dir_all(&src_path).unwrap();
 
-    let mut flags = HashMap::new();
+    let mut flags = HashMap::default();
     flags.insert("--build-dir".to_owned(), build_path.clone());
     flags.insert("--src-dir".to_owned(), src_path.clone());
     let cfg: &'static Config = Box::leak(Box::new(Config::parse_config(flags)));
@@ -46,7 +46,7 @@ fn check_baselib_info(info: &BuildInfo, interner: &mut Interner) {
         i,
     );
 
-    let mut part_idx_map: HashMap<&'static str, usize> = HashMap::new();
+    let mut part_idx_map: HashMap<&'static str, usize> = HashMap::default();
 
     assert_eq!(info.module[i].len(), 5);
     for name in ["base", "vec", "start", "arith", "alloc"] {
@@ -118,7 +118,7 @@ fn check_iolib_info(info: &BuildInfo, interner: &mut Interner) {
         i,
     );
 
-    let mut part_idx_map: HashMap<&'static str, usize> = HashMap::new();
+    let mut part_idx_map: HashMap<&'static str, usize> = HashMap::default();
 
     assert_eq!(info.module[i].len(), 5);
     for name in ["io", "executor", "fs", "net", "base"] {
@@ -179,7 +179,7 @@ fn check_myapp_info(info: &BuildInfo, interner: &mut Interner) {
         i,
     );
 
-    let mut part_idx_map: HashMap<&'static str, usize> = HashMap::new();
+    let mut part_idx_map: HashMap<&'static str, usize> = HashMap::default();
 
     assert_eq!(info.module[i].len(), 1);
     for name in ["myapp"] {
@@ -219,7 +219,7 @@ async fn test_simple() {
     make_iolib(Path::new(&src_path)).await;
     make_myapp(Path::new(&src_path)).await;
 
-    let mut flags = HashMap::new();
+    let mut flags = HashMap::default();
     flags.insert("--build-dir".to_owned(), build_path.clone());
     flags.insert("--src-dir".to_owned(), src_path.clone());
     let cfg: &'static Config = Box::leak(Box::new(Config::parse_config(flags)));

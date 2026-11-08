@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use crate::hash::HashMap;
 
 struct Entry {
     last_used_timestamp: u64,
@@ -13,7 +13,7 @@ pub struct CacheState {
 impl CacheState {
     pub fn new() -> CacheState {
         CacheState {
-            entries: HashMap::new(),
+            entries: HashMap::default(),
         }
     }
 
@@ -24,7 +24,8 @@ impl CacheState {
 
         assert!(data.len() % 24 == 0);
 
-        let mut entries = HashMap::with_capacity(data.len() / 24);
+        let mut entries = HashMap::default();
+        entries.reserve(data.len() / 24);
 
         let mut offset = 0;
         while offset < data.len() {

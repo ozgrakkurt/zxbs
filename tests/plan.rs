@@ -1,11 +1,10 @@
 #![allow(clippy::too_many_arguments)]
 
-use std::collections::HashMap;
-
 use build::Task;
 use command::Command;
 use interner::Interner;
 use plan::make_module_artifact_name;
+use zxbs::hash::HashMap;
 use zxbs::{build, command, config, interner, plan, scan};
 
 #[test]
@@ -16,7 +15,7 @@ fn test_empty() {
     std::fs::create_dir_all(&build_path).unwrap();
     std::fs::create_dir_all(&src_path).unwrap();
 
-    let mut flags = HashMap::new();
+    let mut flags = HashMap::default();
     flags.insert("--build-dir".to_owned(), build_path.clone());
     flags.insert("--src-dir".to_owned(), src_path.clone());
     let cfg = config::Config::parse_config(flags);
@@ -327,7 +326,7 @@ fn test_simple() {
     std::fs::create_dir_all(&build_dir).unwrap();
     std::fs::create_dir_all(&src_dir).unwrap();
 
-    let mut flags = HashMap::new();
+    let mut flags = HashMap::default();
     flags.insert("--build-dir".to_owned(), build_dir);
     flags.insert("--src-dir".to_owned(), src_dir);
     let cfg = config::Config::parse_config(flags);

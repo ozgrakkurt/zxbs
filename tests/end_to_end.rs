@@ -1,9 +1,9 @@
-use std::collections::HashMap;
 use std::path::Path;
 use std::time::Instant;
 
 use config::{Config, Subcommand};
 use interner::Interner;
+use zxbs::hash::HashMap;
 use zxbs::{build, config, interner, plan, scan};
 
 mod make_folders;
@@ -22,7 +22,7 @@ async fn test_smoke() {
     make_iolib(Path::new(&src_path)).await;
     make_myapp(Path::new(&src_path)).await;
 
-    let mut flags = HashMap::new();
+    let mut flags = HashMap::default();
     flags.insert("--build-dir".to_owned(), build_path.clone());
     flags.insert("--src-dir".to_owned(), src_path.clone());
     let cfg: &'static Config = Box::leak(Box::new(Config::parse_config(flags)));

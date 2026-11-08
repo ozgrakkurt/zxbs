@@ -1,5 +1,5 @@
+use crate::hash::HashMap;
 use crate::interner::{Interner, Str};
-use std::collections::HashMap;
 
 #[derive(Clone)]
 pub struct Entry {
@@ -113,7 +113,7 @@ impl Tracer {
             "generic_work".to_owned(),
         ));
 
-        let mut color_mapping = HashMap::<Str, usize>::new();
+        let mut color_mapping = HashMap::<Str, usize>::default();
         let mut color_slot: usize = 0;
         for entry in self.data.iter() {
             let color: String = match color_mapping.get(&entry.kind) {

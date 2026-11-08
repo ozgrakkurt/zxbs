@@ -1,7 +1,7 @@
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::check::check_name;
+use crate::hash::HashMap;
 
 #[derive(Debug, PartialEq)]
 pub enum Subcommand {
@@ -299,7 +299,7 @@ impl Config {
 
     // returns parsed flag map and the subcommand name
     fn parse_flags(args: &mut std::env::Args) -> (HashMap<String, String>, String) {
-        let mut flags = HashMap::<String, String>::new();
+        let mut flags = HashMap::<String, String>::default();
 
         while let Some(arg) = args.next() {
             if !arg.starts_with("--") {

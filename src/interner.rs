@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use crate::hash::HashMap;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct Str(u32);
@@ -22,7 +22,7 @@ pub struct Interner {
 impl Interner {
     pub fn new() -> Interner {
         Interner {
-            map: HashMap::new(),
+            map: HashMap::default(),
             list: Vec::new(),
         }
     }
