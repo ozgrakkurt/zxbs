@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 struct Entry {
-    last_used_timestamp: i64,
+    last_used_timestamp: u64,
     output_hash: u64,
 }
 
@@ -30,7 +30,7 @@ impl CacheState {
         while offset < data.len() {
             let deep_hash = u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap());
             let last_used_timestamp =
-                i64::from_le_bytes(data[offset + 8..offset + 16].try_into().unwrap());
+                u64::from_le_bytes(data[offset + 8..offset + 16].try_into().unwrap());
             let output_hash =
                 u64::from_le_bytes(data[offset + 16..offset + 24].try_into().unwrap());
 
@@ -56,7 +56,7 @@ impl CacheState {
         }
     }
 
-    pub fn update_last_used_timestamp(&mut self, deep_hash: u64, timestamp: i64) {
+    pub fn update_last_used_timestamp(&mut self, deep_hash: u64, timestamp: u64) {
         self.entries
             .get_mut(&deep_hash)
             .unwrap()
@@ -67,7 +67,7 @@ impl CacheState {
         self.entries.contains_key(&deep_hash)
     }
 
-    pub fn insert(&mut self, deep_hash: u64, output_hash: u64, timestamp: i64) {
+    pub fn insert(&mut self, deep_hash: u64, output_hash: u64, timestamp: u64) {
         self.entries.insert(
             deep_hash,
             Entry {
