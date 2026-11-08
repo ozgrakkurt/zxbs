@@ -1,4 +1,6 @@
-use crate::hash::{Hash, HashMap};
+use std::collections::BTreeMap;
+
+use crate::hash::Hash;
 
 struct Entry {
     last_used_timestamp: u64,
@@ -7,13 +9,13 @@ struct Entry {
 
 pub struct CacheState {
     // map deep hash to Entry
-    entries: HashMap<Hash, Entry>,
+    entries: BTreeMap<Hash, Entry>,
 }
 
 impl CacheState {
     pub fn new() -> CacheState {
         CacheState {
-            entries: HashMap::default(),
+            entries: BTreeMap::default(),
         }
     }
 
@@ -27,7 +29,7 @@ impl CacheState {
 
         assert!(data.len() % ROW_SIZE == 0);
 
-        let mut entries = HashMap::default();
+        let mut entries = BTreeMap::default();
         entries.reserve(data.len() / ROW_SIZE);
 
         let mut offset = 0;
