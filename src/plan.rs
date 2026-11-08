@@ -634,8 +634,6 @@ fn construct_module_deep_hashes(
 
         out.module_object[entry_idx][part_idx] = obj_hash;
 
-        hash_builder.update(&obj_hash.to_le_bytes());
-
         // check what else can we calculate now that we calculate hash for this part
         for &dependee_idx in rev_deps[part_idx].iter() {
             let rem_deps: &mut Vec<usize> = &mut remaining_deps[dependee_idx];
@@ -654,6 +652,10 @@ fn construct_module_deep_hashes(
 
         num_processed += 1;
         part_was_visited[part_idx] = true;
+    }
+
+    for part_idx in 0..num_parts {
+        hash_builder.update(&out.module_object[entry_idx][part_idx].to_le_bytes());
     }
 
     assert_eq!(num_processed, num_parts);
@@ -770,6 +772,8 @@ fn construct_entry_deep_hash(
         hash_builder.update(&dep_hash.to_le_bytes());
     }
 
+    let link_base_hash = hash_builder.digest();
+
     // test
     let test_info = &info.test[entry_idx];
     let mut test_object_hashes = Vec::with_capacity(test_info.len());
@@ -787,11 +791,11 @@ fn construct_entry_deep_hash(
 
         let mut hb = HashBuilder::new();
         hb.update(&basic_hash.to_le_bytes());
-        hb.update(&entry_lib_hash.to_le_bytes());
+        hb.update(&entry_pcm_hash.to_le_bytes());
 
         test_object_hashes.push(hb.digest());
 
-        hb.update(b"exe");
+        hb.update(&link_base_hash.to_le_bytes());
 
         test_exe_hashes.push(hb.digest());
 
@@ -821,11 +825,11 @@ fn construct_entry_deep_hash(
 
         let mut hb = HashBuilder::new();
         hb.update(&basic_hash.to_le_bytes());
-        hb.update(&entry_lib_hash.to_le_bytes());
+        hb.update(&entry_pcm_hash.to_le_bytes());
 
         bin_object_hashes.push(hb.digest());
 
-        hb.update(b"exe");
+        hb.update(&link_base_hash.to_le_bytes());
 
         bin_exe_hashes.push(hb.digest());
     }
