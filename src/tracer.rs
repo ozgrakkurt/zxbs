@@ -17,16 +17,38 @@ pub struct Tracer {
     begin_timestamp: u64,
 }
 
-// These are defined somewhere in chrome://tracing format documentation/source code somewhere.
-// Unfortunately I can't remember where it is at the time of writing this comment.
+// These are supposed to be defined somewhere in chrome://tracing format documentation/source code somewhere.
 //
 // Yes, just using 'gray' 'orange' etc. doesn't work.
-const COLORS: [&str; 5] = [
+//
+// Taken from:
+// https://chromium.googlesource.com/external/trace-viewer/+/bf55211014397cf0ebcd9e7090de1c4f84fc3ac0/tracing/tracing/ui/base/color_scheme.html
+const COLORS: [&str; _] = [
     "thread_state_iowait",
     "thread_state_running",
     "thread_state_runnable",
     "thread_state_sleeping",
     "thread_state_unknown",
+    "memory_dump",
+    "generic_work",
+    "good",
+    "bad",
+    "terrible",
+    "black",
+    "rail_response",
+    "rail_animate",
+    "rail_idle",
+    "rail_load",
+    "used_memory_column",
+    "older_used_memory_column",
+    "tracing_memory_column",
+    "cq_build_running",
+    "cq_build_passed",
+    "cq_build_failed",
+    "cq_build_abandoned",
+    "cq_build_attempt_running",
+    "cq_build_attempt_passed",
+    "cq_build_attempt_failed",
 ];
 
 impl Tracer {
