@@ -4,7 +4,7 @@ use tokio::task::JoinSet;
 
 use crate::check::check_name;
 use crate::config::{Config, Subcommand};
-use crate::hash::{Hash, HashMap, hash_bytes, hash_ordered};
+use crate::hash::{Hash, HashMap, hash_ordered};
 use crate::interner::{Interner, Str};
 
 pub fn make_module_name(root_name: &str, part_name: &str) -> String {
@@ -620,10 +620,7 @@ pub async fn scan(config: &'static Config, interner: &mut Interner) -> BuildInfo
     {
         const SELF_EXE_PATH: &str = "/proc/self/exe";
         let self_exe_bytes = tokio::fs::read(SELF_EXE_PATH).await.unwrap();
-        let mut hash_builder = HashBuilder::new();
-        hash_builder.update(SELF_EXE_PATH.as_bytes());
-        hash_builder.update(&self_exe_bytes);
-        let self_exe_hash = hash_builder.digest();
+        let self_exe_hash = hash_ordered(&[SELF_EXE_PATH.as_bytes(), self_exe_bytes.as_slice()]);
         assert!(
             info.basic_hash
                 .insert(interner.insert(SELF_EXE_PATH), self_exe_hash)

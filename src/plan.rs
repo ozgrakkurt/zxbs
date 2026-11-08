@@ -20,45 +20,37 @@ pub fn make_module_artifact_name(root_name: &str, part_name: &str, extension: &s
     }
 }
 
-// checks if given binary part should run according to the subcommand.
-// Returns None if it shouldn't run.
-// Returns Some(arguments) if it should run. The arguments are supposed to be passed as cli arguments into the binary.
-pub fn should_run(
+// checks if given test should run according to the subcommand.
+pub fn should_run_test(subcommand: &Subcommand, entry: &str, part: &str) -> bool {
+    match subcommand {
+        Subcommand::TestAll => true,
+        Subcommand::Test {
+            entry_name,
+            test_name,
+        } => entry == entry_name && part == test_name,
+        _ => false,
+    }
+}
+
+// checks if given binary should run according to the subcommand.
+pub fn should_run_binary(
     subcommand: &Subcommand,
-    is_test: bool,
     entry: &str,
     part: &str,
 ) -> Option<&'static [&'static str]> {
-    if is_test {
-        match subcommand {
-            Subcommand::TestAll => Some(&[]),
-            Subcommand::Test {
-                entry_name,
-                test_name,
-            } => {
-                if entry == entry_name && part == test_name {
-                    Some(&[])
-                } else {
-                    None
-                }
+    match subcommand {
+        Subcommand::RunBinary {
+            entry_name,
+            bin_name,
+            args,
+        } => {
+            if entry == entry_name && part == bin_name {
+                Some(args)
+            } else {
+                None
             }
-            _ => None,
         }
-    } else {
-        match subcommand {
-            Subcommand::RunBinary {
-                entry_name,
-                bin_name,
-                args,
-            } => {
-                if entry == entry_name && part == bin_name {
-                    Some(args)
-                } else {
-                    None
-                }
-            }
-            _ => None,
-        }
+        _ => None,
     }
 }
 
@@ -74,10 +66,10 @@ struct Params<'a> {
 }
 
 fn plan_module_build(params: Params) {
-    let mod_parts = info.module[entry_index].as_slice();
-    let n_mod_parts = mod_parts.len();
+    let mod_parts = params.info.module[entry_index].as_slice();
+    let n_mod_parts = params.mod_parts.len();
 
-    let entry_deps = info.deps[entry_index].as_slice();
+    let entry_deps = params.info.deps[entry_index].as_slice();
 
     let mut ext_pcm_paths: Vec<Str> = Vec::with_capacity(entry_deps.len());
     let mod_build_path = config.build_path.join("mod");
