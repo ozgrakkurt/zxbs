@@ -29,6 +29,7 @@ pub struct Config {
     pub ldflags: &'static [&'static str],
     pub build_path: &'static Path,
     pub src_path: &'static Path,
+    pub cache_path: &'static Path,
     pub time_trace: bool,
 }
 
@@ -360,7 +361,10 @@ impl Config {
 
         let current_path = std::env::current_dir().unwrap();
         let src_path = make_path_absolute(&current_path, Path::new(src_dir)).leak();
-        let build_path = make_path_absolute(&current_path, Path::new(build_dir)).leak();
+
+        let build_base_path = make_path_absolute(&current_path, Path::new(build_dir));
+        let build_path = build_base_path.join("out").leak();
+        let cache_path = build_base_path.join("cache").leak();
 
         let flag_cfg = FlagCfg {
             opt_level: opt_level.to_owned(),
@@ -379,6 +383,7 @@ impl Config {
             clang_scan_deps,
             clang_format,
             build_path,
+            cache_path,
             src_path,
             cxxflags,
             ldflags,

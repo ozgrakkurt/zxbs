@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use tokio::task::JoinSet;
-use xxhash_rust::xxh3::xxh3_64 as hash_bytes;
+use xxhash_rust::xxh3::Xxh3 as HashBuilder;
 
 use crate::check::check_name;
 use crate::config::{Config, Subcommand};
@@ -397,9 +397,11 @@ async fn spawn_collect_basic_hashes(
 
         join_set.spawn(async move {
             let data = tokio::fs::read(&path).await.unwrap();
-            let hash = hash_bytes(&data);
+            let mut hash_builder = HashBuilder::new();
+            hash_builder.update(path.as_bytes());
+            hash_builder.update(&data);
 
-            (path, hash)
+            (path, hash_builder.digest())
         });
     }
 }
@@ -617,6 +619,20 @@ pub async fn scan(config: &'static Config, interner: &mut Interner) -> BuildInfo
     while let Some(res) = join_set.join_next().await {
         let entry_info = res.unwrap();
         info.push_entry_info(interner, entry_info);
+    }
+
+    {
+        const SELF_EXE_PATH: &str = "/proc/self/exe";
+        let self_exe_bytes = tokio::fs::read(SELF_EXE_PATH).await.unwrap();
+        let mut hash_builder = HashBuilder::new();
+        hash_builder.update(SELF_EXE_PATH.as_bytes());
+        hash_builder.update(&self_exe_bytes);
+        let self_exe_hash = hash_builder.digest();
+        assert!(
+            info.basic_hash
+                .insert(interner.insert(SELF_EXE_PATH), self_exe_hash)
+                .is_none()
+        );
     }
 
     info

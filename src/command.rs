@@ -251,6 +251,55 @@ impl LinkBinary {
     }
 }
 
+pub struct RunTest {
+    pub path: &'static str,
+    pub stamp_hash: u64,
+    pub stamp_path: &'static str,
+}
+
+impl RunTest {
+    pub fn print(&self) -> String {
+        let mut out = String::with_capacity(1024);
+
+        out.push_str("RUN_TEST ");
+        out.push_str(self.path);
+
+        out
+    }
+
+    pub async fn run(&self) {
+        let output = match tokio::process::Command::new(self.path).output().await {
+            Ok(out) => out,
+            Err(e) => {
+                panic!(
+                    "Failed to run command. Command:\n\t{}\nError = {:?}\n",
+                    self.print(),
+                    e,
+                );
+            }
+        };
+
+        if !output.status.success() {
+            let stderr = String::from_utf8(output.stderr).unwrap();
+            panic!(
+                "Running a test failed. Command:\n\t{}\nStatus: {}\nStdErr:\n{}\n",
+                self.print(),
+                output.status,
+                stderr,
+            );
+        }
+
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        if !stdout.trim().is_empty() {
+            eprintln!("STDOUT of {}:\n{}", self.print(), stdout.as_str());
+        }
+
+        tokio::fs::write(self.stamp_path, &self.stamp_hash.to_le_bytes())
+            .await
+            .unwrap();
+    }
+}
+
 pub struct RunBinary {
     pub path: &'static str,
     pub args: &'static [&'static str],
@@ -485,6 +534,7 @@ pub enum Command {
     ArchiveLib(ArchiveLib),
     LinkBinary(LinkBinary),
     RunBinary(RunBinary),
+    RunTest(RunTest),
     CacheLoad(CacheLoad),
     CacheStore(CacheStore),
     Format(Format),
@@ -499,6 +549,7 @@ impl Command {
             Command::ArchiveLib(x) => x.print(),
             Command::LinkBinary(x) => x.print(),
             Command::RunBinary(x) => x.print(),
+            Command::RunTest(x) => x.print(),
             Command::CacheLoad(x) => x.print(),
             Command::CacheStore(x) => x.print(),
             Command::Format(x) => x.print(),
@@ -513,6 +564,7 @@ impl Command {
             Command::ArchiveLib(x) => x.run().await,
             Command::LinkBinary(x) => x.run().await,
             Command::RunBinary(x) => x.run().await,
+            Command::RunTest(x) => x.run().await,
             Command::CacheLoad(x) => x.run().await,
             Command::CacheStore(x) => x.run().await,
             Command::Format(x) => x.run().await,
@@ -527,6 +579,7 @@ impl Command {
             Command::ArchiveLib(_) => "ArchiveLib",
             Command::LinkBinary(_) => "LinkBinary",
             Command::RunBinary(_) => "RunBinary",
+            Command::RunTest(_) => "RunTest",
             Command::CacheLoad(_) => "CacheLoad",
             Command::CacheStore(_) => "CacheStore",
             Command::Format(_) => "Format",

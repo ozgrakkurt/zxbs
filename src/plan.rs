@@ -469,7 +469,7 @@ fn plan_fmt(config: &Config, interner: &mut Interner, info: &BuildInfo) -> Vec<T
     tasks
 }
 
-// TODO:
+// CACHING TODO:
 // -> Define cache state.
 // -> Implement cache state loading and storing.
 // -> Implement cache pruning based on size and entry count limit. Use "last used" timestamps to
@@ -483,7 +483,7 @@ fn plan_fmt(config: &Config, interner: &mut Interner, info: &BuildInfo) -> Vec<T
 //
 // Is intended to be used in planning along with the cache state to decide to emit cache load or real compilation + cache store.
 //
-// A "deep" hash is defined as aggregate of:
+// A "deep" hash is defined roughly as aggregate of:
 // - hash of input source file path if there is a specific input source file.
 // - hash of output artifact path(s). there should always be atleast one output path, otherwise
 //    why are we even doing caching for this thing?
@@ -496,51 +496,36 @@ fn plan_fmt(config: &Config, interner: &mut Interner, info: &BuildInfo) -> Vec<T
 // - hash of self binary byte content, which is the binary of `zxbs`.
 //    Basically just read "/proc/self/exe" and hash it.
 pub struct DeepHashes {
-    // deep hash of entry at index.
-    //
-    // This "should?" be split into two hashes, one for
-    // the module (interface) and lib (implementation) so changing a lib file
-    // doesn't cause cascading recompilation. But we strive to keep the fresh build time
-    // good enough. So using a single hash "should?" be fine for now?
-    pub entry: Vec<u64>,
-    // Deep hash per module file at index.
-    pub module: Vec<Vec<u64>>,
-    pub lib: Vec<Vec<u64>>,
-    pub bin: Vec<Vec<u64>>,
-    pub test: Vec<Vec<u64>>,
+    pub entry_pcm: Vec<u64>,
+    pub entry_lib_archive: Vec<u64>,
+    pub module_pcm: Vec<Vec<u64>>,
+    pub module_object: Vec<Vec<u64>>,
+    pub lib_object: Vec<Vec<u64>>,
+    pub bin_object: Vec<Vec<u64>>,
+    pub bin_exe: Vec<Vec<u64>>,
+    pub test_object: Vec<Vec<u64>>,
+    pub test_exe: Vec<Vec<u64>>,
+    pub test_stamp: Vec<Vec<u64>>,
 }
 
 impl DeepHashes {
-    pub fn new(len: usize) -> DeepHashes {
+    fn new(len: usize) -> DeepHashes {
         DeepHashes {
-            entry: vec![0; len],
-            module: vec![Vec::new(); len],
-            lib: vec![Vec::new(); len],
-            bin: vec![Vec::new(); len],
-            test: vec![Vec::new(); len],
+            entry_pcm: vec![0; len],
+            entry_lib_archive: vec![0; len],
+            module_pcm: vec![Vec::new(); len],
+            module_object: vec![Vec::new(); len],
+            lib_object: vec![Vec::new(); len],
+            bin_object: vec![Vec::new(); len],
+            bin_exe: vec![Vec::new(); len],
+            test_object: vec![Vec::new(); len],
+            test_exe: vec![Vec::new(); len],
+            test_stamp: vec![Vec::new(); len],
         }
     }
 }
 
-// #[derive(Default)]
-// pub struct BuildInfo {
-//     // maps entry_name => entry_index
-//     pub map: HashMap<Str, u32>,
-//     pub name: Vec<Str>,
-//     pub module: Vec<Vec<Str>>,
-//     // matrix of mod_count * mod_count.
-//     // matrix[i * mod_count + j] is true if mod no i depends on mod no j.
-//     pub mod_dep_matrix: Vec<Vec<bool>>,
-//     pub lib: Vec<Vec<Str>>,
-//     pub bin: Vec<Vec<Str>>,
-//     pub test: Vec<Vec<Str>>,
-//     pub deps: Vec<Vec<Str>>,
-//     // As explained in EntryInfo. This field is just an aggregate of all basic hashes in individual
-//     // EntryInfos.
-//     pub basic_hash: HashMap<Str, u64>,
-// }
-
-pub fn construct_base_deep_hash(config: &Config) -> u64 {
+fn construct_base_deep_hash(config: &Config, self_exe_hash: u64) -> u64 {
     let mut b = HashBuilder::new();
 
     // Try to include EVERYTHING that might effect the generated artifacts.
@@ -554,10 +539,299 @@ pub fn construct_base_deep_hash(config: &Config) -> u64 {
         }
     }
 
-    let self_bin_data = std::fs::read("/proc/self/exe").unwrap();
-    b.update(&self_bin_data);
+    b.update(&self_exe_hash.to_le_bytes());
 
     b.digest()
+}
+
+fn construct_module_deep_hashes(
+    config: &Config,
+    interner: &mut Interner,
+    info: &BuildInfo,
+    entry_idx: usize,
+    out: &mut DeepHashes,
+    hash_builder: &mut HashBuilder,
+) {
+    let entry_name = interner.get(info.name[entry_idx]);
+
+    let parts = &info.module[entry_idx];
+    let num_parts = parts.len();
+
+    assert!(num_parts > 0);
+
+    let mut remaining_deps: Vec<Vec<usize>> = vec![Vec::new(); num_parts];
+    let mut rev_deps: Vec<Vec<usize>> = vec![Vec::new(); num_parts];
+
+    let mod_dep_matrix = &info.mod_dep_matrix[entry_idx];
+    assert_eq!(mod_dep_matrix.len(), num_parts * num_parts);
+
+    let mut backlog: Vec<usize> = Vec::new();
+
+    for part_idx in 0..num_parts {
+        let start = part_idx * num_parts;
+        let deps = &mod_dep_matrix[start..start + num_parts];
+
+        for (dep_idx, &is_dep) in deps.iter().enumerate() {
+            if is_dep {
+                assert_ne!(dep_idx, part_idx);
+
+                remaining_deps[part_idx].push(dep_idx);
+                rev_deps[dep_idx].push(part_idx);
+            }
+        }
+
+        if remaining_deps[part_idx].is_empty() {
+            backlog.push(part_idx);
+        }
+    }
+
+    let rev_deps = rev_deps;
+
+    let mut num_processed = 0;
+
+    out.module_pcm[entry_idx] = vec![0; num_parts];
+    out.module_object[entry_idx] = vec![0; num_parts];
+
+    let start_hash = hash_builder.digest();
+
+    let mut part_was_visited = vec![false; num_parts];
+
+    assert!(!backlog.is_empty());
+    while let Some(part_idx) = backlog.pop() {
+        assert!(!part_was_visited[part_idx]);
+
+        let path = config.src_path.join(entry_name).join("mod").join(format!(
+            "{}.cppm",
+            interner.get(info.module[entry_idx][part_idx])
+        ));
+        let path = interner.insert(path.to_str().unwrap());
+        let basic_hash = *info.basic_hash.get(&path).unwrap();
+
+        let mut hb = HashBuilder::new();
+        hb.update(&start_hash.to_le_bytes());
+        hb.update(&basic_hash.to_le_bytes());
+
+        let mdm_start = part_idx * num_parts;
+        for (dep_idx, &is_dep) in mod_dep_matrix[mdm_start..mdm_start + num_parts]
+            .iter()
+            .enumerate()
+        {
+            if is_dep {
+                assert_ne!(dep_idx, part_idx);
+                assert!(part_was_visited[dep_idx]);
+                hb.update(&out.module_pcm[entry_idx][dep_idx].to_le_bytes());
+            }
+        }
+
+        let pcm_hash = hb.digest();
+
+        // We can't have object and pcm hashes be the same.
+        hb.update(b"object");
+
+        let obj_hash = hb.digest();
+
+        out.module_pcm[entry_idx][part_idx] = pcm_hash;
+
+        out.module_object[entry_idx][part_idx] = obj_hash;
+
+        hash_builder.update(&obj_hash.to_le_bytes());
+
+        // check what else can we calculate now that we calculate hash for this part
+        for &dependee_idx in rev_deps[part_idx].iter() {
+            let rem_deps: &mut Vec<usize> = &mut remaining_deps[dependee_idx];
+            let pos = rem_deps
+                .iter()
+                .enumerate()
+                .find(|(_, x)| **x == part_idx)
+                .map(|(i, _)| i)
+                .unwrap();
+            rem_deps.swap_remove(pos);
+
+            if rem_deps.is_empty() {
+                backlog.push(dependee_idx);
+            }
+        }
+
+        num_processed += 1;
+        part_was_visited[part_idx] = true;
+    }
+
+    assert_eq!(num_processed, num_parts);
+}
+
+fn construct_entry_deep_hash(
+    config: &Config,
+    interner: &mut Interner,
+    info: &BuildInfo,
+    base_hash: u64,
+    entry_idx: usize,
+    entry_was_visited: &[bool],
+    out: &mut DeepHashes,
+) {
+    let entry_name = interner.get(info.name[entry_idx]);
+
+    // It is important to be careful with how we chain the hashes.
+    // Making the chaining too conservative might cause unneeded recompilations even when we
+    // have the right data in the cache. Or it might cause miscompilations if it is too
+    // ambitious.
+
+    let mut hash_builder = HashBuilder::new();
+    hash_builder.update(&base_hash.to_le_bytes());
+
+    // start with the interface (pcm) hash aggregation we will add lib (object) stuff later.
+
+    for dep_name in info.deps[entry_idx].iter() {
+        let dep_idx = usize::try_from(*info.map.get(dep_name).unwrap()).unwrap();
+        let dep_hash = out.entry_pcm[dep_idx];
+        assert!(entry_was_visited[dep_idx]);
+        hash_builder.update(&dep_hash.to_le_bytes());
+    }
+
+    construct_module_deep_hashes(config, interner, info, entry_idx, out, &mut hash_builder);
+
+    // Change hash deterministically so we don't have a case where this hash matches with some
+    // other hash. This would happen if the function that constructed the module hashes above just
+    // read hash_builder.digest() and used it for something but didn't do any updates before returning.
+    //
+    // It is technically OK for this hash to be the same hash with some other hash as it is just a meta hash.
+    // But we want to avoid it anyway so we don't get surprised in some other context.
+    hash_builder.update(b"entry pcm");
+
+    // save entry pcm hash
+    let entry_pcm_hash = hash_builder.digest();
+    out.entry_pcm[entry_idx] = entry_pcm_hash;
+
+    // Hash tracking gets a bit more complex after this point.
+    //
+    // We only processed the cppm files up to here and they all depend on each other in a
+    // simple way.
+    //
+    // Object files only depend on the cppm (pcm) files but don't depend on other object files.
+    // Meaning a change on the cc file or the cppm (pcm) files is the only cause that might change
+    // the object file output.
+    //
+    // So object file hashes should be independent of each other but all dependent on the entry_pcm_hash
+    // we calculated.
+    //
+    // Library archive depends on all the object files in this module.
+    //
+    // Executable object files also only depend on the cppm (pcm) files so they will be based on entry_pcm_hash +
+    // basic hash of the corresponding cc file.
+    //
+    // Executable files themselves are linked using all libraries that are depended and the object file that the cc
+    // file output so they will depend on the interface (pcm), library (.a, object .o) files.
+    //
+    // Nothing depends on the object files that are for executables or the executables themselves so we can just forget
+    // their hashes wihout incorporating them into our hash accumulation.
+    //
+    // hash_builder will only be used for the library hash after this point. Meaning we will use it for only
+    // library archive file hash and the linked executables' hashes.
+    //
+    // The object files' hashes won't be based on hash_builder at all, they will just combine their basic_hash with
+    // entry_pcm_hash to calculate their deep hash.
+
+    // remember that the lib (.a) output of this entry also doesn't depend on the lib outputs of
+    // the dependencies so we will delay incorporating lib hashes of entry dependencies until after we calculated
+    // hash for lib output of this entry.
+
+    // lib
+    let mut lib_hashes = Vec::with_capacity(info.lib[entry_idx].len());
+    for &lib_part_name in info.lib[entry_idx].iter() {
+        let path = config
+            .src_path
+            .join(entry_name)
+            .join("lib")
+            .join(format!("{}.cc", interner.get(lib_part_name)));
+        let path = interner.insert(path.to_str().unwrap());
+        let basic_hash = *info.basic_hash.get(&path).unwrap();
+
+        // mix entry_pcm_hash with basic_hash
+        let mut hb = HashBuilder::new();
+        hb.update(&entry_pcm_hash.to_le_bytes());
+        hb.update(&basic_hash.to_le_bytes());
+
+        let obj_hash = hb.digest();
+        lib_hashes.push(obj_hash);
+
+        hash_builder.update(&obj_hash.to_le_bytes());
+    }
+    out.lib_object[entry_idx] = lib_hashes;
+
+    // save entry lib archive hash
+    let entry_lib_hash = hash_builder.digest();
+    out.entry_lib_archive[entry_idx] = entry_lib_hash;
+
+    // incorporate the lib hashes of entry dependencies into hash_builder
+    // hash builder will only be used for linked executable output hashes after this point.
+    for dep_name in info.deps[entry_idx].iter() {
+        let dep_idx = usize::try_from(*info.map.get(dep_name).unwrap()).unwrap();
+        assert!(entry_was_visited[dep_idx]);
+        let dep_hash = out.entry_lib_archive[dep_idx];
+        hash_builder.update(&dep_hash.to_le_bytes());
+    }
+
+    // test
+    let test_info = &info.test[entry_idx];
+    let mut test_object_hashes = Vec::with_capacity(test_info.len());
+    let mut test_exe_hashes = Vec::with_capacity(test_info.len());
+    let mut test_stamp_hashes = Vec::with_capacity(test_info.len());
+
+    for &test_name in info.test[entry_idx].iter() {
+        let path = config
+            .src_path
+            .join(entry_name)
+            .join("test")
+            .join(format!("{}.cc", interner.get(test_name)));
+        let path = interner.insert(path.to_str().unwrap());
+        let basic_hash = *info.basic_hash.get(&path).unwrap();
+
+        let mut hb = HashBuilder::new();
+        hb.update(&basic_hash.to_le_bytes());
+        hb.update(&entry_lib_hash.to_le_bytes());
+
+        test_object_hashes.push(hb.digest());
+
+        hb.update(b"exe");
+
+        test_exe_hashes.push(hb.digest());
+
+        hb.update(b"stamp");
+
+        test_stamp_hashes.push(hb.digest());
+    }
+
+    out.test_object[entry_idx] = test_object_hashes;
+    out.test_exe[entry_idx] = test_exe_hashes;
+    out.test_stamp[entry_idx] = test_stamp_hashes;
+
+    // bin
+
+    let bin_info = &info.bin[entry_idx];
+    let mut bin_object_hashes = Vec::with_capacity(bin_info.len());
+    let mut bin_exe_hashes = Vec::with_capacity(bin_info.len());
+
+    for &bin_name in info.bin[entry_idx].iter() {
+        let path = config
+            .src_path
+            .join(entry_name)
+            .join("bin")
+            .join(format!("{}.cc", interner.get(bin_name)));
+        let path = interner.insert(path.to_str().unwrap());
+        let basic_hash = *info.basic_hash.get(&path).unwrap();
+
+        let mut hb = HashBuilder::new();
+        hb.update(&basic_hash.to_le_bytes());
+        hb.update(&entry_lib_hash.to_le_bytes());
+
+        bin_object_hashes.push(hb.digest());
+
+        hb.update(b"exe");
+
+        bin_exe_hashes.push(hb.digest());
+    }
+
+    out.bin_object[entry_idx] = bin_object_hashes;
+    out.bin_exe[entry_idx] = bin_exe_hashes;
 }
 
 // Construct "deep" hashes from "basic" hashes by following the dependency graph.
@@ -566,25 +840,31 @@ pub fn construct_deep_hashes(
     interner: &mut Interner,
     info: &BuildInfo,
 ) -> DeepHashes {
-    let base_hash = construct_base_deep_hash(config);
+    let base_hash = construct_base_deep_hash(
+        config,
+        *info
+            .basic_hash
+            .get(&interner.insert("/proc/self/exe"))
+            .unwrap(),
+    );
 
     let num_entries = info.name.len();
 
     if num_entries == 0 {
-        return DeepHashes {
-            entry: Vec::new(),
-            module: Vec::new(),
-            lib: Vec::new(),
-            bin: Vec::new(),
-            test: Vec::new(),
-        };
+        return DeepHashes::new(0);
     }
+
+    let mut backlog: Vec<usize> = Vec::new();
 
     let mut remaining_deps: Vec<Vec<usize>> = vec![Vec::new(); num_entries];
     // this will be used to do a reverse lookup as we calcuate a deep has of an entry so
     // we want to update the `remaining deps` accordingly.
     let mut rev_deps: Vec<Vec<usize>> = vec![Vec::new(); num_entries];
     for (entry_idx, deps) in info.deps.iter().enumerate() {
+        if deps.is_empty() {
+            backlog.push(entry_idx);
+        }
+
         for dep_name in deps.iter() {
             let dep_idx = usize::try_from(*info.map.get(dep_name).unwrap()).unwrap();
             remaining_deps[entry_idx].push(dep_idx);
@@ -598,18 +878,22 @@ pub fn construct_deep_hashes(
 
     let mut out = DeepHashes::new(num_entries);
 
-    let initial_entry_idx: usize = remaining_deps
-        .iter()
-        .enumerate()
-        .find(|(_, x)| x.is_empty())
-        .map(|(i, _)| i)
-        .expect("There should be at least one entry that doesn't depend on other entries.");
-    let mut backlog: Vec<usize> = Vec::new();
-    backlog.push(initial_entry_idx);
+    let mut entry_was_visited = vec![false; num_entries];
+
+    assert!(!backlog.is_empty());
     while let Some(entry_idx) = backlog.pop() {
-        assert_eq!(out.entry[entry_idx], 0);
-        // construct_entry_deep_hash(config, interner, info, base_hash, entry_idx, &mut out);
-        //
+        assert!(remaining_deps[entry_idx].is_empty());
+        assert!(!entry_was_visited[entry_idx]);
+        construct_entry_deep_hash(
+            config,
+            interner,
+            info,
+            base_hash,
+            entry_idx,
+            &entry_was_visited,
+            &mut out,
+        );
+        entry_was_visited[entry_idx] = true;
 
         for &dependee_idx in rev_deps[entry_idx].iter() {
             let rem_deps: &mut Vec<usize> = &mut remaining_deps[dependee_idx];
