@@ -656,7 +656,7 @@ fn construct_entry_deep_hash(
     // have the right data in the cache. Or it might cause miscompilations if it is too
     // ambitious.
 
-    let mut hash_combiner = HashCombiner::new();
+    let mut hash_combiner = UnorderedHashCombiner::new();
     hash_combiner.add(base_hash);
 
     // start with the interface (pcm) hash aggregation. We will add lib (object) stuff later.
@@ -726,10 +726,10 @@ fn construct_entry_deep_hash(
         let path = interner.insert(path.to_str().unwrap());
         let basic_hash = *info.basic_hash.get(&path).unwrap();
 
-        let obj_hash = mix_hashes(entry_pcm_hash, basic_hash);
+        let obj_hash = mix_hashes(basic_hash, entry_pcm_hash);
         lib_hashes.push(obj_hash);
 
-        hash_combiner.update(obj_hash);
+        hash_combiner.add(obj_hash);
     }
     out.lib_object[entry_idx] = lib_hashes;
 
@@ -762,10 +762,6 @@ fn construct_entry_deep_hash(
             .join(format!("{}.cc", interner.get(test_name)));
         let path = interner.insert(path.to_str().unwrap());
         let basic_hash = *info.basic_hash.get(&path).unwrap();
-
-        let mut hb = HashBuilder::new();
-        hb.update(&basic_hash.to_le_bytes());
-        hb.update(&entry_pcm_hash.to_le_bytes());
 
         let obj_hash = mix_hashes(basic_hash, entry_pcm_hash);
 
