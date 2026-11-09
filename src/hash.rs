@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
 use std::collections::HashMap as StdHashMap;
+use std::collections::HashSet as StdHashSet;
 use std::hash::Hasher as _;
 
 use xxhash_rust::xxh3::Xxh3Default as HashBuilder;
@@ -22,6 +23,15 @@ pub fn hash_ordered(buffers: &[&[u8]]) -> Hash {
     builder.digest128()
 }
 
+pub fn mix_hashes(a: Hash, b: Hash) -> Hash {
+    let mut builder = HashBuilder::new();
+
+    builder.write_u128(a);
+    builder.write_u128(b);
+
+    builder.digest128()
+}
+
 // Hash combiner to combine a set of unique hashes in an order independent
 // way.
 //
@@ -39,13 +49,16 @@ pub fn hash_ordered(buffers: &[&[u8]]) -> Hash {
 // https://kevinventullo.com/2018/12/24/hashing-unordered-sets-how-far-will-cleverness-take-you/
 //
 // This approach might be too slow, we can convert to some worse reliability method in that case.
+//
+// Note: Keep in mind that commutative combination of hashes might not be what is wanted in some
+// cases. If the items chaging "order" changes the output then commutative hashing might even be a bug.
 #[derive(Clone)]
-pub struct HashCombiner {
+pub struct UnorderedHashCombiner {
     hashes: BTreeSet<Hash>,
 }
 
 impl HashCombiner {
-    pub fn new() -> HashCombiner {
+    pub fn new() -> UnorderedHashCombiner {
         HashCombiner {
             hashes: BTreeSet::new(),
         }
@@ -67,3 +80,4 @@ impl HashCombiner {
 }
 
 pub type HashMap<K, V> = StdHashMap<K, V, HashMapHashBuilder>;
+pub type HashSet<K> = StdHashSet<K, HashMapHashBuilder>;

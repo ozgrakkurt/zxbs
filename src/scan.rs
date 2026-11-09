@@ -37,6 +37,7 @@ struct EntryInfo {
     //
     // Hashes are used for implementing caching.
     basic_hash: HashMap<String, Hash>,
+    self_exe_hash: Hash,
 }
 
 #[derive(Default)]
@@ -620,12 +621,7 @@ pub async fn scan(config: &'static Config, interner: &mut Interner) -> BuildInfo
     {
         const SELF_EXE_PATH: &str = "/proc/self/exe";
         let self_exe_bytes = tokio::fs::read(SELF_EXE_PATH).await.unwrap();
-        let self_exe_hash = hash_ordered(&[SELF_EXE_PATH.as_bytes(), self_exe_bytes.as_slice()]);
-        assert!(
-            info.basic_hash
-                .insert(interner.insert(SELF_EXE_PATH), self_exe_hash)
-                .is_none()
-        );
+        info.self_exe_hash = hash_ordered(&[SELF_EXE_PATH.as_bytes(), self_exe_bytes.as_slice()]);
     }
 
     info

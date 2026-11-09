@@ -1,6 +1,8 @@
-use std::collections::HashSet;
-
-use xxhash_rust::xxh3::Xxh3 as HashBuilder;
+// Implementation of the "plan" stage.
+//
+// This stage takes the input from the "scan" stage and creates the output to be used by the "build" stage.
+//
+// Don't do IO in this code!!
 
 use crate::build::Task;
 use crate::cache::CacheState;
@@ -9,6 +11,7 @@ use crate::command::{
     RunBinary, RunTest,
 };
 use crate::config::{Config, Subcommand};
+use crate::hash::{Hash, HashSet, UnorderedHashCombiner, hash_bytes, hash_ordered, mix_hashes};
 use crate::interner::{Interner, Str};
 use crate::scan::BuildInfo;
 
@@ -73,7 +76,6 @@ fn plan_module_build(params: Params) {
 
     let mut ext_pcm_paths: Vec<Str> = Vec::with_capacity(entry_deps.len());
     let mod_build_path = config.build_path.join("mod");
-    std::fs::create_dir_all(&mod_build_path).unwrap();
     for &dep_name in entry_deps.iter() {
         let dep_name = interner.get(dep_name);
         let dep_pcm_path = mod_build_path.join(format!("{}.pcm", dep_name));
@@ -153,8 +155,6 @@ fn plan_lib_build(
     let parts = &info.lib[entry_index];
     let src_path = config.src_path.join(entry_name).join("lib");
     let build_path = config.build_path.join(entry_name).join("lib");
-
-    std::fs::create_dir_all(&build_path).unwrap();
 
     let root_pcm_path = config
         .build_path
@@ -262,8 +262,6 @@ fn plan_bin_build(
     let build_path = config.build_path.join(entry_name).join(artifact_kind_name);
     let src_path = config.src_path.join(entry_name).join(artifact_kind_name);
 
-    std::fs::create_dir_all(&build_path).unwrap();
-
     for &bin_name_idx in bins.iter() {
         // emit obj compilation task
         // emit linking task
@@ -350,7 +348,7 @@ fn collect_lib_path_list(
 
     let self_name_idx = info.name[entry_index];
 
-    let mut processed: HashSet<Str> = HashSet::new();
+    let mut processed: HashSet<Str> = HashSet::default();
     let mut worklist: Vec<Str> = vec![self_name_idx];
     while let Some(name_idx) = worklist.pop() {
         let pos_idx: usize = usize::try_from(*info.map.get(&name_idx).unwrap()).unwrap();
@@ -468,17 +466,8 @@ fn plan_fmt(config: &Config, interner: &mut Interner, info: &BuildInfo) -> Vec<T
     tasks
 }
 
-// CACHING TODO:
-// -> Define cache state.
-// -> Implement cache state loading and storing.
-// -> Implement cache pruning based on size and entry count limit. Use "last used" timestamps to
-//    decide what to remove.
-// -> Planning should actually update the "last used" timestamps in cache state if it emits CacheLoad tasks for
-//    the item.
-// -> modify the existing planning functions to account for cache_state + DeepHashes.
-
 // "Parallel" struct to Build Info.
-// Hash the corresponding deephash for output artifacts including modules, librari archives, object files etc.
+// Hash the corresponding deephash for output artifacts including modules, library archives, object files etc.
 //
 // Is intended to be used in planning along with the cache state to decide to emit cache load or real compilation + cache store.
 //
@@ -491,16 +480,16 @@ fn plan_fmt(config: &Config, interner: &mut Interner, info: &BuildInfo) -> Vec<T
 // - hash of self binary byte content, which is the binary of `zxbs`.
 //    Basically just read "/proc/self/exe" and hash it.
 pub struct DeepHashes {
-    pub entry_pcm: Vec<u64>,
-    pub entry_lib_archive: Vec<u64>,
-    pub module_pcm: Vec<Vec<u64>>,
-    pub module_object: Vec<Vec<u64>>,
-    pub lib_object: Vec<Vec<u64>>,
-    pub bin_object: Vec<Vec<u64>>,
-    pub bin_exe: Vec<Vec<u64>>,
-    pub test_object: Vec<Vec<u64>>,
-    pub test_exe: Vec<Vec<u64>>,
-    pub test_stamp: Vec<Vec<u64>>,
+    pub entry_pcm: Vec<Hash>,
+    pub entry_lib_archive: Vec<Hash>,
+    pub module_pcm: Vec<Vec<Hash>>,
+    pub module_object: Vec<Vec<Hash>>,
+    pub lib_object: Vec<Vec<Hash>>,
+    pub bin_object: Vec<Vec<Hash>>,
+    pub bin_exe: Vec<Vec<Hash>>,
+    pub test_object: Vec<Vec<Hash>>,
+    pub test_exe: Vec<Vec<Hash>>,
+    pub test_stamp: Vec<Vec<Hash>>,
 }
 
 impl DeepHashes {
@@ -520,23 +509,20 @@ impl DeepHashes {
     }
 }
 
-fn construct_base_deep_hash(config: &Config, self_exe_hash: u64) -> u64 {
-    let mut b = HashBuilder::new();
+fn construct_base_deep_hash(config: &Config, self_exe_hash: Hash) -> Hash {
+    let mut bufs: Vec<&[u8]> = Vec::new();
 
-    // Try to include EVERYTHING that might effect the generated artifacts.
-    b.update(config.cxx.as_bytes());
-    b.update(config.ar.as_bytes());
-    b.update(config.clang_scan_deps.as_bytes());
+    // Try to include everything that might effect the generated artifacts.
+    bufs.push(config.cxx.as_bytes());
+    bufs.push(config.ar.as_bytes());
+    bufs.push(config.clang_scan_deps.as_bytes());
 
-    for flags in [config.cxxflags, config.ldflags] {
-        for flag in flags {
-            b.update(flag.as_bytes());
-        }
-    }
+    bufs.extend_from_slice(config.cxxflags);
+    bufs.extend_from_slice(config.ldflags);
 
-    b.update(&self_exe_hash.to_le_bytes());
+    bufs.push(&self_exe_hash.to_le_bytes());
 
-    b.digest()
+    hash_ordered(&bufs)
 }
 
 fn construct_module_deep_hashes(
@@ -545,7 +531,7 @@ fn construct_module_deep_hashes(
     info: &BuildInfo,
     entry_idx: usize,
     out: &mut DeepHashes,
-    hash_builder: &mut HashBuilder,
+    hash_combiner: &mut UnorderedHashCombiner,
 ) {
     let entry_name = interner.get(info.name[entry_idx]);
 
@@ -587,7 +573,7 @@ fn construct_module_deep_hashes(
     out.module_pcm[entry_idx] = vec![0; num_parts];
     out.module_object[entry_idx] = vec![0; num_parts];
 
-    let start_hash = hash_builder.digest();
+    let start_hash = hash_combiner.combine();
 
     let mut part_was_visited = vec![false; num_parts];
 
@@ -602,9 +588,10 @@ fn construct_module_deep_hashes(
         let path = interner.insert(path.to_str().unwrap());
         let basic_hash = *info.basic_hash.get(&path).unwrap();
 
-        let mut hb = HashBuilder::new();
-        hb.update(&start_hash.to_le_bytes());
-        hb.update(&basic_hash.to_le_bytes());
+        // to be used to calculate deep hash for this module part
+        let mut hc = UnorderedHashCombiner::new();
+        hc.add(start_hash);
+        hc.add(basic_hash);
 
         let mdm_start = part_idx * num_parts;
         for (dep_idx, &is_dep) in mod_dep_matrix[mdm_start..mdm_start + num_parts]
@@ -614,22 +601,19 @@ fn construct_module_deep_hashes(
             if is_dep {
                 assert_ne!(dep_idx, part_idx);
                 assert!(part_was_visited[dep_idx]);
-                hb.update(&out.module_pcm[entry_idx][dep_idx].to_le_bytes());
+                hc.add(out.module_pcm[entry_idx][dep_idx]);
             }
         }
 
-        let pcm_hash = hb.digest();
+        let pcm_hash = hc.combine();
 
-        // We can't have object and pcm hashes be the same.
-        hb.update(b"object");
-
-        let obj_hash = hb.digest();
+        // We can't have object and pcm hashes be the same so mix a deterministic value in.
+        let obj_hash = mix_hashes(pcm_hash, hash_bytes(b"object"));
 
         out.module_pcm[entry_idx][part_idx] = pcm_hash;
-
         out.module_object[entry_idx][part_idx] = obj_hash;
 
-        // check what else can we calculate now that we calculate hash for this part
+        // check what else can we calculate now that we calculated hash for this part
         for &dependee_idx in rev_deps[part_idx].iter() {
             let rem_deps: &mut Vec<usize> = &mut remaining_deps[dependee_idx];
             let pos = rem_deps
@@ -649,8 +633,8 @@ fn construct_module_deep_hashes(
         part_was_visited[part_idx] = true;
     }
 
-    for part_idx in 0..num_parts {
-        hash_builder.update(&out.module_object[entry_idx][part_idx].to_le_bytes());
+    for &hash in out.module_object[entry_idx].iter() {
+        hash_combiner.add(hash);
     }
 
     assert_eq!(num_processed, num_parts);
@@ -660,7 +644,7 @@ fn construct_entry_deep_hash(
     config: &Config,
     interner: &mut Interner,
     info: &BuildInfo,
-    base_hash: u64,
+    base_hash: Hash,
     entry_idx: usize,
     entry_was_visited: &[bool],
     out: &mut DeepHashes,
@@ -672,19 +656,19 @@ fn construct_entry_deep_hash(
     // have the right data in the cache. Or it might cause miscompilations if it is too
     // ambitious.
 
-    let mut hash_builder = HashBuilder::new();
-    hash_builder.update(&base_hash.to_le_bytes());
+    let mut hash_combiner = HashCombiner::new();
+    hash_combiner.add(base_hash);
 
-    // start with the interface (pcm) hash aggregation we will add lib (object) stuff later.
+    // start with the interface (pcm) hash aggregation. We will add lib (object) stuff later.
 
     for dep_name in info.deps[entry_idx].iter() {
         let dep_idx = usize::try_from(*info.map.get(dep_name).unwrap()).unwrap();
-        let dep_hash = out.entry_pcm[dep_idx];
         assert!(entry_was_visited[dep_idx]);
-        hash_builder.update(&dep_hash.to_le_bytes());
+        let dep_hash = out.entry_pcm[dep_idx];
+        hash_combiner.add(dep_hash);
     }
 
-    construct_module_deep_hashes(config, interner, info, entry_idx, out, &mut hash_builder);
+    construct_module_deep_hashes(config, interner, info, entry_idx, out, &mut hash_combiner);
 
     // Change hash deterministically so we don't have a case where this hash matches with some
     // other hash. This would happen if the function that constructed the module hashes above just
@@ -692,10 +676,10 @@ fn construct_entry_deep_hash(
     //
     // It is technically OK for this hash to be the same hash with some other hash as it is just a meta hash.
     // But we want to avoid it anyway so we don't get surprised in some other context.
-    hash_builder.update(b"entry pcm");
+    hash_combiner.add(hash_bytes(b"entry pcm"));
 
     // save entry pcm hash
-    let entry_pcm_hash = hash_builder.digest();
+    let entry_pcm_hash = hash_combiner.combine();
     out.entry_pcm[entry_idx] = entry_pcm_hash;
 
     // Hash tracking gets a bit more complex after this point.
@@ -742,20 +726,15 @@ fn construct_entry_deep_hash(
         let path = interner.insert(path.to_str().unwrap());
         let basic_hash = *info.basic_hash.get(&path).unwrap();
 
-        // mix entry_pcm_hash with basic_hash
-        let mut hb = HashBuilder::new();
-        hb.update(&entry_pcm_hash.to_le_bytes());
-        hb.update(&basic_hash.to_le_bytes());
-
-        let obj_hash = hb.digest();
+        let obj_hash = mix_hashes(entry_pcm_hash, basic_hash);
         lib_hashes.push(obj_hash);
 
-        hash_builder.update(&obj_hash.to_le_bytes());
+        hash_combiner.update(obj_hash);
     }
     out.lib_object[entry_idx] = lib_hashes;
 
     // save entry lib archive hash
-    let entry_lib_hash = hash_builder.digest();
+    let entry_lib_hash = hash_combiner.combine();
     out.entry_lib_archive[entry_idx] = entry_lib_hash;
 
     // incorporate the lib hashes of entry dependencies into hash_builder
@@ -764,10 +743,10 @@ fn construct_entry_deep_hash(
         let dep_idx = usize::try_from(*info.map.get(dep_name).unwrap()).unwrap();
         assert!(entry_was_visited[dep_idx]);
         let dep_hash = out.entry_lib_archive[dep_idx];
-        hash_builder.update(&dep_hash.to_le_bytes());
+        hash_combiner.add(dep_hash);
     }
 
-    let link_base_hash = hash_builder.digest();
+    let link_base_hash = hash_combiner.combine();
 
     // test
     let test_info = &info.test[entry_idx];
@@ -788,15 +767,17 @@ fn construct_entry_deep_hash(
         hb.update(&basic_hash.to_le_bytes());
         hb.update(&entry_pcm_hash.to_le_bytes());
 
-        test_object_hashes.push(hb.digest());
+        let obj_hash = mix_hashes(basic_hash, entry_pcm_hash);
 
-        hb.update(&link_base_hash.to_le_bytes());
+        test_object_hashes.push(obj_hash);
 
-        test_exe_hashes.push(hb.digest());
+        let exe_hash = mix_hashes(obj_hash, link_base_hash);
 
-        hb.update(b"stamp");
+        test_exe_hashes.push(exe_hash);
 
-        test_stamp_hashes.push(hb.digest());
+        let stamp_hash = mix_hashes(exe_hash, hash_bytes(b"stamp"));
+
+        test_stamp_hashes.push(stamp_hash);
     }
 
     out.test_object[entry_idx] = test_object_hashes;
@@ -818,15 +799,13 @@ fn construct_entry_deep_hash(
         let path = interner.insert(path.to_str().unwrap());
         let basic_hash = *info.basic_hash.get(&path).unwrap();
 
-        let mut hb = HashBuilder::new();
-        hb.update(&basic_hash.to_le_bytes());
-        hb.update(&entry_pcm_hash.to_le_bytes());
+        let obj_hash = mix_hashes(basic_hash, entry_pcm_hash);
 
-        bin_object_hashes.push(hb.digest());
+        bin_object_hashes.push(obj_hash);
 
-        hb.update(&link_base_hash.to_le_bytes());
+        let exe_hash = mix_hashes(obj_hash, link_base_hash);
 
-        bin_exe_hashes.push(hb.digest());
+        bin_exe_hashes.push(exe_hash);
     }
 
     out.bin_object[entry_idx] = bin_object_hashes;
@@ -839,13 +818,7 @@ pub fn construct_deep_hashes(
     interner: &mut Interner,
     info: &BuildInfo,
 ) -> DeepHashes {
-    let base_hash = construct_base_deep_hash(
-        config,
-        *info
-            .basic_hash
-            .get(&interner.insert("/proc/self/exe"))
-            .unwrap(),
-    );
+    let base_hash = construct_base_deep_hash(config, info.self_exe_hash);
 
     let num_entries = info.name.len();
 
