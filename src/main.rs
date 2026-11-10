@@ -1,5 +1,8 @@
 use std::time::Instant;
-use zxbs::{build, cache, config, directory, interner, plan, scan, timestamp::timestamp, tracer};
+use zxbs::{
+    build, cache, config, directory, hash::HashMap, interner, plan, scan, timestamp::timestamp,
+    tracer,
+};
 
 fn make_duration(start: &Instant) -> u64 {
     u64::try_from(start.elapsed().as_micros()).unwrap()
@@ -17,18 +20,31 @@ async fn run() {
     let tracer: &'static mut tracer::Tracer =
         Box::leak(Box::new(tracer::Tracer::new(start_timestamp)));
 
-    let mut cache_state = cache::load(config.cache_path).await;
+    let mut top_level_timings: HashMap<String, (u64, u64)> = HashMap::default();
 
     let beginning = Instant::now();
 
     let mut t0 = Instant::now();
+    let cache_state_load_start = make_duration(&beginning);
+    let mut cache_state = cache::load(config.cache_path).await;
+    top_level_timings.insert(
+        "CacheState Load".to_owned(),
+        (cache_state_load_start, make_duration(&t0)),
+    );
+
+    t0 = Instant::now();
     let scan_start = make_duration(&beginning);
     let info = scan::scan(config, interner).await;
-    let scan_duration = make_duration(&t0);
-
     info.check_subcommand(interner, &subcommand);
+    top_level_timings.insert("Scan".to_owned(), (scan_start, make_duration(&t0)));
 
+    t0 = Instant::now();
+    let dir_setup_start = make_duration(&beginning);
     directory::setup_build_dir(config, &info, interner).await;
+    top_level_timings.insert(
+        "Build Directory Setup".to_owned(),
+        (dir_setup_start, make_duration(&t0)),
+    );
 
     t0 = Instant::now();
     let plan_start = make_duration(&beginning);
@@ -40,7 +56,7 @@ async fn run() {
         &mut cache_state,
         start_timestamp,
     );
-    let plan_duration = make_duration(&t0);
+    top_level_timings.insert("Plan".to_owned(), (plan_start, make_duration(&t0)));
 
     t0 = Instant::now();
     let build_start = make_duration(&beginning);
@@ -57,17 +73,18 @@ async fn run() {
         );
         build.await;
     }
-    let build_duration = make_duration(&t0);
+    top_level_timings.insert("Build".to_owned(), (build_start, make_duration(&t0)));
 
+    t0 = Instant::now();
+    let cache_state_finish = make_duration(&beginning);
     cache::finish(cache_state, config.cache_path, start_timestamp).await;
+    top_level_timings.insert(
+        "CacheState Finish".to_owned(),
+        (cache_state_finish, make_duration(&t0)),
+    );
 
     if config.time_trace {
-        let json = tracer.print_json(
-            interner,
-            (scan_start, scan_duration),
-            (plan_start, plan_duration),
-            (build_start, build_duration),
-        );
+        let json = tracer.print_json(interner, &top_level_timings);
         tokio::fs::write(config.build_path.join("time_trace.json"), json)
             .await
             .unwrap();

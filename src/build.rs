@@ -117,12 +117,10 @@ impl<'a> Build<'a> {
         self.free_slot_indices.push(slot_index);
 
         if let Some(tracer) = self.tracer.as_mut() {
-            let kind = self.interner.insert(cmd.kind_str());
-
             tracer.record(tracer::Entry {
                 start,
                 duration,
-                kind,
+                kind: cmd.kind(),
                 entry_name: task.entry_name,
                 part_name: task.part_name,
                 entry_index: task.entry_index,

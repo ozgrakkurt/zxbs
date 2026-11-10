@@ -538,6 +538,20 @@ pub enum Command {
     TestCmd(TestCmd),
 }
 
+#[derive(Clone, Copy, Debug)]
+pub enum CommandKind {
+    CompileModule,
+    CompileToObject,
+    ArchiveLib,
+    LinkBinary,
+    RunBinary,
+    RunTest,
+    CacheLoad,
+    CacheStore,
+    Format,
+    TestCmd,
+}
+
 impl Command {
     pub fn print(&self) -> String {
         match self {
@@ -569,18 +583,18 @@ impl Command {
         }
     }
 
-    pub fn kind_str(&self) -> &'static str {
+    pub fn kind(&self) -> CommandKind {
         match self {
-            Command::CompileModule(_) => "CompileModule",
-            Command::CompileToObject(_) => "CompileToObject",
-            Command::ArchiveLib(_) => "ArchiveLib",
-            Command::LinkBinary(_) => "LinkBinary",
-            Command::RunBinary(_) => "RunBinary",
-            Command::RunTest(_) => "RunTest",
-            Command::CacheLoad(_) => "CacheLoad",
-            Command::CacheStore(_) => "CacheStore",
-            Command::Format(_) => "Format",
-            Command::TestCmd(_) => "TestCmd",
+            Command::CompileModule(_) => CommandKind::CompileModule,
+            Command::CompileToObject(_) => CommandKind::CompileToObject,
+            Command::ArchiveLib(_) => CommandKind::ArchiveLib,
+            Command::LinkBinary(_) => CommandKind::LinkBinary,
+            Command::RunBinary(_) => CommandKind::RunBinary,
+            Command::RunTest(_) => CommandKind::RunTest,
+            Command::CacheLoad(_) => CommandKind::CacheLoad,
+            Command::CacheStore(_) => CommandKind::CacheStore,
+            Command::Format(_) => CommandKind::Format,
+            Command::TestCmd(_) => CommandKind::TestCmd,
         }
     }
 }

@@ -1,3 +1,4 @@
+use crate::command::CommandKind;
 use crate::hash::HashMap;
 use crate::interner::{Interner, Str};
 
@@ -7,7 +8,7 @@ pub struct Entry {
     pub duration: u64,
     pub entry_name: Str,
     pub part_name: Str,
-    pub kind: Str,
+    pub kind: CommandKind,
     pub entry_index: usize,
     pub slot_index: usize,
 }
@@ -50,6 +51,22 @@ const COLORS: [&str; 25] = [
     "cq_build_attempt_passed",
     "cq_build_attempt_failed",
 ];
+
+fn command_kind_to_color(kind: CommandKind) -> &'static str {
+    let idx = match kind {
+        CommandKind::CompileModule => 1,
+        CommandKind::CompileToObject => 2,
+        CommandKind::ArchiveLib => 3,
+        CommandKind::LinkBinary => 4,
+        CommandKind::RunBinary => 5,
+        CommandKind::RunTest => 6,
+        CommandKind::CacheLoad => 7,
+        CommandKind::CacheStore => 8,
+        CommandKind::Format => 9,
+        CommandKind::TestCmd => 10,
+    };
+    COLORS[idx]
+}
 
 impl Tracer {
     pub fn new(begin_timestamp: u64) -> Tracer {
@@ -104,49 +121,23 @@ impl Tracer {
     pub fn print_json(
         &self,
         interner: &Interner,
-        scan_timing: (u64, u64),
-        plan_timing: (u64, u64),
-        build_timing: (u64, u64),
+        top_level_timings: &HashMap<String, (u64, u64)>,
     ) -> String {
         let mut events: Vec<serde_json::Value> = Vec::with_capacity(self.data.len());
 
-        events.push(self.make_trace_event(
-            0,
-            scan_timing.0,
-            scan_timing.1,
-            "Scan".to_owned(),
-            "Scan".to_owned(),
-            "generic_work".to_owned(),
-        ));
-        events.push(self.make_trace_event(
-            0,
-            plan_timing.0,
-            plan_timing.1,
-            "Plan".to_owned(),
-            "Plan".to_owned(),
-            "generic_work".to_owned(),
-        ));
-        events.push(self.make_trace_event(
-            0,
-            build_timing.0,
-            build_timing.1,
-            "Build".to_owned(),
-            "Build".to_owned(),
-            "generic_work".to_owned(),
-        ));
+        for (name, timing) in top_level_timings.iter() {
+            events.push(self.make_trace_event(
+                0,
+                timing.0,
+                timing.1,
+                name.clone(),
+                name.clone(),
+                COLORS[0].to_owned(),
+            ));
+        }
 
-        let mut color_mapping = HashMap::<Str, usize>::default();
-        let mut color_slot: usize = 0;
         for entry in self.data.iter() {
-            let color: String = match color_mapping.get(&entry.kind) {
-                Some(v) => COLORS[*v].to_owned(),
-                None => {
-                    color_mapping.insert(entry.kind, color_slot);
-                    let out = COLORS[color_slot].to_owned();
-                    color_slot = (color_slot + 1) % COLORS.len();
-                    out
-                }
-            };
+            let color = command_kind_to_color(entry.kind).to_owned();
             events.push(self.make_trace_event(
                 entry.slot_index + 1,
                 entry.start,
@@ -156,7 +147,7 @@ impl Tracer {
                     interner.get(entry.entry_name),
                     interner.get(entry.part_name)
                 ),
-                interner.get(entry.kind).to_owned(),
+                format!("{:?}", entry.kind),
                 color,
             ));
         }
