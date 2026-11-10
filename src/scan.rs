@@ -4,7 +4,7 @@ use crate::check::check_name;
 use crate::config::{Config, Subcommand};
 use crate::hash::{Hash, HashMap, hash_ordered};
 use crate::interner::{Interner, Str};
-use crate::thread_pool::{JoinSet, ThreadPool};
+use crate::thread_pool::{JoinSet, ThreadPoolHandle};
 
 pub fn make_module_name(root_name: &str, part_name: &str) -> String {
     if root_name == part_name {
@@ -296,16 +296,18 @@ struct ObjectFolderInfo {
 }
 
 // For scanning bin/test/lib folders for cc files and scanning their module dependencies
-fn scan_object_folder(config: &'static Config, path: &Path) -> ObjectFolderInfo {
-    let thread_pool = ThreadPool::new(16);
-
+fn scan_object_folder(
+    config: &'static Config,
+    path: &Path,
+    thread_pool: ThreadPoolHandle<'static>,
+) -> ObjectFolderInfo {
     let parts = scan_subfolder("cc", path);
 
     let mut futs = JoinSet::new();
 
     for part in parts {
         let cppm_path = path.join(format!("{}.cc", part));
-        futs.spawn(&thread_pool, move || {
+        futs.spawn(thread_pool, move || {
             let cppm_deps = scan_deps(config, &cppm_path);
 
             if !cppm_deps.provides.is_empty() {
@@ -381,7 +383,7 @@ fn spawn_collect_basic_hashes(
     concurrency: usize,
     join_set: &mut JoinSet<(String, Hash)>,
     basic_hash: &mut HashMap<String, Hash>,
-    thread_pool: &ThreadPool,
+    thread_pool: ThreadPoolHandle<'static>,
 ) {
     for part_name in names.iter() {
         // don't go over the concurrency limit
@@ -406,9 +408,11 @@ fn spawn_collect_basic_hashes(
     }
 }
 
-fn scan_entry(config: &'static Config, path: &Path) -> EntryInfo {
-    let thread_pool = ThreadPool::new(16);
-
+fn scan_entry(
+    config: &'static Config,
+    path: &Path,
+    thread_pool: ThreadPoolHandle<'static>,
+) -> EntryInfo {
     let entry_name = path.file_name().unwrap();
     let entry_name = entry_name.to_str().unwrap().to_owned();
     check_name(&entry_name);
@@ -424,15 +428,15 @@ fn scan_entry(config: &'static Config, path: &Path) -> EntryInfo {
     });
     let lib = thread_pool.spawn({
         let path = path.join("lib");
-        move || scan_object_folder(config, &path)
+        move || scan_object_folder(config, &path, thread_pool.next_layer())
     });
     let test = thread_pool.spawn({
         let path = path.join("test");
-        move || scan_object_folder(config, &path)
+        move || scan_object_folder(config, &path, thread_pool.next_layer())
     });
     let bin = thread_pool.spawn({
         let path = path.join("bin");
-        move || scan_object_folder(config, &path)
+        move || scan_object_folder(config, &path, thread_pool.next_layer())
     });
 
     let deps = deps.join();
@@ -448,7 +452,7 @@ fn scan_entry(config: &'static Config, path: &Path) -> EntryInfo {
 
     let mod_path = path.join("mod");
 
-    let concurrency = 16;
+    let concurrency = num_cpus::get();
     let mut join_set = JoinSet::new();
     let mut mod_dep_names = vec![Vec::new(); mod_parts.len()];
     for (pos, part_name) in mod_parts.iter().enumerate() {
@@ -459,7 +463,7 @@ fn scan_entry(config: &'static Config, path: &Path) -> EntryInfo {
         let part_name = part_name.to_owned();
         let cppm_path = mod_path.join(format!("{}.cppm", part_name));
         let expected_provides = make_module_name(&entry_name, &part_name);
-        join_set.spawn(&thread_pool, move || {
+        join_set.spawn(thread_pool, move || {
             let cppm_deps = scan_deps(config, &cppm_path);
 
             if cppm_deps.provides.len() != 1
@@ -551,7 +555,7 @@ fn scan_entry(config: &'static Config, path: &Path) -> EntryInfo {
         concurrency,
         &mut join_set,
         &mut basic_hash,
-        &thread_pool,
+        thread_pool,
     );
     spawn_collect_basic_hashes(
         config,
@@ -562,7 +566,7 @@ fn scan_entry(config: &'static Config, path: &Path) -> EntryInfo {
         concurrency,
         &mut join_set,
         &mut basic_hash,
-        &thread_pool,
+        thread_pool,
     );
     spawn_collect_basic_hashes(
         config,
@@ -573,7 +577,7 @@ fn scan_entry(config: &'static Config, path: &Path) -> EntryInfo {
         concurrency,
         &mut join_set,
         &mut basic_hash,
-        &thread_pool,
+        thread_pool,
     );
     spawn_collect_basic_hashes(
         config,
@@ -584,7 +588,7 @@ fn scan_entry(config: &'static Config, path: &Path) -> EntryInfo {
         concurrency,
         &mut join_set,
         &mut basic_hash,
-        &thread_pool,
+        thread_pool,
     );
 
     while let Some((path, hash)) = join_set.join_next() {
@@ -606,14 +610,14 @@ fn scan_entry(config: &'static Config, path: &Path) -> EntryInfo {
 pub fn scan(
     config: &'static Config,
     interner: &mut Interner,
-    thread_pool: &'static ThreadPool,
+    thread_pool: ThreadPoolHandle<'static>,
 ) -> BuildInfo {
     let dir = std::fs::read_dir(config.src_path).unwrap();
 
     let mut info = BuildInfo::default();
 
     let mut join_set = JoinSet::new();
-    let concurrency = 16;
+    let concurrency = num_cpus::get();
 
     for entry in dir {
         let entry = entry.unwrap();
@@ -621,7 +625,9 @@ pub fn scan(
             let entry_info = join_set.join_next().unwrap();
             info.push_entry_info(interner, entry_info);
         }
-        join_set.spawn(thread_pool, move || scan_entry(config, &entry.path()));
+        join_set.spawn(thread_pool, move || {
+            scan_entry(config, &entry.path(), thread_pool.next_layer())
+        });
     }
 
     while let Some(entry_info) = join_set.join_next() {

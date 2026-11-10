@@ -3,7 +3,7 @@ use std::time::Instant;
 
 use crate::command::Command;
 use crate::interner::{Interner, Str};
-use crate::thread_pool::{JoinSet, ThreadPool};
+use crate::thread_pool::{JoinSet, ThreadPoolHandle};
 use crate::tracer;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -50,7 +50,7 @@ pub struct Build<'a> {
     // Then we are able to visualize how much concurrency we are utilizing at a time and
     // which tasks are running concurrently with each other.
     free_slot_indices: Vec<usize>,
-    thread_pool: &'static ThreadPool,
+    thread_pool_handle: ThreadPoolHandle<'static>,
 }
 
 impl<'a> Build<'a> {
@@ -59,7 +59,7 @@ impl<'a> Build<'a> {
         interner: &'a mut Interner,
         tasks: Vec<Task>,
         beginning: Instant,
-        thread_pool: &'static ThreadPool,
+        thread_pool_handle: ThreadPoolHandle<'static>,
     ) -> Build<'a> {
         let mut dependencies = Vec::with_capacity(tasks.len());
 
@@ -104,7 +104,7 @@ impl<'a> Build<'a> {
             concurrency,
             n_tasks_finished: 0,
             beginning,
-            thread_pool,
+            thread_pool_handle,
         }
     }
 
@@ -160,7 +160,7 @@ impl<'a> Build<'a> {
                 let task_begin = Instant::now();
                 let slot_index = self.free_slot_indices.pop().unwrap();
 
-                self.running.spawn(self.thread_pool, move || {
+                self.running.spawn(self.thread_pool_handle, move || {
                     command.run();
                     let duration = u64::try_from(task_begin.elapsed().as_micros()).unwrap();
                     (command, task_idx, task_start, duration, slot_index)

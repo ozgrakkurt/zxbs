@@ -8,32 +8,41 @@ use std::time::{Duration, Instant};
 type Job = Box<dyn FnOnce() + Send + 'static>;
 
 pub struct ThreadPool {
-    senders: Vec<mpsc::Sender<Job>>,
-    next: AtomicUsize,
+    senders: Vec<Vec<mpsc::Sender<Job>>>,
+    next: Vec<AtomicUsize>,
 }
 
 impl ThreadPool {
-    pub fn new(num_threads: usize) -> Self {
+    pub fn new(num_threads: usize, num_layers: usize) -> Self {
         assert!(num_threads > 0);
-        let mut senders = Vec::with_capacity(num_threads);
+        let mut senders = Vec::with_capacity(num_layers);
 
-        for _ in 0..num_threads {
-            let (tx, rx) = mpsc::channel::<Job>();
-            senders.push(tx);
-            thread::spawn(move || {
-                while let Ok(job) = rx.recv() {
-                    job();
-                }
-            });
+        for _ in 0..num_layers {
+            let mut s = Vec::with_capacity(num_threads);
+
+            for _ in 0..num_threads {
+                let (tx, rx) = mpsc::channel::<Job>();
+                s.push(tx);
+                thread::spawn(move || {
+                    while let Ok(job) = rx.recv() {
+                        job();
+                    }
+                });
+            }
+
+            senders.push(s);
         }
 
-        ThreadPool {
-            senders,
-            next: AtomicUsize::new(0),
+        let mut next = Vec::with_capacity(num_layers);
+
+        for _ in 0..num_layers {
+            next.push(AtomicUsize::new(0));
         }
+
+        ThreadPool { senders, next }
     }
 
-    pub fn spawn<F, T>(&self, f: F) -> TaskHandle<T>
+    pub fn spawn<F, T>(&self, layer: usize, f: F) -> TaskHandle<T>
     where
         F: FnOnce() -> T + Send + 'static,
         T: Send + 'static,
@@ -43,8 +52,10 @@ impl ThreadPool {
             let _ = tx.send(f());
         });
 
-        let idx = self.next.fetch_add(1, Ordering::Relaxed) % self.senders.len();
-        self.senders[idx].send(job).expect("worker thread exited");
+        let idx = self.next[layer].fetch_add(1, Ordering::Relaxed) % self.senders.len();
+        self.senders[layer][idx]
+            .send(job)
+            .expect("worker thread exited");
 
         TaskHandle { rx }
     }
@@ -59,6 +70,36 @@ impl<T> TaskHandle<T> {
         self.rx
             .recv()
             .expect("worker panicked before sending a result")
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct ThreadPoolHandle<'a> {
+    pool: &'a ThreadPool,
+    layer: usize,
+}
+
+impl<'a> ThreadPoolHandle<'a> {
+    pub fn new(thread_pool: &'a ThreadPool) -> Self {
+        Self {
+            pool: thread_pool,
+            layer: 0,
+        }
+    }
+
+    pub fn next_layer(&self) -> Self {
+        Self {
+            pool: self.pool,
+            layer: self.layer + 1,
+        }
+    }
+
+    pub fn spawn<F, T>(&self, f: F) -> TaskHandle<T>
+    where
+        F: FnOnce() -> T + Send + 'static,
+        T: Send + 'static,
+    {
+        self.pool.spawn(self.layer, f)
     }
 }
 
@@ -77,12 +118,12 @@ impl<T> JoinSet<T> {
         }
     }
 
-    pub fn spawn<F>(&mut self, thread_pool: &ThreadPool, f: F)
+    pub fn spawn<F>(&mut self, thread_pool_handle: ThreadPoolHandle, f: F)
     where
         F: FnOnce() -> T + Send + 'static,
         T: Send + 'static,
     {
-        let handle = thread_pool.spawn(f);
+        let handle = thread_pool_handle.spawn(f);
         self.handles.push(handle);
     }
 

@@ -1,7 +1,11 @@
 use std::time::Instant;
 use zxbs::{
-    build, cache, config, directory, hash::HashMap, interner, plan, scan, thread_pool::ThreadPool,
-    timestamp::timestamp, tracer,
+    build, cache, config, directory,
+    hash::HashMap,
+    interner, plan, scan,
+    thread_pool::{ThreadPool, ThreadPoolHandle},
+    timestamp::timestamp,
+    tracer,
 };
 
 fn make_duration(start: &Instant) -> u64 {
@@ -20,8 +24,8 @@ fn run() {
     //
     // The parts of the program that uses the threadpool are responsible to use it with a concurrency limit if the
     // workloads are CPU bound.
-    let thread_pool: &'static ThreadPool =
-        Box::leak(Box::new(ThreadPool::new(num_cpus::get() * 8)));
+    let thread_pool: &'static ThreadPool = Box::leak(Box::new(ThreadPool::new(64, 4)));
+    let thread_pool_handle: ThreadPoolHandle<'static> = ThreadPoolHandle::new(thread_pool);
 
     let start_timestamp = timestamp();
 
@@ -42,7 +46,7 @@ fn run() {
 
     t0 = Instant::now();
     let scan_start = make_duration(&beginning);
-    let info = scan::scan(config, interner, thread_pool);
+    let info = scan::scan(config, interner, thread_pool_handle);
     info.check_subcommand(interner, &subcommand);
     top_level_timings.insert("Scan".to_owned(), (scan_start, make_duration(&t0)));
 
@@ -77,7 +81,7 @@ fn run() {
         interner,
         tasks,
         beginning,
-        thread_pool,
+        thread_pool_handle,
     )
     .build();
     top_level_timings.insert("Build".to_owned(), (build_start, make_duration(&t0)));
