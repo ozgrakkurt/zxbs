@@ -1,15 +1,10 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc;
-use std::sync::mpsc::TryRecvError;
+use crossbeam_channel::{Receiver, Sender, unbounded};
 use std::thread;
-use std::thread::sleep;
-use std::time::{Duration, Instant};
 
 type Job = Box<dyn FnOnce() + Send + 'static>;
 
 pub struct ThreadPool {
-    senders: Vec<Vec<mpsc::Sender<Job>>>,
-    next: Vec<AtomicUsize>,
+    senders: Vec<Sender<Job>>,
 }
 
 impl ThreadPool {
@@ -18,28 +13,32 @@ impl ThreadPool {
         let mut senders = Vec::with_capacity(num_layers);
 
         for _ in 0..num_layers {
-            let mut s = Vec::with_capacity(num_threads);
+            let (tx, rx) = unbounded::<Job>();
+            senders.push(tx);
 
             for _ in 0..num_threads {
-                let (tx, rx) = mpsc::channel::<Job>();
-                s.push(tx);
+                let rx = rx.clone();
                 thread::spawn(move || {
                     while let Ok(job) = rx.recv() {
                         job();
                     }
                 });
             }
-
-            senders.push(s);
         }
 
-        let mut next = Vec::with_capacity(num_layers);
+        ThreadPool { senders }
+    }
 
-        for _ in 0..num_layers {
-            next.push(AtomicUsize::new(0));
-        }
+    fn spawn_with_tx<F, T>(&self, layer: usize, tx: Sender<T>, f: F)
+    where
+        F: FnOnce() -> T + Send + 'static,
+        T: Send + 'static,
+    {
+        let job: Job = Box::new(move || {
+            let _ = tx.send(f());
+        });
 
-        ThreadPool { senders, next }
+        self.senders[layer].send(job).expect("worker thread exited");
     }
 
     pub fn spawn<F, T>(&self, layer: usize, f: F) -> TaskHandle<T>
@@ -47,22 +46,16 @@ impl ThreadPool {
         F: FnOnce() -> T + Send + 'static,
         T: Send + 'static,
     {
-        let (tx, rx) = mpsc::channel::<T>();
-        let job: Job = Box::new(move || {
-            let _ = tx.send(f());
-        });
+        let (tx, rx) = unbounded::<T>();
 
-        let idx = self.next[layer].fetch_add(1, Ordering::Relaxed) % self.senders.len();
-        self.senders[layer][idx]
-            .send(job)
-            .expect("worker thread exited");
+        self.spawn_with_tx(layer, tx, f);
 
         TaskHandle { rx }
     }
 }
 
 pub struct TaskHandle<T> {
-    rx: mpsc::Receiver<T>,
+    rx: Receiver<T>,
 }
 
 impl<T> TaskHandle<T> {
@@ -94,6 +87,14 @@ impl<'a> ThreadPoolHandle<'a> {
         }
     }
 
+    pub fn spawn_with_tx<F, T>(&self, tx: Sender<T>, f: F)
+    where
+        F: FnOnce() -> T + Send + 'static,
+        T: Send + 'static,
+    {
+        self.pool.spawn_with_tx(self.layer, tx, f);
+    }
+
     pub fn spawn<F, T>(&self, f: F) -> TaskHandle<T>
     where
         F: FnOnce() -> T + Send + 'static,
@@ -103,19 +104,16 @@ impl<'a> ThreadPoolHandle<'a> {
     }
 }
 
-// We need to have this abstraction in order to be able to call swap_remove on handles and just overall
-// have better control over the underlying implementation.
-//
-// Also we need the code to be here in order for it to access TaskHandle.rx to call try_recv anyway.
 pub struct JoinSet<T> {
-    handles: Vec<TaskHandle<T>>,
+    rx: Receiver<T>,
+    tx: Sender<T>,
+    len: usize,
 }
 
 impl<T> JoinSet<T> {
     pub fn new() -> Self {
-        Self {
-            handles: Vec::new(),
-        }
+        let (tx, rx) = unbounded::<T>();
+        Self { tx, rx, len: 0 }
     }
 
     pub fn spawn<F>(&mut self, thread_pool_handle: ThreadPoolHandle, f: F)
@@ -123,55 +121,27 @@ impl<T> JoinSet<T> {
         F: FnOnce() -> T + Send + 'static,
         T: Send + 'static,
     {
-        let handle = thread_pool_handle.spawn(f);
-        self.handles.push(handle);
+        thread_pool_handle.spawn_with_tx(self.tx.clone(), f);
+        self.len += 1;
     }
 
     pub fn len(&self) -> usize {
-        self.handles.len()
+        self.len
     }
 
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
-    fn poll(&mut self) -> Option<(usize, T)> {
-        for (i, handle) in self.handles.iter().enumerate() {
-            match handle.rx.try_recv() {
-                Ok(v) => {
-                    return Some((i, v));
-                }
-                Err(TryRecvError::Empty) => {}
-                Err(TryRecvError::Disconnected) => {
-                    unreachable!();
-                }
-            }
-        }
-
-        None
-    }
-
     pub fn join_next(&mut self) -> Option<T> {
-        if self.handles.is_empty() {
+        if self.is_empty() {
             return None;
         }
 
-        let mut polling_since = Instant::now();
+        let v = self.rx.recv().unwrap();
+        self.len -= 1;
 
-        loop {
-            match self.poll() {
-                Some((idx, val)) => {
-                    self.handles.swap_remove(idx);
-                    return Some(val);
-                }
-                None => {
-                    if polling_since.elapsed().as_millis() > 2 {
-                        sleep(Duration::from_nanos(1));
-                        polling_since = Instant::now();
-                    }
-                }
-            }
-        }
+        Some(v)
     }
 
     pub fn join_all(&mut self) -> Vec<T> {
