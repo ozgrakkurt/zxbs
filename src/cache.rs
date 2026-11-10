@@ -93,7 +93,7 @@ impl CacheState {
     }
 }
 
-pub async fn load(cache_path: &Path) -> CacheState {
+pub fn load(cache_path: &Path) -> CacheState {
     if !std::fs::exists(cache_path).unwrap() {
         return CacheState::new();
     }
@@ -103,19 +103,19 @@ pub async fn load(cache_path: &Path) -> CacheState {
         return CacheState::new();
     }
 
-    let contents = tokio::fs::read(&state_file_path).await.unwrap();
+    let contents = std::fs::read(&state_file_path).unwrap();
 
     CacheState::deserialize(&contents)
 }
 
-pub async fn finish(mut state: CacheState, cache_path: &Path, timestamp: u64) {
+pub fn finish(mut state: CacheState, cache_path: &Path, timestamp: u64) {
     if !std::fs::exists(cache_path).unwrap() {
-        tokio::fs::create_dir(cache_path).await.unwrap();
+        std::fs::create_dir(cache_path).unwrap();
     }
 
     for &hash in state.new_entries.iter() {
         let file_path = cache_path.join(format!("{:x}", hash));
-        let bytes = tokio::fs::read(file_path).await.unwrap();
+        let bytes = std::fs::read(file_path).unwrap();
         let output_hash = hash_bytes(&bytes);
 
         state.entries.insert(
@@ -127,11 +127,11 @@ pub async fn finish(mut state: CacheState, cache_path: &Path, timestamp: u64) {
         );
     }
 
-    // TODO: prune the cache to keep it under some size limit
+    // TODO: Prune the cache to keep it under some size limit.
 
     let mut contents = Vec::new();
     state.serialize(&mut contents);
 
     let state_file_path = cache_path.join("cache_state");
-    tokio::fs::write(&state_file_path, &contents).await.unwrap();
+    tokio::fs::write(&state_file_path, &contents).unwrap();
 }
