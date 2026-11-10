@@ -12,6 +12,7 @@ pub mod cache;
 pub mod check;
 pub mod command;
 pub mod config;
+pub mod directory;
 pub mod hash;
 pub mod interner;
 pub mod plan;

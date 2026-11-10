@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 
-use crate::hash::Hash;
+use crate::hash::{Hash, hash_bytes};
 
 struct Entry {
     last_used_timestamp: u64,
@@ -90,4 +91,47 @@ impl CacheState {
             }
         }
     }
+}
+
+pub async fn load(cache_path: &Path) -> CacheState {
+    if !std::fs::exists(cache_path).unwrap() {
+        return CacheState::new();
+    }
+
+    let state_file_path = cache_path.join("cache_state");
+    if !std::fs::exists(&state_file_path).unwrap() {
+        return CacheState::new();
+    }
+
+    let contents = tokio::fs::read(&state_file_path).await.unwrap();
+
+    CacheState::deserialize(&contents)
+}
+
+pub async fn finish(mut state: CacheState, cache_path: &Path, timestamp: u64) {
+    if !std::fs::exists(cache_path).unwrap() {
+        tokio::fs::create_dir(cache_path).await.unwrap();
+    }
+
+    for &hash in state.new_entries.iter() {
+        let file_path = cache_path.join(format!("{:x}", hash));
+        let bytes = tokio::fs::read(file_path).await.unwrap();
+        let output_hash = hash_bytes(&bytes);
+
+        state.entries.insert(
+            hash,
+            Entry {
+                output_hash,
+                last_used_timestamp: timestamp,
+            },
+        );
+    }
+
+    // TODO: prune the cache to keep it under some size limit
+
+    let mut contents = Vec::new();
+    state.serialize(&mut contents);
+
+    let state_file_path = cache_path.join("cache_state");
+    tokio::fs::write(&state_file_path, &contents).await.unwrap();
 }

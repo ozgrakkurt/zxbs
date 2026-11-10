@@ -1297,7 +1297,9 @@ pub fn construct_deep_hashes(
     out
 }
 
-fn collect_lib_path_list(
+// This should return the list in the proper order so we don't cause linker errors.
+// Dependecies should always come AFTER the depended libraries.
+pub fn collect_lib_path_list(
     config: &Config,
     interner: &mut Interner,
     info: &BuildInfo,
