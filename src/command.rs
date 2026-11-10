@@ -32,8 +32,8 @@ impl CompileModule {
         out
     }
 
-    pub async fn run(&self) {
-        let output = match tokio::process::Command::new(self.cxx)
+    pub fn run(&self) {
+        let output = match std::process::Command::new(self.cxx)
             .args(self.cxxflags)
             .arg(self.input)
             .arg(format!("-fmodule-output={}", self.pcm_output))
@@ -41,7 +41,6 @@ impl CompileModule {
             .arg("-o")
             .arg(self.object_output)
             .output()
-            .await
         {
             Ok(out) => out,
             Err(e) => {
@@ -92,15 +91,14 @@ impl CompileToObject {
         out
     }
 
-    pub async fn run(&self) {
-        let output = match tokio::process::Command::new(self.cxx)
+    pub fn run(&self) {
+        let output = match std::process::Command::new(self.cxx)
             .args(self.cxxflags)
             .arg(self.input)
             .arg("-c")
             .arg("-o")
             .arg(self.output)
             .output()
-            .await
         {
             Ok(out) => out,
             Err(e) => {
@@ -151,13 +149,12 @@ impl ArchiveLib {
         out
     }
 
-    pub async fn run(&self) {
-        let output = match tokio::process::Command::new(self.ar)
+    pub fn run(&self) {
+        let output = match std::process::Command::new(self.ar)
             .arg("crs")
             .arg(self.output)
             .args(self.inputs.as_slice())
             .output()
-            .await
         {
             Ok(out) => out,
             Err(e) => {
@@ -213,15 +210,14 @@ impl LinkBinary {
         out
     }
 
-    pub async fn run(&self) {
-        let output = match tokio::process::Command::new(self.cxx)
+    pub fn run(&self) {
+        let output = match std::process::Command::new(self.cxx)
             .args(self.ldflags)
             .arg("-o")
             .arg(self.output)
             .arg(self.object)
             .args(self.deps)
             .output()
-            .await
         {
             Ok(out) => out,
             Err(e) => {
@@ -266,8 +262,8 @@ impl RunTest {
         out
     }
 
-    pub async fn run(&self) {
-        let output = match tokio::process::Command::new(self.path).output().await {
+    pub fn run(&self) {
+        let output = match std::process::Command::new(self.path).output() {
             Ok(out) => out,
             Err(e) => {
                 panic!(
@@ -293,9 +289,7 @@ impl RunTest {
             eprintln!("STDOUT of {}:\n{}", self.print(), stdout.as_str());
         }
 
-        tokio::fs::write(self.stamp_path, &self.stamp_hash.to_le_bytes())
-            .await
-            .unwrap();
+        std::fs::write(self.stamp_path, self.stamp_hash.to_le_bytes()).unwrap();
     }
 }
 
@@ -314,11 +308,10 @@ impl RunBinary {
         out
     }
 
-    pub async fn run(&self) {
-        let output = match tokio::process::Command::new(self.path)
+    pub fn run(&self) {
+        let output = match std::process::Command::new(self.path)
             .args(self.args)
             .output()
-            .await
         {
             Ok(out) => out,
             Err(e) => {
@@ -362,13 +355,12 @@ impl Format {
         out
     }
 
-    pub async fn run(&self) {
-        let output = match tokio::process::Command::new(self.clang_format)
+    pub fn run(&self) {
+        let output = match std::process::Command::new(self.clang_format)
             .arg("-i")
             .arg("--style={BasedOnStyle: LLVM, IndentWidth: 4}")
             .arg(self.path)
             .output()
-            .await
         {
             Ok(out) => out,
             Err(e) => {
@@ -416,7 +408,7 @@ impl TestCmd {
         out
     }
 
-    pub async fn run(&self) {
+    pub fn run(&self) {
         let mut finished = self.finished.lock().unwrap();
 
         for input in self.inputs.iter() {
@@ -458,12 +450,12 @@ impl CacheLoad {
         out
     }
 
-    pub async fn run(&self) {
+    pub fn run(&self) {
         let cache_path = format!("{}/{:x}", self.cache_files_path, self.deep_hash);
-        let data = tokio::fs::read(&cache_path).await.unwrap();
+        let data = std::fs::read(&cache_path).unwrap();
         let hash = hash_bytes(&data);
         assert!(hash == self.expected_hash);
-        tokio::fs::write(self.output_path, &data).await.unwrap();
+        std::fs::write(self.output_path, &data).unwrap();
     }
 }
 
@@ -492,15 +484,15 @@ impl CacheStore {
         out
     }
 
-    pub async fn run(&self) {
-        let data = tokio::fs::read(self.file_path).await.unwrap();
+    pub fn run(&self) {
+        let data = std::fs::read(self.file_path).unwrap();
         let expected_hash = hash_bytes(&data);
 
         let cache_path = format!("{}/{:x}", self.cache_files_path, self.deep_hash);
         // check if the file we are intending to store is already there.
         // we need to do this instead of "just overwriting" so we don't mess up the file in case
         // of interruption.
-        match tokio::fs::read(&cache_path).await {
+        match std::fs::read(&cache_path) {
             Ok(data) => {
                 let hash = hash_bytes(&data);
                 assert!(hash == expected_hash);
@@ -521,7 +513,7 @@ impl CacheStore {
         // it is ok if our write gets interrupted because of program close because the existence of the file won't be
         // registered until the build finishes and we are sure there won't be any failures.
 
-        tokio::fs::write(&cache_path, &data).await.unwrap();
+        std::fs::write(&cache_path, &data).unwrap();
     }
 }
 
@@ -568,18 +560,18 @@ impl Command {
         }
     }
 
-    pub async fn run(&self) {
+    pub fn run(&self) {
         match self {
-            Command::CompileModule(x) => x.run().await,
-            Command::CompileToObject(x) => x.run().await,
-            Command::ArchiveLib(x) => x.run().await,
-            Command::LinkBinary(x) => x.run().await,
-            Command::RunBinary(x) => x.run().await,
-            Command::RunTest(x) => x.run().await,
-            Command::CacheLoad(x) => x.run().await,
-            Command::CacheStore(x) => x.run().await,
-            Command::Format(x) => x.run().await,
-            Command::TestCmd(x) => x.run().await,
+            Command::CompileModule(x) => x.run(),
+            Command::CompileToObject(x) => x.run(),
+            Command::ArchiveLib(x) => x.run(),
+            Command::LinkBinary(x) => x.run(),
+            Command::RunBinary(x) => x.run(),
+            Command::RunTest(x) => x.run(),
+            Command::CacheLoad(x) => x.run(),
+            Command::CacheStore(x) => x.run(),
+            Command::Format(x) => x.run(),
+            Command::TestCmd(x) => x.run(),
         }
     }
 

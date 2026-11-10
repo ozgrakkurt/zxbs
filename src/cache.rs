@@ -133,5 +133,5 @@ pub fn finish(mut state: CacheState, cache_path: &Path, timestamp: u64) {
     state.serialize(&mut contents);
 
     let state_file_path = cache_path.join("cache_state");
-    tokio::fs::write(&state_file_path, &contents).unwrap();
+    std::fs::write(&state_file_path, &contents).unwrap();
 }

@@ -48,7 +48,7 @@ fn run() {
 
     t0 = Instant::now();
     let dir_setup_start = make_duration(&beginning);
-    directory::setup_build_dir(config, &info, interner, thread_pool);
+    directory::setup_build_dir(config, &info, interner);
     top_level_timings.insert(
         "Build Directory Setup".to_owned(),
         (dir_setup_start, make_duration(&t0)),
@@ -63,13 +63,12 @@ fn run() {
         &info,
         &mut cache_state,
         start_timestamp,
-        thread_pool,
     );
     top_level_timings.insert("Plan".to_owned(), (plan_start, make_duration(&t0)));
 
     t0 = Instant::now();
     let build_start = make_duration(&beginning);
-    build::build(
+    build::Build::new(
         if config.time_trace {
             Some(tracer)
         } else {
@@ -79,7 +78,8 @@ fn run() {
         tasks,
         beginning,
         thread_pool,
-    );
+    )
+    .build();
     top_level_timings.insert("Build".to_owned(), (build_start, make_duration(&t0)));
 
     t0 = Instant::now();

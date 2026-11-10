@@ -3,12 +3,11 @@ use std::sync::mpsc;
 use std::sync::mpsc::TryRecvError;
 use std::thread;
 use std::thread::sleep;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 type Job = Box<dyn FnOnce() + Send + 'static>;
 
 pub struct ThreadPool {
-    workers: Vec<thread::JoinHandle<()>>,
     senders: Vec<mpsc::Sender<Job>>,
     next: AtomicUsize,
 }
@@ -16,21 +15,19 @@ pub struct ThreadPool {
 impl ThreadPool {
     pub fn new(num_threads: usize) -> Self {
         assert!(num_threads > 0);
-        let mut workers = Vec::with_capacity(num_threads);
         let mut senders = Vec::with_capacity(num_threads);
 
         for _ in 0..num_threads {
             let (tx, rx) = mpsc::channel::<Job>();
             senders.push(tx);
-            workers.push(thread::spawn(move || {
+            thread::spawn(move || {
                 while let Ok(job) = rx.recv() {
                     job();
                 }
-            }));
+            });
         }
 
         ThreadPool {
-            workers,
             senders,
             next: AtomicUsize::new(0),
         }
@@ -50,16 +47,6 @@ impl ThreadPool {
         self.senders[idx].send(job).expect("worker thread exited");
 
         TaskHandle { rx }
-    }
-}
-
-impl Drop for ThreadPool {
-    fn drop(&mut self) {
-        // Drop every Sender → each worker's recv() returns Err → thread exits.
-        self.senders.clear();
-        for w in self.workers.drain(..) {
-            let _ = w.join();
-        }
     }
 }
 
@@ -128,6 +115,8 @@ impl<T> JoinSet<T> {
             return None;
         }
 
+        let mut polling_since = Instant::now();
+
         loop {
             match self.poll() {
                 Some((idx, val)) => {
@@ -135,11 +124,10 @@ impl<T> JoinSet<T> {
                     return Some(val);
                 }
                 None => {
-                    // Hopefully this should keep CPU hogging at a tolerable level.
-                    //
-                    // Can wait a bit before calling sleep so we poll for a couple iterations before going to sleep if
-                    // latency is actually bad, but this should be fine.
-                    sleep(Duration::from_nanos(1));
+                    if polling_since.elapsed().as_millis() > 2 {
+                        sleep(Duration::from_nanos(1));
+                        polling_since = Instant::now();
+                    }
                 }
             }
         }

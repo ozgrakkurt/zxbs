@@ -3,8 +3,8 @@ use std::time::Instant;
 
 use crate::command::Command;
 use crate::interner::{Interner, Str};
+use crate::thread_pool::{JoinSet, ThreadPool};
 use crate::tracer;
-use crate::thread_pool::{ThreadPool, TaskHandle};
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct TaskIndex(u32);
@@ -28,28 +28,29 @@ pub struct Task {
     pub entry_index: usize,
 }
 
-type Handle = TaskHandle<(Command, TaskIndex, u64, u64, usize)>;
+type TaskOutput = (Command, TaskIndex, u64, u64, usize);
+type RunningSet = JoinSet<TaskOutput>;
 
-#[must_use = "futures do nothing unless you `.await` or poll them"]
+#[must_use = "Constructing a build is useless unless it is finished by calling .build() on it"]
 pub struct Build<'a> {
-    pub tracer: Option<&'a mut tracer::Tracer>,
-    pub interner: &'a mut Interner,
-    pub is_built: Vec<bool>,
-    pub dependencies: Vec<Vec<Str>>,
-    pub dependants: Vec<Vec<TaskIndex>>,
-    pub tasks: Vec<Task>,
-    pub running: Vec<Handle>,
-    pub backlog: VecDeque<TaskIndex>,
-    pub concurrency: usize,
-    pub n_tasks_finished: usize,
-    pub done: bool,
-    pub beginning: Instant,
+    tracer: Option<&'a mut tracer::Tracer>,
+    interner: &'a mut Interner,
+    is_built: Vec<bool>,
+    dependencies: Vec<Vec<Str>>,
+    dependants: Vec<Vec<TaskIndex>>,
+    tasks: Vec<Task>,
+    running: RunningSet,
+    backlog: VecDeque<TaskIndex>,
+    concurrency: usize,
+    n_tasks_finished: usize,
+    beginning: Instant,
     // used to give a unique temporary id to every currently running task.
     // This is useful for generating timing traces so we can imagine each task running in
     // it's own thread.
     // Then we are able to visualize how much concurrency we are utilizing at a time and
     // which tasks are running concurrently with each other.
-    pub free_slot_indices: Vec<usize>,
+    free_slot_indices: Vec<usize>,
+    thread_pool: &'static ThreadPool,
 }
 
 impl<'a> Build<'a> {
@@ -58,6 +59,7 @@ impl<'a> Build<'a> {
         interner: &'a mut Interner,
         tasks: Vec<Task>,
         beginning: Instant,
+        thread_pool: &'static ThreadPool,
     ) -> Build<'a> {
         let mut dependencies = Vec::with_capacity(tasks.len());
 
@@ -96,20 +98,17 @@ impl<'a> Build<'a> {
             dependencies,
             dependants,
             tasks,
-            running: Vec::new(),
+            running: JoinSet::new(),
             free_slot_indices,
             backlog,
             concurrency,
             n_tasks_finished: 0,
-            done: false,
             beginning,
+            thread_pool,
         }
     }
 
-    fn process_task_finished(
-        &mut self,
-        (cmd, task_idx, start, duration, slot_index): (Command, TaskIndex, u64, u64, usize),
-    ) {
+    fn process_task_finished(&mut self, (cmd, task_idx, start, duration, slot_index): TaskOutput) {
         let task = &self.tasks[task_idx.to_usize()];
         self.n_tasks_finished += 1;
 
@@ -147,63 +146,34 @@ impl<'a> Build<'a> {
             }
         }
     }
-}
 
-impl<'a> Future for Build<'a> {
-    type Output = ();
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let fut = self.get_mut();
-
-        assert!(!fut.done);
-
-        let mut idx = 0;
-        while idx < fut.running.len() {
-            let job = &mut fut.running[idx];
-            match job.as_mut().poll(cx) {
-                Poll::Ready(res) => {
-                    fut.process_task_finished(res.unwrap());
-                    std::mem::drop(fut.running.swap_remove(idx));
+    pub fn build(mut self) {
+        loop {
+            if let Some(task_idx) = self.backlog.pop_front() {
+                while self.running.len() >= self.concurrency {
+                    let output = self.running.join_next().unwrap();
+                    self.process_task_finished(output);
                 }
-                Poll::Pending => {
-                    idx += 1;
-                }
+
+                let command = self.tasks[task_idx.to_usize()].command.take().unwrap();
+                let task_start = u64::try_from(self.beginning.elapsed().as_micros()).unwrap();
+                let task_begin = Instant::now();
+                let slot_index = self.free_slot_indices.pop().unwrap();
+
+                self.running.spawn(self.thread_pool, move || {
+                    command.run();
+                    let duration = u64::try_from(task_begin.elapsed().as_micros()).unwrap();
+                    (command, task_idx, task_start, duration, slot_index)
+                });
+            } else if let Some(output) = self.running.join_next() {
+                self.process_task_finished(output);
+            } else {
+                break;
             }
         }
 
-        while fut.running.len() < fut.concurrency {
-            let task_idx = match fut.backlog.pop_front() {
-                Some(task_idx) => task_idx,
-                None => break,
-            };
-
-            let command = fut.tasks[task_idx.to_usize()].command.take().unwrap();
-            let task_start = u64::try_from(fut.beginning.elapsed().as_micros()).unwrap();
-            let task_begin = Instant::now();
-            let slot_index = fut.free_slot_indices.pop().unwrap();
-            let mut handle = Box::pin(tokio::task::spawn(async move {
-                command.run().await;
-                let duration = u64::try_from(task_begin.elapsed().as_micros()).unwrap();
-                (command, task_idx, task_start, duration, slot_index)
-            }));
-
-            match handle.as_mut().poll(cx) {
-                Poll::Ready(res) => {
-                    fut.process_task_finished(res.unwrap());
-                }
-                Poll::Pending => {
-                    fut.running.push(handle);
-                }
-            }
-        }
-
-        if fut.running.is_empty() && fut.backlog.is_empty() {
-            fut.done = true;
-            assert_eq!(fut.n_tasks_finished, fut.tasks.len());
-
-            Poll::Ready(())
-        } else {
-            Poll::Pending
+        while let Some(output) = self.running.join_next() {
+            self.process_task_finished(output);
         }
     }
 }
