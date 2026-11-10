@@ -2,8 +2,7 @@ use std::collections::HashSet;
 use std::io::ErrorKind as IoErrorKind;
 use std::sync::{Arc, Mutex};
 
-use xxhash_rust::xxh3::xxh3_64 as hash_bytes;
-
+use crate::hash::{Hash, hash_bytes};
 use crate::interner::Str;
 
 pub struct CompileModule {
@@ -253,7 +252,7 @@ impl LinkBinary {
 
 pub struct RunTest {
     pub path: &'static str,
-    pub stamp_hash: u64,
+    pub stamp_hash: Hash,
     pub stamp_path: &'static str,
 }
 
@@ -445,8 +444,8 @@ impl TestCmd {
 pub struct CacheLoad {
     pub cache_files_path: &'static str,
     pub output_path: &'static str,
-    pub deep_hash: u64,
-    pub expected_hash: u64,
+    pub deep_hash: Hash,
+    pub expected_hash: Hash,
 }
 
 impl CacheLoad {
@@ -471,7 +470,7 @@ impl CacheLoad {
 pub struct CacheStore {
     pub cache_files_path: &'static str,
     pub file_path: &'static str,
-    pub deep_hash: u64,
+    pub deep_hash: Hash,
 }
 
 // CACHE STORES MIGHT BE INTERRUPTED BECAUSE OTHER TASKS FAIL WHILE

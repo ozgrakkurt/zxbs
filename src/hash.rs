@@ -57,9 +57,9 @@ pub struct UnorderedHashCombiner {
     hashes: BTreeSet<Hash>,
 }
 
-impl HashCombiner {
+impl UnorderedHashCombiner {
     pub fn new() -> UnorderedHashCombiner {
-        HashCombiner {
+        UnorderedHashCombiner {
             hashes: BTreeSet::new(),
         }
     }

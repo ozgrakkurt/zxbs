@@ -23,7 +23,7 @@ pub struct Tracer {
 //
 // Taken from:
 // https://chromium.googlesource.com/external/trace-viewer/+/bf55211014397cf0ebcd9e7090de1c4f84fc3ac0/tracing/tracing/ui/base/color_scheme.html
-const COLORS: [&str; _] = [
+const COLORS: [&str; 25] = [
     "thread_state_iowait",
     "thread_state_running",
     "thread_state_runnable",

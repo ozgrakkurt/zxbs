@@ -37,7 +37,6 @@ struct EntryInfo {
     //
     // Hashes are used for implementing caching.
     basic_hash: HashMap<String, Hash>,
-    self_exe_hash: Hash,
 }
 
 #[derive(Default)]
@@ -56,6 +55,7 @@ pub struct BuildInfo {
     // As explained in EntryInfo. This field is just an aggregate of all basic hashes in individual
     // EntryInfos.
     pub basic_hash: HashMap<Str, Hash>,
+    pub self_exe_hash: Hash,
 }
 
 impl BuildInfo {

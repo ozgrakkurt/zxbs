@@ -57,7 +57,6 @@ pub fn should_run_binary(
     }
 }
 
-#[derive(Clone, Copy)]
 struct Params<'a> {
     config: &'a Config,
     subcommand: &'a Subcommand,
@@ -68,6 +67,25 @@ struct Params<'a> {
     deep_hashes: &'a DeepHashes,
     tasks: &'a mut Vec<Task>,
     timestamp: u64,
+}
+
+impl<'a> Params<'a> {
+    // Some RUST SPECIAL here. We have to do this because we can't copy/clone this struct.
+    // Reborrow all `&mut` fields with a shorter lifetime.
+    // This is the "clone" you're looking for.
+    pub fn reborrow<'b>(&'b mut self) -> Params<'b> {
+        Params {
+            config: self.config,
+            subcommand: self.subcommand,
+            interner: &mut *self.interner, // reborrow
+            info: self.info,
+            cache_state: &mut *self.cache_state, // reborrow
+            entry_index: self.entry_index,
+            deep_hashes: self.deep_hashes,
+            tasks: &mut *self.tasks, // reborrow
+            timestamp: self.timestamp,
+        }
+    }
 }
 
 fn plan_module_build(
@@ -84,7 +102,7 @@ fn plan_module_build(
     }: Params,
 ) {
     let entry_name_idx = info.name[entry_index];
-    let entry_name = interner.get();
+    let entry_name = interner.get(entry_name_idx);
 
     let mod_parts = info.module[entry_index].as_slice();
     let n_mod_parts = mod_parts.len();
@@ -148,9 +166,10 @@ fn plan_module_build(
         let pcm_hash = pcm_hashes[part_idx];
         let obj_hash = obj_hashes[part_idx];
 
-        if let (Some(pcm_output_hash), Some(obj_output_hash)) =
-            (cache_state.item(pcm_hash), cache_state.item(obj_hash))
-        {
+        if let (Some(pcm_output_hash), Some(obj_output_hash)) = (
+            cache_state.item(pcm_hash, timestamp),
+            cache_state.item(obj_hash, timestamp),
+        ) {
             tasks.push(Task {
                 entry_name: entry_name_idx,
                 part_name: part,
@@ -232,6 +251,7 @@ fn plan_lib_build(
         entry_index,
         deep_hashes,
         tasks,
+        timestamp,
     }: Params,
 ) {
     // build object files (both .cc and .s)
@@ -266,7 +286,7 @@ fn plan_lib_build(
         obj_paths.push(interner.get(path_idx));
     }
 
-    let obj_hashes = &deep_hashes.lib_object[entry_idx];
+    let obj_hashes = &deep_hashes.lib_object[entry_index];
 
     let cache_files_path = config.cache_path.to_str().unwrap();
 
@@ -284,7 +304,7 @@ fn plan_lib_build(
 
         let obj_hash = obj_hashes[part_idx];
 
-        if let Some(obj_output_hash) = cache_state.item(obj_hash) {
+        if let Some(obj_output_hash) = cache_state.item(obj_hash, timestamp) {
             tasks.push(Task {
                 entry_name: entry_name_idx,
                 part_name: part_name_idx,
@@ -340,7 +360,7 @@ fn plan_lib_build(
     // this is only used for tracing so nothing special.
     let lib_archive_part_name = interner.insert("@ARCHIVE_LIB@");
 
-    if let Some(lib_archive_output_hash) = cache_state.item(lib_archive_hash) {
+    if let Some(lib_archive_output_hash) = cache_state.item(lib_archive_hash, timestamp) {
         tasks.push(Task {
             entry_name: entry_name_idx,
             part_name: lib_archive_part_name,
@@ -396,7 +416,10 @@ fn plan_bin_build(
         entry_index,
         deep_hashes,
         tasks,
+        timestamp,
     }: Params,
+    lib_paths: &'static [&'static str],
+    lib_path_indices: &[Str],
 ) {
     // depend on self lib (.a)
     // compile cc to .o
@@ -415,8 +438,8 @@ fn plan_bin_build(
     let build_path = config.build_path.join(entry_name).join("bin");
     let src_path = config.src_path.join(entry_name).join("bin");
 
-    let obj_hashes = &deep_hashes.bin_object[entry_idx];
-    let exe_hashes = &deep_hashes.bin_exe[entry_idx];
+    let obj_hashes = &deep_hashes.bin_object[entry_index];
+    let exe_hashes = &deep_hashes.bin_exe[entry_index];
 
     let cache_files_path = config.cache_path.to_str().unwrap();
 
@@ -444,7 +467,7 @@ fn plan_bin_build(
         let obj_hash = obj_hashes[bin_idx];
         let exe_hash = exe_hashes[bin_idx];
 
-        if let Some(obj_output_hash) = cache_state.item(obj_hash) {
+        if let Some(obj_output_hash) = cache_state.item(obj_hash, timestamp) {
             tasks.push(Task {
                 entry_name: entry_name_idx,
                 part_name: bin_name_idx,
@@ -490,7 +513,7 @@ fn plan_bin_build(
             });
         }
 
-        if let Some(exe_output_hash) = cache_state.item(exe_hash) {
+        if let Some(exe_output_hash) = cache_state.item(exe_hash, timestamp) {
             tasks.push(Task {
                 entry_name: entry_name_idx,
                 part_name: bin_name_idx,
@@ -567,7 +590,10 @@ fn plan_test_build(
         entry_index,
         deep_hashes,
         tasks,
+        timestamp,
     }: Params,
+    lib_paths: &'static [&'static str],
+    lib_path_indices: &[Str],
 ) {
     // depend on self lib (.a)
     // compile cc to .o
@@ -587,9 +613,9 @@ fn plan_test_build(
     let build_path = config.build_path.join(entry_name).join("test");
     let src_path = config.src_path.join(entry_name).join("test");
 
-    let obj_hashes = &deep_hashes.test_object[entry_idx];
-    let exe_hashes = &deep_hashes.test_exe[entry_idx];
-    let stamp_hashes = &deep_hashes.test_stamp[entry_idx];
+    let obj_hashes = &deep_hashes.test_object[entry_index];
+    let exe_hashes = &deep_hashes.test_exe[entry_index];
+    let stamp_hashes = &deep_hashes.test_stamp[entry_index];
 
     let cache_files_path = config.cache_path.to_str().unwrap();
 
@@ -619,7 +645,7 @@ fn plan_test_build(
         let exe_hash = exe_hashes[test_idx];
         let stamp_hash = stamp_hashes[test_idx];
 
-        if let Some(obj_output_hash) = cache_state.item(obj_hash) {
+        if let Some(obj_output_hash) = cache_state.item(obj_hash, timestamp) {
             tasks.push(Task {
                 entry_name: entry_name_idx,
                 part_name: test_name_idx,
@@ -653,7 +679,7 @@ fn plan_test_build(
 
             tasks.push(Task {
                 entry_name: entry_name_idx,
-                part_name: bin_name_idx,
+                part_name: test_name_idx,
                 inputs: vec![obj_path_index],
                 outputs: Vec::new(),
                 command: Some(Command::CacheStore(CacheStore {
@@ -665,7 +691,7 @@ fn plan_test_build(
             });
         }
 
-        if let Some(exe_output_hash) = cache_state.item(exe_hash) {
+        if let Some(exe_output_hash) = cache_state.item(exe_hash, timestamp) {
             tasks.push(Task {
                 entry_name: entry_name_idx,
                 part_name: test_name_idx,
@@ -714,7 +740,7 @@ fn plan_test_build(
         }
 
         if should_run_test(subcommand, entry_name, test_name) {
-            if let Some(stamp_output_hash) = cache_state.item(stamp_hash) {
+            if let Some(stamp_output_hash) = cache_state.item(stamp_hash, timestamp) {
                 tasks.push(Task {
                     entry_name: entry_name_idx,
                     part_name: test_name_idx,
@@ -739,8 +765,8 @@ fn plan_test_build(
                     outputs: output_indices,
                     command: Some(Command::RunTest(RunTest {
                         path: exe_path,
-                        stamp_hash: stamp_hash,
-                        stamp_path: stamp_path,
+                        stamp_hash,
+                        stamp_path,
                     })),
                     entry_index,
                 });
@@ -760,50 +786,6 @@ fn plan_test_build(
             }
         }
     }
-}
-
-fn collect_lib_path_list(
-    config: &Config,
-    interner: &mut Interner,
-    info: &BuildInfo,
-    entry_index: usize,
-) -> &'static [&'static str] {
-    let mut path_list: Vec<&'static str> = Vec::new();
-
-    let self_name_idx = info.name[entry_index];
-
-    let mut processed: HashSet<Str> = HashSet::default();
-    let mut worklist: Vec<Str> = vec![self_name_idx];
-    while let Some(name_idx) = worklist.pop() {
-        let pos_idx: usize = usize::try_from(*info.map.get(&name_idx).unwrap()).unwrap();
-
-        let name = interner.get(name_idx);
-
-        let lib_path = config
-            .build_path
-            .join(name)
-            .join("lib")
-            .join(format!("lib{}.a", name));
-        let lib_path_idx = interner.insert(lib_path.to_str().unwrap());
-        path_list.push(interner.get(lib_path_idx));
-
-        for &dep_name_idx in info.deps[pos_idx].iter() {
-            // check deps don't cycle back to the initial name
-            assert_ne!(
-                dep_name_idx,
-                self_name_idx,
-                "Found cyclic dependency between entries '{}' and '{}'.",
-                interner.get(self_name_idx),
-                interner.get(name_idx),
-            );
-            // deduplicate using the set, so we don't reprocess same names again
-            if processed.insert(dep_name_idx) {
-                worklist.push(dep_name_idx);
-            }
-        }
-    }
-
-    path_list.leak()
 }
 
 fn plan_subfolder_fmt(
@@ -941,10 +923,15 @@ fn construct_base_deep_hash(config: &Config, self_exe_hash: Hash) -> Hash {
     bufs.push(config.ar.as_bytes());
     bufs.push(config.clang_scan_deps.as_bytes());
 
-    bufs.extend_from_slice(config.cxxflags);
-    bufs.extend_from_slice(config.ldflags);
+    for flags in config.cxxflags.iter() {
+        bufs.push(flags.as_bytes());
+    }
+    for flags in config.ldflags.iter() {
+        bufs.push(flags.as_bytes());
+    }
 
-    bufs.push(&self_exe_hash.to_le_bytes());
+    let self_exe_hash_bytes = self_exe_hash.to_le_bytes();
+    bufs.push(&self_exe_hash_bytes);
 
     hash_ordered(&bufs)
 }
@@ -1310,6 +1297,50 @@ pub fn construct_deep_hashes(
     out
 }
 
+fn collect_lib_path_list(
+    config: &Config,
+    interner: &mut Interner,
+    info: &BuildInfo,
+    entry_index: usize,
+) -> &'static [&'static str] {
+    let mut path_list: Vec<&'static str> = Vec::new();
+
+    let self_name_idx = info.name[entry_index];
+
+    let mut processed: HashSet<Str> = HashSet::default();
+    let mut worklist: Vec<Str> = vec![self_name_idx];
+    while let Some(name_idx) = worklist.pop() {
+        let pos_idx: usize = usize::try_from(*info.map.get(&name_idx).unwrap()).unwrap();
+
+        let name = interner.get(name_idx);
+
+        let lib_path = config
+            .build_path
+            .join(name)
+            .join("lib")
+            .join(format!("lib{}.a", name));
+        let lib_path_idx = interner.insert(lib_path.to_str().unwrap());
+        path_list.push(interner.get(lib_path_idx));
+
+        for &dep_name_idx in info.deps[pos_idx].iter() {
+            // check deps don't cycle back to the initial name
+            assert_ne!(
+                dep_name_idx,
+                self_name_idx,
+                "Found cyclic dependency between entries '{}' and '{}'.",
+                interner.get(self_name_idx),
+                interner.get(name_idx),
+            );
+            // deduplicate using the set, so we don't reprocess same names again
+            if processed.insert(dep_name_idx) {
+                worklist.push(dep_name_idx);
+            }
+        }
+    }
+
+    path_list.leak()
+}
+
 pub fn plan(
     config: &Config,
     subcommand: &Subcommand,
@@ -1334,7 +1365,12 @@ pub fn plan(
     let mut tasks = Vec::new();
 
     for eidx in 0..info.name.len() {
-        let params = Params {
+        // collect the library path list for doing static linking.
+        let lib_path_list = collect_lib_path_list(config, interner, info, eidx);
+
+        let lib_path_indices: Vec<Str> = lib_path_list.iter().map(|p| interner.insert(p)).collect();
+
+        let mut params = Params {
             config,
             subcommand,
             interner,
@@ -1346,19 +1382,11 @@ pub fn plan(
             timestamp,
         };
 
-        plan_module_build(params);
-        plan_lib_build(params);
+        plan_module_build(params.reborrow());
+        plan_lib_build(params.reborrow());
 
-        // collect the library path list for doing static linking.
-        let lib_path_list = collect_lib_path_list(config, interner, info, eidx);
-
-        let lib_path_indices: Vec<Str> = lib_path_list.iter().map(|p| interner.insert(p)).collect();
-
-        plan_test_build(params, &lib_path_indices);
-        plan_bin_build(params, &lib_path_indices);
-
-        plan_module_build(config, interner, &mut tasks, info, eidx);
-        plan_lib_build(config, interner, &mut tasks, info, eidx);
+        plan_test_build(params.reborrow(), lib_path_list, &lib_path_indices);
+        plan_bin_build(params.reborrow(), lib_path_list, &lib_path_indices);
     }
 
     tasks
