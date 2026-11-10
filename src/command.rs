@@ -447,7 +447,6 @@ pub struct CacheLoad {
     pub output_path: &'static str,
     pub deep_hash: u64,
     pub expected_hash: u64,
-    pub expected_size: u32,
 }
 
 impl CacheLoad {
@@ -463,7 +462,6 @@ impl CacheLoad {
     pub async fn run(&self) {
         let cache_path = format!("{}/{:x}", self.cache_files_path, self.deep_hash);
         let data = tokio::fs::read(&cache_path).await.unwrap();
-        assert!(u32::try_from(data.len()).unwrap() == self.expected_size);
         let hash = hash_bytes(&data);
         assert!(hash == self.expected_hash);
         tokio::fs::write(self.output_path, &data).await.unwrap();

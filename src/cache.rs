@@ -10,6 +10,10 @@ struct Entry {
 pub struct CacheState {
     // map deep hash to Entry
     entries: BTreeMap<Hash, Entry>,
+    // list of new cache entries' deep hashes inserted in this run of the build system.
+    // we keep these seperately because they won't have output_hash yet.
+    // we will calculate output_hashes of these after the build is done in a separate step.
+    new_entries: Vec<Hash>,
 }
 
 impl CacheState {
@@ -69,24 +73,18 @@ impl CacheState {
         }
     }
 
-    pub fn update_last_used_timestamp(&mut self, deep_hash: Hash, timestamp: u64) {
-        self.entries
-            .get_mut(&deep_hash)
-            .unwrap()
-            .last_used_timestamp = timestamp;
-    }
+    // Docs: Just read the code below.
+    pub fn item(&mut self, deep_hash: Hash, timestamp: u64) -> Option<Hash> {
+        match self.entries.get_mut(&deep_hash) {
+            Some(v) => {
+                v.last_used_timestamp = timestamp;
 
-    pub fn is_cached(&self, deep_hash: Hash) -> bool {
-        self.entries.contains_key(&deep_hash)
-    }
-
-    pub fn insert(&mut self, deep_hash: Hash, output_hash: Hash, timestamp: u64) {
-        self.entries.insert(
-            deep_hash,
-            Entry {
-                last_used_timestamp: timestamp,
-                output_hash,
-            },
-        );
+                Some(v.output_hash)
+            }
+            None => {
+                self.new_entries.push(deep_hash);
+                None
+            }
+        }
     }
 }

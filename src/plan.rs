@@ -57,22 +57,39 @@ pub fn should_run_binary(
     }
 }
 
+#[derive(Clone, Copy)]
 struct Params<'a> {
     config: &'a Config,
     subcommand: &'a Subcommand,
     interner: &'a mut Interner,
     info: &'a BuildInfo,
     cache_state: &'a mut CacheState,
-    entry_idx: usize,
+    entry_index: usize,
     deep_hashes: &'a DeepHashes,
     tasks: &'a mut Vec<Task>,
+    timestamp: u64,
 }
 
-fn plan_module_build(params: Params) {
-    let mod_parts = params.info.module[entry_index].as_slice();
-    let n_mod_parts = params.mod_parts.len();
+fn plan_module_build(
+    Params {
+        config,
+        subcommand: _,
+        interner,
+        info,
+        cache_state,
+        entry_index,
+        deep_hashes,
+        tasks,
+        timestamp,
+    }: Params,
+) {
+    let entry_name_idx = info.name[entry_index];
+    let entry_name = interner.get();
 
-    let entry_deps = params.info.deps[entry_index].as_slice();
+    let mod_parts = info.module[entry_index].as_slice();
+    let n_mod_parts = mod_parts.len();
+
+    let entry_deps = info.deps[entry_index].as_slice();
 
     let mut ext_pcm_paths: Vec<Str> = Vec::with_capacity(entry_deps.len());
     let mod_build_path = config.build_path.join("mod");
@@ -82,8 +99,6 @@ fn plan_module_build(params: Params) {
         let dep_pcm_path = interner.insert(dep_pcm_path.to_str().unwrap());
         ext_pcm_paths.push(dep_pcm_path);
     }
-
-    let entry_name = interner.get(info.name[entry_index]);
 
     let mut local_pcm_paths: Vec<Str> = Vec::with_capacity(n_mod_parts);
     let mut local_object_paths: Vec<Str> = Vec::with_capacity(n_mod_parts);
@@ -104,6 +119,11 @@ fn plan_module_build(params: Params) {
         .join(interner.get(info.name[entry_index]))
         .join("mod");
 
+    let pcm_hashes = &deep_hashes.module_pcm[entry_index];
+    let obj_hashes = &deep_hashes.module_object[entry_index];
+
+    let cache_files_path = config.cache_path.to_str().unwrap();
+
     for (part_idx, &part) in mod_parts.iter().enumerate() {
         let mut input_indices = ext_pcm_paths.clone();
         let mod_dep_matrix_offset = n_mod_parts * part_idx;
@@ -117,40 +137,108 @@ fn plan_module_build(params: Params) {
             input_indices.push(local_pcm_paths[index]);
         }
 
-        let output_indices = vec![local_pcm_paths[part_idx], local_object_paths[part_idx]];
+        let pcm_path = local_pcm_paths[part_idx];
+        let obj_path = local_object_paths[part_idx];
+        let output_indices = vec![pcm_path, obj_path];
 
         let cppm_path = mod_src_path.join(format!("{}.cppm", interner.get(part)));
         let cppm_path = interner.insert(cppm_path.to_str().unwrap());
         let cppm_path = interner.get(cppm_path);
 
-        tasks.push(Task {
-            entry_name: info.name[entry_index],
-            part_name: part,
-            inputs: input_indices,
-            outputs: output_indices,
-            command: Some(Command::CompileModule(CompileModule {
-                cxx: config.cxx,
-                cxxflags: config.cxxflags,
-                input: cppm_path,
-                object_output: interner.get(local_object_paths[part_idx]),
-                pcm_output: interner.get(local_pcm_paths[part_idx]),
-            })),
-            entry_index,
-        });
+        let pcm_hash = pcm_hashes[part_idx];
+        let obj_hash = obj_hashes[part_idx];
+
+        if let (Some(pcm_output_hash), Some(obj_output_hash)) =
+            (cache_state.item(pcm_hash), cache_state.item(obj_hash))
+        {
+            tasks.push(Task {
+                entry_name: entry_name_idx,
+                part_name: part,
+                inputs: Vec::new(),
+                outputs: vec![pcm_path],
+                command: Some(Command::CacheLoad(CacheLoad {
+                    cache_files_path,
+                    output_path: interner.get(pcm_path),
+                    deep_hash: pcm_hash,
+                    expected_hash: pcm_output_hash,
+                })),
+                entry_index,
+            });
+            tasks.push(Task {
+                entry_name: entry_name_idx,
+                part_name: part,
+                inputs: Vec::new(),
+                outputs: vec![obj_path],
+                command: Some(Command::CacheLoad(CacheLoad {
+                    cache_files_path,
+                    output_path: interner.get(obj_path),
+                    deep_hash: obj_hash,
+                    expected_hash: obj_output_hash,
+                })),
+                entry_index,
+            });
+        } else {
+            tasks.push(Task {
+                entry_name: entry_name_idx,
+                part_name: part,
+                inputs: input_indices,
+                outputs: output_indices,
+                command: Some(Command::CompileModule(CompileModule {
+                    cxx: config.cxx,
+                    cxxflags: config.cxxflags,
+                    input: cppm_path,
+                    object_output: interner.get(local_object_paths[part_idx]),
+                    pcm_output: interner.get(local_pcm_paths[part_idx]),
+                })),
+                entry_index,
+            });
+
+            tasks.push(Task {
+                entry_name: entry_name_idx,
+                part_name: part,
+                inputs: vec![pcm_path],
+                outputs: Vec::new(),
+                command: Some(Command::CacheStore(CacheStore {
+                    cache_files_path,
+                    file_path: interner.get(pcm_path),
+                    deep_hash: pcm_hash,
+                })),
+                entry_index,
+            });
+
+            tasks.push(Task {
+                entry_name: entry_name_idx,
+                part_name: part,
+                inputs: vec![obj_path],
+                outputs: Vec::new(),
+                command: Some(Command::CacheStore(CacheStore {
+                    cache_files_path,
+                    file_path: interner.get(obj_path),
+                    deep_hash: obj_hash,
+                })),
+                entry_index,
+            });
+        }
     }
 }
 
 fn plan_lib_build(
-    config: &Config,
-    interner: &mut Interner,
-    tasks: &mut Vec<Task>,
-    info: &BuildInfo,
-    entry_index: usize,
+    Params {
+        config,
+        subcommand: _,
+        interner,
+        info,
+        cache_state,
+        entry_index,
+        deep_hashes,
+        tasks,
+    }: Params,
 ) {
     // build object files (both .cc and .s)
     // archive into .a file
 
-    let entry_name = interner.get(info.name[entry_index]);
+    let entry_name_idx = info.name[entry_index];
+    let entry_name = interner.get(entry_name_idx);
 
     let parts = &info.lib[entry_index];
     let src_path = config.src_path.join(entry_name).join("lib");
@@ -178,7 +266,11 @@ fn plan_lib_build(
         obj_paths.push(interner.get(path_idx));
     }
 
-    for &part_name_idx in parts.iter() {
+    let obj_hashes = &deep_hashes.lib_object[entry_idx];
+
+    let cache_files_path = config.cache_path.to_str().unwrap();
+
+    for (part_idx, &part_name_idx) in parts.iter().enumerate() {
         let part_name = interner.get(part_name_idx);
         let cc_path = src_path.join(format!("{}.cc", part_name));
         let cc_path_index = interner.insert(cc_path.to_str().unwrap());
@@ -190,63 +282,128 @@ fn plan_lib_build(
         obj_path_indices.push(obj_path_index);
         obj_paths.push(interner.get(obj_path_index));
 
-        let input_indices = vec![root_pcm_path_index];
-        let output_indices = vec![obj_path_index];
+        let obj_hash = obj_hashes[part_idx];
 
-        tasks.push(Task {
-            entry_name: info.name[entry_index],
-            part_name: part_name_idx,
-            inputs: input_indices,
-            outputs: output_indices,
-            command: Some(Command::CompileToObject(CompileToObject {
-                cxx: config.cxx,
-                cxxflags: config.cxxflags,
-                input: cc_path,
-                output: obj_path,
-            })),
-            entry_index,
-        })
+        if let Some(obj_output_hash) = cache_state.item(obj_hash) {
+            tasks.push(Task {
+                entry_name: entry_name_idx,
+                part_name: part_name_idx,
+                inputs: Vec::new(),
+                outputs: vec![obj_path_index],
+                command: Some(Command::CacheLoad(CacheLoad {
+                    cache_files_path,
+                    output_path: obj_path,
+                    deep_hash: obj_hash,
+                    expected_hash: obj_output_hash,
+                })),
+                entry_index,
+            });
+        } else {
+            let input_indices = vec![root_pcm_path_index];
+            let output_indices = vec![obj_path_index];
+
+            tasks.push(Task {
+                entry_name: entry_name_idx,
+                part_name: part_name_idx,
+                inputs: input_indices,
+                outputs: output_indices,
+                command: Some(Command::CompileToObject(CompileToObject {
+                    cxx: config.cxx,
+                    cxxflags: config.cxxflags,
+                    input: cc_path,
+                    output: obj_path,
+                })),
+                entry_index,
+            });
+
+            tasks.push(Task {
+                entry_name: entry_name_idx,
+                part_name: part_name_idx,
+                inputs: vec![obj_path_index],
+                outputs: Vec::new(),
+                command: Some(Command::CacheStore(CacheStore {
+                    cache_files_path,
+                    file_path: obj_path,
+                    deep_hash: obj_hash,
+                })),
+                entry_index,
+            });
+        }
     }
 
     let lib_output_path = build_path.join(format!("lib{}.a", entry_name));
     let lib_output_path_idx = interner.insert(lib_output_path.to_str().unwrap());
     let lib_output_path = interner.get(lib_output_path_idx);
 
-    let input_indices = obj_path_indices;
-    let output_indices = vec![lib_output_path_idx];
+    let lib_archive_hash = deep_hashes.entry_lib_archive[entry_index];
 
-    tasks.push(Task {
-        entry_name: info.name[entry_index],
-        part_name: interner.insert("@ARCHIVE_LIB@"),
-        inputs: input_indices,
-        outputs: output_indices,
-        command: Some(Command::ArchiveLib(ArchiveLib {
-            ar: config.ar,
-            output: lib_output_path,
-            inputs: obj_paths,
-        })),
-        entry_index,
-    });
+    // this is only used for tracing so nothing special.
+    let lib_archive_part_name = interner.insert("@ARCHIVE_LIB@");
+
+    if let Some(lib_archive_output_hash) = cache_state.item(lib_archive_hash) {
+        tasks.push(Task {
+            entry_name: entry_name_idx,
+            part_name: lib_archive_part_name,
+            inputs: Vec::new(),
+            outputs: vec![lib_output_path_idx],
+            command: Some(Command::CacheLoad(CacheLoad {
+                cache_files_path,
+                output_path: lib_output_path,
+                deep_hash: lib_archive_hash,
+                expected_hash: lib_archive_output_hash,
+            })),
+            entry_index,
+        });
+    } else {
+        let input_indices = obj_path_indices;
+        let output_indices = vec![lib_output_path_idx];
+
+        tasks.push(Task {
+            entry_name: entry_name_idx,
+            part_name: lib_archive_part_name,
+            inputs: input_indices,
+            outputs: output_indices,
+            command: Some(Command::ArchiveLib(ArchiveLib {
+                ar: config.ar,
+                output: lib_output_path,
+                inputs: obj_paths,
+            })),
+            entry_index,
+        });
+
+        tasks.push(Task {
+            entry_name: entry_name_idx,
+            part_name: lib_archive_part_name,
+            inputs: vec![lib_output_path_idx],
+            outputs: Vec::new(),
+            command: Some(Command::CacheStore(CacheStore {
+                cache_files_path,
+                file_path: lib_output_path,
+                deep_hash: lib_archive_hash,
+            })),
+            entry_index,
+        });
+    }
 }
 
 fn plan_bin_build(
-    config: &Config,
-    subcommand: &Subcommand,
-    interner: &mut Interner,
-    tasks: &mut Vec<Task>,
-    info: &BuildInfo,
-    entry_index: usize,
-    lib_paths: &'static [&'static str],
-    lib_path_indices: &[Str],
-    is_test: bool,
+    Params {
+        config,
+        subcommand,
+        interner,
+        info,
+        cache_state,
+        entry_index,
+        deep_hashes,
+        tasks,
+    }: Params,
 ) {
     // depend on self lib (.a)
     // compile cc to .o
     // do linking
 
-    let artifact_kind_name = if is_test { "test" } else { "bin" };
-
-    let entry_name = interner.get(info.name[entry_index]);
+    let entry_name_idx = info.name[entry_index];
+    let entry_name = interner.get(entry_name_idx);
 
     let self_pcm_path = config
         .build_path
@@ -254,15 +411,16 @@ fn plan_bin_build(
         .join(format!("{}.pcm", entry_name));
     let self_pcm_path_idx = interner.insert(self_pcm_path.to_str().unwrap());
 
-    let bins = if is_test {
-        &info.test[entry_index]
-    } else {
-        &info.bin[entry_index]
-    };
-    let build_path = config.build_path.join(entry_name).join(artifact_kind_name);
-    let src_path = config.src_path.join(entry_name).join(artifact_kind_name);
+    let bins = &info.bin[entry_index];
+    let build_path = config.build_path.join(entry_name).join("bin");
+    let src_path = config.src_path.join(entry_name).join("bin");
 
-    for &bin_name_idx in bins.iter() {
+    let obj_hashes = &deep_hashes.bin_object[entry_idx];
+    let exe_hashes = &deep_hashes.bin_exe[entry_idx];
+
+    let cache_files_path = config.cache_path.to_str().unwrap();
+
+    for (bin_idx, &bin_name_idx) in bins.iter().enumerate() {
         // emit obj compilation task
         // emit linking task
 
@@ -283,48 +441,109 @@ fn plan_bin_build(
         let stamp_path = build_path.join("stamp").join(bin_name);
         let stamp_path_index = interner.insert(stamp_path.to_str().unwrap());
 
-        let input_indices = vec![self_pcm_path_idx];
-        let output_indices = vec![obj_path_index];
+        let obj_hash = obj_hashes[bin_idx];
+        let exe_hash = exe_hashes[bin_idx];
 
-        tasks.push(Task {
-            entry_name: info.name[entry_index],
-            part_name: bin_name_idx,
-            inputs: input_indices,
-            outputs: output_indices,
-            command: Some(Command::CompileToObject(CompileToObject {
-                cxx: config.cxx,
-                cxxflags: config.cxxflags,
-                input: cc_path,
-                output: obj_path,
-            })),
-            entry_index,
-        });
+        if let Some(obj_output_hash) = cache_state.item(obj_hash) {
+            tasks.push(Task {
+                entry_name: entry_name_idx,
+                part_name: bin_name_idx,
+                inputs: Vec::new(),
+                outputs: vec![obj_path_index],
+                command: Some(Command::CacheLoad(CacheLoad {
+                    cache_files_path,
+                    output_path: obj_path,
+                    deep_hash: obj_hash,
+                    expected_hash: obj_output_hash,
+                })),
+                entry_index,
+            });
+        } else {
+            let input_indices = vec![self_pcm_path_idx];
+            let output_indices = vec![obj_path_index];
 
-        let mut input_indices = lib_path_indices.to_vec();
-        input_indices.push(obj_path_index);
-        let output_indices = vec![exe_path_index];
+            tasks.push(Task {
+                entry_name: entry_name_idx,
+                part_name: bin_name_idx,
+                inputs: input_indices,
+                outputs: output_indices,
+                command: Some(Command::CompileToObject(CompileToObject {
+                    cxx: config.cxx,
+                    cxxflags: config.cxxflags,
+                    input: cc_path,
+                    output: obj_path,
+                })),
+                entry_index,
+            });
 
-        tasks.push(Task {
-            entry_name: info.name[entry_index],
-            part_name: bin_name_idx,
-            inputs: input_indices,
-            outputs: output_indices,
-            command: Some(Command::LinkBinary(LinkBinary {
-                cxx: config.cxx,
-                ldflags: config.ldflags,
-                output: exe_path,
-                object: obj_path,
-                deps: lib_paths,
-            })),
-            entry_index,
-        });
+            tasks.push(Task {
+                entry_name: entry_name_idx,
+                part_name: bin_name_idx,
+                inputs: vec![obj_path_index],
+                outputs: Vec::new(),
+                command: Some(Command::CacheStore(CacheStore {
+                    cache_files_path,
+                    file_path: obj_path,
+                    deep_hash: obj_hash,
+                })),
+                entry_index,
+            });
+        }
 
-        if let Some(args) = should_run(subcommand, is_test, entry_name, bin_name) {
+        if let Some(exe_output_hash) = cache_state.item(exe_hash) {
+            tasks.push(Task {
+                entry_name: entry_name_idx,
+                part_name: bin_name_idx,
+                inputs: Vec::new(),
+                outputs: vec![exe_path_index],
+                command: Some(Command::CacheLoad(CacheLoad {
+                    cache_files_path,
+                    output_path: exe_path,
+                    deep_hash: exe_hash,
+                    expected_hash: exe_output_hash,
+                })),
+                entry_index,
+            });
+        } else {
+            let mut input_indices = lib_path_indices.to_vec();
+            input_indices.push(obj_path_index);
+            let output_indices = vec![exe_path_index];
+
+            tasks.push(Task {
+                entry_name: entry_name_idx,
+                part_name: bin_name_idx,
+                inputs: input_indices,
+                outputs: output_indices,
+                command: Some(Command::LinkBinary(LinkBinary {
+                    cxx: config.cxx,
+                    ldflags: config.ldflags,
+                    output: exe_path,
+                    object: obj_path,
+                    deps: lib_paths,
+                })),
+                entry_index,
+            });
+
+            tasks.push(Task {
+                entry_name: entry_name_idx,
+                part_name: bin_name_idx,
+                inputs: vec![exe_path_index],
+                outputs: Vec::new(),
+                command: Some(Command::CacheStore(CacheStore {
+                    cache_files_path,
+                    file_path: exe_path,
+                    deep_hash: exe_hash,
+                })),
+                entry_index,
+            });
+        }
+
+        if let Some(args) = should_run_binary(subcommand, entry_name, bin_name) {
             let input_indices = vec![exe_path_index];
             let output_indices = vec![stamp_path_index];
 
             tasks.push(Task {
-                entry_name: info.name[entry_index],
+                entry_name: entry_name_idx,
                 part_name: bin_name_idx,
                 inputs: input_indices,
                 outputs: output_indices,
@@ -334,6 +553,211 @@ fn plan_bin_build(
                 })),
                 entry_index,
             });
+        }
+    }
+}
+
+fn plan_test_build(
+    Params {
+        config,
+        subcommand,
+        interner,
+        info,
+        cache_state,
+        entry_index,
+        deep_hashes,
+        tasks,
+    }: Params,
+) {
+    // depend on self lib (.a)
+    // compile cc to .o
+    // do linking
+
+    let entry_name_idx = info.name[entry_index];
+    let entry_name = interner.get(entry_name_idx);
+
+    let self_pcm_path = config
+        .build_path
+        .join("mod")
+        .join(format!("{}.pcm", entry_name));
+    let self_pcm_path_idx = interner.insert(self_pcm_path.to_str().unwrap());
+
+    let tests = &info.test[entry_index];
+
+    let build_path = config.build_path.join(entry_name).join("test");
+    let src_path = config.src_path.join(entry_name).join("test");
+
+    let obj_hashes = &deep_hashes.test_object[entry_idx];
+    let exe_hashes = &deep_hashes.test_exe[entry_idx];
+    let stamp_hashes = &deep_hashes.test_stamp[entry_idx];
+
+    let cache_files_path = config.cache_path.to_str().unwrap();
+
+    for (test_idx, &test_name_idx) in tests.iter().enumerate() {
+        // emit obj compilation task
+        // emit linking task
+
+        let test_name = interner.get(test_name_idx);
+
+        let cc_path = src_path.join(format!("{}.cc", test_name));
+        let cc_path_index = interner.insert(cc_path.to_str().unwrap());
+        let cc_path = interner.get(cc_path_index);
+
+        let obj_path = build_path.join(format!("{}.o", test_name));
+        let obj_path_index = interner.insert(obj_path.to_str().unwrap());
+        let obj_path = interner.get(obj_path_index);
+
+        let exe_path = build_path.join(test_name);
+        let exe_path_index = interner.insert(exe_path.to_str().unwrap());
+        let exe_path = interner.get(exe_path_index);
+
+        let stamp_path = build_path.join("stamp").join(test_name);
+        let stamp_path_index = interner.insert(stamp_path.to_str().unwrap());
+        let stamp_path = interner.get(stamp_path_index);
+
+        let obj_hash = obj_hashes[test_idx];
+        let exe_hash = exe_hashes[test_idx];
+        let stamp_hash = stamp_hashes[test_idx];
+
+        if let Some(obj_output_hash) = cache_state.item(obj_hash) {
+            tasks.push(Task {
+                entry_name: entry_name_idx,
+                part_name: test_name_idx,
+                inputs: Vec::new(),
+                outputs: vec![obj_path_index],
+                command: Some(Command::CacheLoad(CacheLoad {
+                    cache_files_path,
+                    output_path: obj_path,
+                    deep_hash: obj_hash,
+                    expected_hash: obj_output_hash,
+                })),
+                entry_index,
+            });
+        } else {
+            let input_indices = vec![self_pcm_path_idx];
+            let output_indices = vec![obj_path_index];
+
+            tasks.push(Task {
+                entry_name: entry_name_idx,
+                part_name: test_name_idx,
+                inputs: input_indices,
+                outputs: output_indices,
+                command: Some(Command::CompileToObject(CompileToObject {
+                    cxx: config.cxx,
+                    cxxflags: config.cxxflags,
+                    input: cc_path,
+                    output: obj_path,
+                })),
+                entry_index,
+            });
+
+            tasks.push(Task {
+                entry_name: entry_name_idx,
+                part_name: bin_name_idx,
+                inputs: vec![obj_path_index],
+                outputs: Vec::new(),
+                command: Some(Command::CacheStore(CacheStore {
+                    cache_files_path,
+                    file_path: obj_path,
+                    deep_hash: obj_hash,
+                })),
+                entry_index,
+            });
+        }
+
+        if let Some(exe_output_hash) = cache_state.item(exe_hash) {
+            tasks.push(Task {
+                entry_name: entry_name_idx,
+                part_name: test_name_idx,
+                inputs: Vec::new(),
+                outputs: vec![exe_path_index],
+                command: Some(Command::CacheLoad(CacheLoad {
+                    cache_files_path,
+                    output_path: exe_path,
+                    deep_hash: exe_hash,
+                    expected_hash: exe_output_hash,
+                })),
+                entry_index,
+            });
+        } else {
+            let mut input_indices = lib_path_indices.to_vec();
+            input_indices.push(obj_path_index);
+            let output_indices = vec![exe_path_index];
+
+            tasks.push(Task {
+                entry_name: entry_name_idx,
+                part_name: test_name_idx,
+                inputs: input_indices,
+                outputs: output_indices,
+                command: Some(Command::LinkBinary(LinkBinary {
+                    cxx: config.cxx,
+                    ldflags: config.ldflags,
+                    output: exe_path,
+                    object: obj_path,
+                    deps: lib_paths,
+                })),
+                entry_index,
+            });
+
+            tasks.push(Task {
+                entry_name: entry_name_idx,
+                part_name: test_name_idx,
+                inputs: vec![exe_path_index],
+                outputs: Vec::new(),
+                command: Some(Command::CacheStore(CacheStore {
+                    cache_files_path,
+                    file_path: exe_path,
+                    deep_hash: exe_hash,
+                })),
+                entry_index,
+            });
+        }
+
+        if should_run_test(subcommand, entry_name, test_name) {
+            if let Some(stamp_output_hash) = cache_state.item(stamp_hash) {
+                tasks.push(Task {
+                    entry_name: entry_name_idx,
+                    part_name: test_name_idx,
+                    inputs: Vec::new(),
+                    outputs: vec![stamp_path_index],
+                    command: Some(Command::CacheLoad(CacheLoad {
+                        cache_files_path,
+                        output_path: stamp_path,
+                        deep_hash: stamp_hash,
+                        expected_hash: stamp_output_hash,
+                    })),
+                    entry_index,
+                });
+            } else {
+                let input_indices = vec![exe_path_index];
+                let output_indices = vec![stamp_path_index];
+
+                tasks.push(Task {
+                    entry_name: entry_name_idx,
+                    part_name: test_name_idx,
+                    inputs: input_indices,
+                    outputs: output_indices,
+                    command: Some(Command::RunTest(RunTest {
+                        path: exe_path,
+                        stamp_hash: stamp_hash,
+                        stamp_path: stamp_path,
+                    })),
+                    entry_index,
+                });
+
+                tasks.push(Task {
+                    entry_name: entry_name_idx,
+                    part_name: test_name_idx,
+                    inputs: vec![stamp_path_index],
+                    outputs: Vec::new(),
+                    command: Some(Command::CacheStore(CacheStore {
+                        cache_files_path,
+                        file_path: stamp_path,
+                        deep_hash: stamp_hash,
+                    })),
+                    entry_index,
+                });
+            }
         }
     }
 }
@@ -892,6 +1316,7 @@ pub fn plan(
     interner: &mut Interner,
     info: &BuildInfo,
     cache_state: &mut CacheState,
+    timestamp: u64,
 ) -> Vec<Task> {
     assert_eq!(info.name.len(), info.mod_dep_matrix.len());
     assert_eq!(info.name.len(), info.module.len());
@@ -915,9 +1340,10 @@ pub fn plan(
             interner,
             info,
             cache_state,
-            entry_idx: eidx,
+            entry_index: eidx,
             deep_hashes: &deep_hashes,
             tasks: &mut tasks,
+            timestamp,
         };
 
         plan_module_build(params);
