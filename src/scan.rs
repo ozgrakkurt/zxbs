@@ -1,11 +1,10 @@
 use std::path::{Path, PathBuf};
 
-use tokio::task::JoinSet;
-
 use crate::check::check_name;
 use crate::config::{Config, Subcommand};
 use crate::hash::{Hash, HashMap, hash_ordered};
 use crate::interner::{Interner, Str};
+use crate::thread_pool::{JoinSet, TaskHandle, ThreadPool};
 
 pub fn make_module_name(root_name: &str, part_name: &str) -> String {
     if root_name == part_name {
@@ -185,15 +184,15 @@ pub fn parse_p1689(contents: &[u8]) -> CppmDeps {
     CppmDeps { deps, provides }
 }
 
-async fn scan_deps(config: &Config, path: &Path) -> CppmDeps {
-    let mut cmd = tokio::process::Command::new(config.clang_scan_deps);
+fn scan_deps(config: &Config, path: &Path) -> CppmDeps {
+    let mut cmd = std::process::Command::new(config.clang_scan_deps);
     cmd.arg("-format=p1689")
         .arg("--")
         .arg(config.cxx)
         .args(config.cxxflags)
         .arg("-c")
         .arg(path);
-    let output = match cmd.output().await {
+    let output = match cmd.output() {
         Ok(out) => out,
         Err(e) => {
             panic!(
@@ -226,8 +225,8 @@ pub fn parse_deps_file(contents: &str) -> Vec<String> {
     deps
 }
 
-async fn read_deps_file(path: PathBuf) -> Vec<String> {
-    let contents = String::from_utf8(tokio::fs::read(&path).await.unwrap_or_else(|e| {
+fn read_deps_file(path: PathBuf) -> Vec<String> {
+    let contents = String::from_utf8(std::fs::read(&path).unwrap_or_else(|e| {
         panic!(
             "failed to read deps file at: {}. Error={}",
             path.display(),
@@ -269,15 +268,16 @@ pub fn parse_file_name<'name>(
     name
 }
 
-async fn scan_subfolder(expected_extension: &'static str, path: &Path) -> Vec<String> {
-    let mut dir = match tokio::fs::read_dir(&path).await {
+fn scan_subfolder(expected_extension: &'static str, path: &Path) -> Vec<String> {
+    let mut dir = match std::fs::read_dir(&path).await {
         Ok(v) => v,
         Err(e) => {
             panic!("Failed to read_dir on '{}'. Error: {}", path.display(), e);
         }
     };
     let mut names = Vec::new();
-    while let Some(file) = dir.next_entry().await.unwrap() {
+    for file in dir {
+        let file = file.unwrap();
         let name = parse_file_name(
             &file.path(),
             expected_extension,
@@ -296,15 +296,19 @@ struct ObjectFolderInfo {
 }
 
 // For scanning bin/test/lib folders for cc files and scanning their module dependencies
-async fn scan_object_folder(config: &'static Config, path: &Path) -> ObjectFolderInfo {
-    let parts = scan_subfolder("cc", path).await;
+fn scan_object_folder(
+    config: &'static Config,
+    path: &Path,
+    thread_pool: &'static ThreadPool,
+) -> ObjectFolderInfo {
+    let parts = scan_subfolder("cc", path);
 
     let mut futs = JoinSet::new();
 
     for part in parts {
         let cppm_path = path.join(format!("{}.cc", part));
-        futs.spawn(async move {
-            let cppm_deps = scan_deps(config, &cppm_path).await;
+        futs.spawn(thread_pool, move || {
+            let cppm_deps = scan_deps(config, &cppm_path);
 
             if !cppm_deps.provides.is_empty() {
                 panic!(
@@ -318,7 +322,7 @@ async fn scan_object_folder(config: &'static Config, path: &Path) -> ObjectFolde
         });
     }
 
-    let dep_infos = futs.join_all().await;
+    let dep_infos = futs.join_all();
 
     let mut parts = Vec::new();
     let mut deps = Vec::new();
@@ -370,7 +374,7 @@ fn check_object_folder_info(
     }
 }
 
-async fn spawn_collect_basic_hashes(
+fn spawn_collect_basic_hashes(
     config: &'static Config,
     kind_name: &str,
     entry_name: &str,
@@ -379,11 +383,12 @@ async fn spawn_collect_basic_hashes(
     concurrency: usize,
     join_set: &mut JoinSet<(String, Hash)>,
     basic_hash: &mut HashMap<String, Hash>,
+    thread_pool: &'static ThreadPool,
 ) {
     for part_name in names.iter() {
         // don't go over the concurrency limit
         while join_set.len() >= concurrency {
-            let (p, hash) = join_set.join_next().await.unwrap().unwrap();
+            let (p, hash) = join_set.join_next();
 
             assert!(basic_hash.insert(p, hash).is_none());
         }
@@ -395,7 +400,7 @@ async fn spawn_collect_basic_hashes(
             .join(format!("{}.{}", part_name, extension));
         let path = path.to_str().unwrap().to_owned();
 
-        join_set.spawn(async move {
+        join_set.spawn(thread_pool, move || {
             let data = tokio::fs::read(&path).await.unwrap();
             let hash = hash_ordered(&[path.as_bytes(), data.as_slice()]);
             (path, hash)
@@ -403,32 +408,35 @@ async fn spawn_collect_basic_hashes(
     }
 }
 
-async fn scan_entry(config: &'static Config, path: &Path) -> EntryInfo {
+fn scan_entry(config: &'static Config, path: &Path, thread_pool: &'static ThreadPool) -> EntryInfo {
     let entry_name = path.file_name().unwrap();
     let entry_name = entry_name.to_str().unwrap().to_owned();
     check_name(&entry_name);
 
-    let deps = tokio::spawn(read_deps_file(path.join("deps")));
+    let deps = thread_pool.spawn({
+        let p = path.join("deps");
+        move || read_deps_file(p)
+    });
 
-    let mod_parts = tokio::spawn({
+    let mod_parts = thread_pool.spawn({
         let path = path.join("mod");
-        async move { scan_subfolder("cppm", &path).await }
+        move || scan_subfolder("cppm", &path)
     });
-    let lib = tokio::task::spawn({
+    let lib = thread_pool.spawn({
         let path = path.join("lib");
-        async move { scan_object_folder(config, &path).await }
+        move || scan_object_folder(config, &path)
     });
-    let test = tokio::task::spawn({
+    let test = thread_pool.spawn({
         let path = path.join("test");
-        async move { scan_object_folder(config, &path).await }
+        move || scan_object_folder(config, &path)
     });
-    let bin = tokio::task::spawn({
+    let bin = thread_pool.spawn({
         let path = path.join("bin");
-        async move { scan_object_folder(config, &path).await }
+        move || scan_object_folder(config, &path)
     });
 
-    let deps = deps.await.unwrap();
-    let mod_parts = mod_parts.await.unwrap();
+    let deps = deps.join();
+    let mod_parts = mod_parts.join();
     let n_mod_parts = mod_parts.len();
 
     // has to have root module
@@ -445,14 +453,14 @@ async fn scan_entry(config: &'static Config, path: &Path) -> EntryInfo {
     let mut mod_dep_names = vec![Vec::new(); mod_parts.len()];
     for (pos, part_name) in mod_parts.iter().enumerate() {
         while join_set.len() >= concurrency {
-            let (idx, deps) = join_set.join_next().await.unwrap().unwrap();
+            let (idx, deps) = join_set.join_next();
             mod_dep_names[idx] = deps;
         }
         let part_name = part_name.to_owned();
         let cppm_path = mod_path.join(format!("{}.cppm", part_name));
         let expected_provides = make_module_name(&entry_name, &part_name);
-        join_set.spawn(async move {
-            let cppm_deps = scan_deps(config, &cppm_path).await;
+        join_set.spawn(thread_pool, move || {
+            let cppm_deps = scan_deps(config, &cppm_path);
 
             if cppm_deps.provides.len() != 1
                 || cppm_deps.provides[0].as_str() != expected_provides.as_str()
@@ -468,8 +476,7 @@ async fn scan_entry(config: &'static Config, path: &Path) -> EntryInfo {
             (pos, cppm_deps.deps)
         });
     }
-    while let Some(res) = join_set.join_next().await {
-        let (idx, deps) = res.unwrap();
+    while let Some((idx, deps)) = join_set.join_next() {
         mod_dep_names[idx] = deps;
     }
 
@@ -525,12 +532,12 @@ async fn scan_entry(config: &'static Config, path: &Path) -> EntryInfo {
         }
     }
 
-    let lib = lib.await.unwrap();
+    let lib = lib.join();
     check_object_folder_info(&entry_name, &mod_parts, &deps, &lib);
 
-    let test = test.await.unwrap();
+    let test = test.join();
 
-    let bin = bin.await.unwrap();
+    let bin = bin.join();
 
     // Collect the basic hashes of all source files in parallel.
     let mut basic_hash = HashMap::<String, Hash>::default();
@@ -544,8 +551,8 @@ async fn scan_entry(config: &'static Config, path: &Path) -> EntryInfo {
         concurrency,
         &mut join_set,
         &mut basic_hash,
-    )
-    .await;
+        thread_pool,
+    );
     spawn_collect_basic_hashes(
         config,
         "test",
@@ -555,8 +562,8 @@ async fn scan_entry(config: &'static Config, path: &Path) -> EntryInfo {
         concurrency,
         &mut join_set,
         &mut basic_hash,
-    )
-    .await;
+        thread_pool,
+    );
     spawn_collect_basic_hashes(
         config,
         "bin",
@@ -566,8 +573,8 @@ async fn scan_entry(config: &'static Config, path: &Path) -> EntryInfo {
         concurrency,
         &mut join_set,
         &mut basic_hash,
-    )
-    .await;
+        thread_pool,
+    );
     spawn_collect_basic_hashes(
         config,
         "mod",
@@ -577,11 +584,10 @@ async fn scan_entry(config: &'static Config, path: &Path) -> EntryInfo {
         concurrency,
         &mut join_set,
         &mut basic_hash,
-    )
-    .await;
+        thread_pool,
+    );
 
-    while let Some(res) = join_set.join_next().await {
-        let (path, hash) = res.unwrap();
+    while let Some((path, hash)) = join_set.join_next() {
         assert!(basic_hash.insert(path, hash).is_none());
     }
 
@@ -597,30 +603,37 @@ async fn scan_entry(config: &'static Config, path: &Path) -> EntryInfo {
     }
 }
 
-pub async fn scan(config: &'static Config, interner: &mut Interner) -> BuildInfo {
-    let mut dir = tokio::fs::read_dir(config.src_path).await.unwrap();
+pub fn scan(
+    config: &'static Config,
+    interner: &mut Interner,
+    thread_pool: &'static ThreadPool,
+) -> BuildInfo {
+    let mut dir = std::fs::read_dir(config.src_path).unwrap();
 
     let mut info = BuildInfo::default();
 
     let mut join_set = JoinSet::new();
     let concurrency = 16;
 
-    while let Some(entry) = dir.next_entry().await.unwrap() {
+    for entry in dir {
+        let entry = entry.unwrap();
         while join_set.len() >= concurrency {
-            let entry_info = join_set.join_next().await.unwrap().unwrap();
+            let entry_info = join_set.join_next();
             info.push_entry_info(interner, entry_info);
         }
-        join_set.spawn(async move { scan_entry(config, &entry.path()).await });
+        join_set.spawn(thread_pool, move || {
+            scan_entry(config, &entry.path(), thread_pool)
+        });
     }
 
-    while let Some(res) = join_set.join_next().await {
+    while let Some(res) = join_set.join_next() {
         let entry_info = res.unwrap();
         info.push_entry_info(interner, entry_info);
     }
 
     {
         const SELF_EXE_PATH: &str = "/proc/self/exe";
-        let self_exe_bytes = tokio::fs::read(SELF_EXE_PATH).await.unwrap();
+        let self_exe_bytes = std::fs::read(SELF_EXE_PATH).await;
         info.self_exe_hash = hash_ordered(&[SELF_EXE_PATH.as_bytes(), self_exe_bytes.as_slice()]);
     }
 

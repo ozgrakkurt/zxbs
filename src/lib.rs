@@ -17,6 +17,6 @@ pub mod hash;
 pub mod interner;
 pub mod plan;
 pub mod scan;
+pub mod thread_pool;
 pub mod timestamp;
 pub mod tracer;
-pub mod thread_pool;

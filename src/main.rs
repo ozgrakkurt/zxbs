@@ -1,7 +1,7 @@
 use std::time::Instant;
 use zxbs::{
-    build, cache, config, directory, hash::HashMap, interner, plan, scan, timestamp::timestamp,
-    tracer, thread_pool::ThreadPool,
+    build, cache, config, directory, hash::HashMap, interner, plan, scan, thread_pool::ThreadPool,
+    timestamp::timestamp, tracer,
 };
 
 fn make_duration(start: &Instant) -> u64 {
@@ -20,7 +20,8 @@ fn run() {
     //
     // The parts of the program that uses the threadpool are responsible to use it with a concurrency limit if the
     // workloads are CPU bound.
-    let thread_pool: &'static ThreadPool = Box::leak(Box::new(ThreadPool::new(num_cpus::get() * 8)));
+    let thread_pool: &'static ThreadPool =
+        Box::leak(Box::new(ThreadPool::new(num_cpus::get() * 8)));
 
     let start_timestamp = timestamp();
 

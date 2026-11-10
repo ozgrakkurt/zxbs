@@ -1,11 +1,10 @@
 use std::collections::VecDeque;
-use std::pin::Pin;
-use std::task::{Context, Poll};
 use std::time::Instant;
 
 use crate::command::Command;
 use crate::interner::{Interner, Str};
 use crate::tracer;
+use crate::thread_pool::{ThreadPool, TaskHandle};
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct TaskIndex(u32);
@@ -29,7 +28,7 @@ pub struct Task {
     pub entry_index: usize,
 }
 
-type Handle = Pin<Box<tokio::task::JoinHandle<(Command, TaskIndex, u64, u64, usize)>>>;
+type Handle = TaskHandle<(Command, TaskIndex, u64, u64, usize)>;
 
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct Build<'a> {
