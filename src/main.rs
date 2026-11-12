@@ -1,9 +1,9 @@
 use std::time::Instant;
 use zxbs::{
     build, cache, config, directory,
-    hash::HashMap,
+    hash::{HashMap, hash_ordered},
     interner, plan, scan,
-    thread_pool::{ThreadPool, ThreadPoolHandle},
+    thread_pool::ThreadPool,
     timestamp::timestamp,
     tracer,
 };
@@ -19,13 +19,17 @@ fn run() {
 
     let interner: &'static mut interner::Interner = Box::leak(Box::new(interner::Interner::new()));
 
-    // Use more threads then the physical cpu count because we might do IO heavy workloads in some parts of the
-    // program.
-    //
-    // The parts of the program that uses the threadpool are responsible to use it with a concurrency limit if the
-    // workloads are CPU bound.
-    let thread_pool: &'static ThreadPool = Box::leak(Box::new(ThreadPool::new(64, 4)));
-    let thread_pool_handle: ThreadPoolHandle<'static> = ThreadPoolHandle::new(thread_pool);
+    // Use more threads than the physical cpu count because the program does IO heavy
+    // workloads in some parts.
+    let thread_pool = ThreadPool::new(128);
+
+    // The base hash incorporates the build configuration and the hash of this
+    // binary. It is reused by both the scan (for the clang-scan-deps cache key)
+    // and plan (for the deep hashes).
+    const SELF_EXE_PATH: &str = "/proc/self/exe";
+    let self_exe_bytes = std::fs::read(SELF_EXE_PATH).unwrap();
+    let self_exe_hash = hash_ordered(&[SELF_EXE_PATH.as_bytes(), self_exe_bytes.as_slice()]);
+    let base_hash = plan::construct_base_deep_hash(config, self_exe_hash);
 
     let start_timestamp = timestamp();
 
@@ -46,15 +50,15 @@ fn run() {
 
     t0 = Instant::now();
     let scan_start = make_duration(&beginning);
-    let info = scan::scan(config, interner, thread_pool_handle);
+    let info = scan::scan(config, interner, &thread_pool, base_hash);
     info.check_subcommand(interner, &subcommand);
     top_level_timings.insert("Scan".to_owned(), (scan_start, make_duration(&t0)));
 
     t0 = Instant::now();
     let dir_setup_start = make_duration(&beginning);
-    directory::setup_build_dir(config, &info, interner);
+    directory::setup_build_directories(config, &info, interner, &thread_pool);
     top_level_timings.insert(
-        "Build Directory Setup".to_owned(),
+        "Directory Setup".to_owned(),
         (dir_setup_start, make_duration(&t0)),
     );
 
@@ -66,6 +70,7 @@ fn run() {
         interner,
         &info,
         &mut cache_state,
+        base_hash,
         start_timestamp,
     );
     top_level_timings.insert("Plan".to_owned(), (plan_start, make_duration(&t0)));
@@ -81,7 +86,7 @@ fn run() {
         interner,
         tasks,
         beginning,
-        thread_pool_handle,
+        &thread_pool,
     )
     .build();
     top_level_timings.insert("Build".to_owned(), (build_start, make_duration(&t0)));

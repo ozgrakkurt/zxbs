@@ -915,7 +915,7 @@ impl DeepHashes {
     }
 }
 
-fn construct_base_deep_hash(config: &Config, self_exe_hash: Hash) -> Hash {
+pub fn construct_base_deep_hash(config: &Config, self_exe_hash: Hash) -> Hash {
     let mut bufs: Vec<&[u8]> = Vec::new();
 
     // Try to include everything that might effect the generated artifacts.
@@ -1224,9 +1224,8 @@ pub fn construct_deep_hashes(
     config: &Config,
     interner: &mut Interner,
     info: &BuildInfo,
+    base_hash: Hash,
 ) -> DeepHashes {
-    let base_hash = construct_base_deep_hash(config, info.self_exe_hash);
-
     let num_entries = info.name.len();
 
     if num_entries == 0 {
@@ -1298,23 +1297,45 @@ pub fn construct_deep_hashes(
 }
 
 // This should return the list in the proper order so we don't cause linker errors.
-// Dependecies should always come AFTER the depended libraries.
+// Dependencies should always come AFTER the libraries that depend on them, so the
+// entries reachable from `entry_index` are returned in topological order.
 pub fn collect_lib_path_list(
     config: &Config,
     interner: &mut Interner,
     info: &BuildInfo,
     entry_index: usize,
 ) -> &'static [&'static str] {
-    let mut path_list: Vec<&'static str> = Vec::new();
+    // Gather every entry reachable from `entry_index` by following `info.deps`.
+    let mut reachable: HashSet<usize> = HashSet::default();
+    let mut stack = vec![entry_index];
+    reachable.insert(entry_index);
+    while let Some(idx) = stack.pop() {
+        for &dep_name in info.deps[idx].iter() {
+            let dep_idx = usize::try_from(*info.map.get(&dep_name).unwrap()).unwrap();
+            if reachable.insert(dep_idx) {
+                stack.push(dep_idx);
+            }
+        }
+    }
 
-    let self_name_idx = info.name[entry_index];
+    // `indegree[i]` counts how many reachable entries depend on entry `i`.
+    // Kahn's algorithm then emits an entry only once all of its dependents have
+    // already been emitted, producing the required topological order.
+    let mut indegree = vec![0usize; info.name.len()];
+    for &idx in reachable.iter() {
+        for &dep_name in info.deps[idx].iter() {
+            let dep_idx = usize::try_from(*info.map.get(&dep_name).unwrap()).unwrap();
+            indegree[dep_idx] += 1;
+        }
+    }
 
-    let mut processed: HashSet<Str> = HashSet::default();
-    let mut worklist: Vec<Str> = vec![self_name_idx];
-    while let Some(name_idx) = worklist.pop() {
-        let pos_idx: usize = usize::try_from(*info.map.get(&name_idx).unwrap()).unwrap();
+    let mut path_list: Vec<&'static str> = Vec::with_capacity(reachable.len());
 
-        let name = interner.get(name_idx);
+    // `entry_index` has no dependents inside the subgraph, so it is the only
+    // node with indegree zero and therefore the starting point.
+    let mut ready = vec![entry_index];
+    while let Some(idx) = ready.pop() {
+        let name = interner.get(info.name[idx]);
 
         let lib_path = config
             .build_path
@@ -1324,21 +1345,17 @@ pub fn collect_lib_path_list(
         let lib_path_idx = interner.insert(lib_path.to_str().unwrap());
         path_list.push(interner.get(lib_path_idx));
 
-        for &dep_name_idx in info.deps[pos_idx].iter() {
-            // check deps don't cycle back to the initial name
-            assert_ne!(
-                dep_name_idx,
-                self_name_idx,
-                "Found cyclic dependency between entries '{}' and '{}'.",
-                interner.get(self_name_idx),
-                interner.get(name_idx),
-            );
-            // deduplicate using the set, so we don't reprocess same names again
-            if processed.insert(dep_name_idx) {
-                worklist.push(dep_name_idx);
+        for &dep_name in info.deps[idx].iter() {
+            let dep_idx = usize::try_from(*info.map.get(&dep_name).unwrap()).unwrap();
+            indegree[dep_idx] -= 1;
+            if indegree[dep_idx] == 0 {
+                ready.push(dep_idx);
             }
         }
     }
+
+    // A cyclic dependency graph would leave some entries unvisited here.
+    assert_eq!(path_list.len(), reachable.len());
 
     path_list.leak()
 }
@@ -1349,6 +1366,7 @@ pub fn plan(
     interner: &mut Interner,
     info: &BuildInfo,
     cache_state: &mut CacheState,
+    base_hash: Hash,
     timestamp: u64,
 ) -> Vec<Task> {
     assert_eq!(info.name.len(), info.mod_dep_matrix.len());
@@ -1362,7 +1380,7 @@ pub fn plan(
         return plan_fmt(config, interner, info);
     }
 
-    let deep_hashes = construct_deep_hashes(config, interner, info);
+    let deep_hashes = construct_deep_hashes(config, interner, info, base_hash);
 
     let mut tasks = Vec::new();
 
