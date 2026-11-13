@@ -774,8 +774,7 @@ pub fn scan(
             ScanTargetKind::Mod => {
                 // Construct the module dependency matrix
                 let matrix_start = target.part_index * num_parts;
-                let matrix =
-                    &mut mod_dep_matrix[target.entry_index][matrix_start..matrix_start + num_parts];
+                let matrix = &mut mod_dep_matrix[target.entry_index];
                 for name in deps.deps.iter() {
                     // don't forget to do simple check for cyclic dependency
                     if name.contains(":") {
@@ -784,12 +783,6 @@ pub fn scan(
                         todo!();
                     }
                 }
-                check_cyclic_dependencies_between_module_parts(
-                    interner,
-                    entry_names[target.entry_index],
-                    &mod_list[target.entry_index],
-                    matrix,
-                );
             }
             _ => {
                 // Just check that the dependencies are valid.
@@ -798,6 +791,15 @@ pub fn scan(
         }
     }
     let mod_dep_matrix = mod_dep_matrix;
+
+    for (entry_index, matrix) in mod_dep_matrix.iter().enumerate() {
+        check_cyclic_dependencies_between_module_parts(
+            interner,
+            entry_names[entry_index],
+            &mod_list[entry_index],
+            matrix,
+        );
+    }
 
     BuildInfo {
         name: entry_names,
