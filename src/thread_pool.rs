@@ -72,6 +72,8 @@ impl<T> JoinSet<T> {
         }
 
         let v = self.rx.recv().unwrap();
+
+        assert!(self.len > 0);
         self.len -= 1;
 
         Some(v)

@@ -5,6 +5,7 @@ use crate::config::{Config, Subcommand};
 use crate::hash::{Hash, HashMap, hash_bytes, hash_ordered, mix_hashes};
 use crate::interner::{Interner, Str};
 use crate::thread_pool::{JoinSet, ThreadPool};
+use crate::cache::CacheState;
 
 pub fn make_module_name(root_name: &str, part_name: &str) -> String {
     if root_name == part_name {
@@ -231,8 +232,13 @@ fn read_deps_file(path: PathBuf) -> Vec<String> {
             path.display(),
             e
         )
-    }))
-    .unwrap();
+    })).unwrap_or_else(|e| {
+        panic!(
+            "failed to parse UTF8 from file at: {}. Error={}",
+            path.display(),
+            e
+        )
+    });
     parse_deps_file(contents.as_str())
 }
 
@@ -277,13 +283,17 @@ fn scan_subfolder(expected_extension: &'static str, path: &Path) -> Vec<String> 
     let mut names = Vec::new();
     for file in dir {
         let file = file.unwrap();
+        let file_path = file.path();
+        if !file.file_type().unwrap().is_file() {
+            panic!("Expected the file at {} to be a regular file but it isn't.", file_path.display());
+        }
         let name = parse_file_name(
-            &file.path(),
+            &file_path,
             expected_extension,
             file.file_name().to_str().unwrap(),
         )
         .to_owned();
-        check_name(&name);
+        check_name(&name, "Name of file at: `{}`", file_path.display());
         names.push(name);
     }
     names
@@ -294,7 +304,7 @@ struct ObjectFolderInfo {
     deps: Vec<Vec<String>>,
 }
 
-fn check_object_folder_info(
+fn check_object_file_dependencies(
     entry_name: &str,
     self_module_parts: &[String],
     ext_deps: &[String],
@@ -303,104 +313,20 @@ fn check_object_folder_info(
     assert_eq!(info.parts.len(), info.deps.len());
     for i in 0..info.parts.len() {
         for dep in info.deps[i].iter() {
-            if dep.contains(':') {
-                let parts: Vec<&str> = dep.split(':').collect();
-                if parts.len() != 2 {
-                    panic!(
-                        "invalid dependency name '{}' in part '{}' of entry '{}'. Failed to parse.",
-                        dep, info.parts[i], entry_name
-                    );
-                }
-                if parts[0] != entry_name {
-                    panic!(
-                        "invalid dependency name '{}' in part '{}' of entry '{}'. Expected root part to be self entry name since depending directly on partitions of external modules isn't supported.",
-                        dep, info.parts[i], entry_name
-                    );
-                }
-                if !self_module_parts.contains(&parts[1].to_owned()) {
-                    panic!(
-                        "invalid dependency name '{}' in part '{}' of entry '{}'. Parition isn't a member of the partitions of current entry. Available partitions are: {:?}",
-                        dep, info.parts[i], entry_name, self_module_parts,
-                    );
-                }
-            } else if dep != entry_name && !ext_deps.contains(dep) {
-                panic!(
-                    "Dependency '{}' of part '{}' of entry '{}' is invalid. External dependencies are: {:?}",
-                    dep, info.parts[i], entry_name, ext_deps
-                );
+            let part_name = info.parts[i];
+            
+            if dep.contains(":") {
+                panic!("Invalid dependency `{}` in `{}:{}`. Implementation (.cc) files are only allowed to depend on root modules.", dep, entry_name, part_name);
             }
+
+            if dep != entry_name && !ext_deps.contains(dep) {
+                panic!(
+                    "Invalid dependency '{}' in '{}:{}'. It can only depend of the root module of it's entry `{}` and the root modules of external dependencies: {:?}",
+                    dep, entry_name, part_name, entry_name, ext_deps
+                );
+            }            
         }
     }
-}
-
-// The layout of a single entry that can be discovered just by listing its
-// directories and reading its deps file. This is the "cheap" part of scanning
-// and is done for every entry in parallel in the first phase.
-struct EntryListing {
-    name: String,
-    module: Vec<String>,
-    lib: Vec<String>,
-    test: Vec<String>,
-    bin: Vec<String>,
-    deps: Vec<String>,
-}
-
-// A single piece of an entry's layout produced during the first phase. Each
-// entry has one task per piece (deps + mod/lib/test/bin folders) so that
-// listing is fully parallel without any nested concurrency.
-enum ListingTask {
-    Deps { entry: usize, deps: Vec<String> },
-    Mod { entry: usize, parts: Vec<String> },
-    Lib { entry: usize, parts: Vec<String> },
-    Test { entry: usize, parts: Vec<String> },
-    Bin { entry: usize, parts: Vec<String> },
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum FileKind {
-    Mod,
-    Lib,
-    Test,
-    Bin,
-}
-
-impl FileKind {
-    fn folder(self) -> &'static str {
-        match self {
-            FileKind::Mod => "mod",
-            FileKind::Lib => "lib",
-            FileKind::Test => "test",
-            FileKind::Bin => "bin",
-        }
-    }
-
-    fn extension(self) -> &'static str {
-        match self {
-            FileKind::Mod => "cppm",
-            _ => "cc",
-        }
-    }
-}
-
-// A single source file that needs to be scanned with clang-scan-deps (or read
-// from the cache) and hashed.
-struct ScanTarget {
-    entry: usize,
-    kind: FileKind,
-    part: usize,
-    path: String,
-}
-
-// The hash used to key the cached clang-scan-deps output of a source file. It
-// is derived from the file's basic hash (so it changes when the file changes)
-// and the build's base hash (so it changes when the build configuration
-// changes), mixed with a constant marker so it can't collide with the "deep"
-// hashes used for build artifacts in the same cache.
-fn clang_scan_deps_cache_hash(base_hash: Hash, basic_hash: Hash) -> Hash {
-    mix_hashes(
-        mix_hashes(base_hash, basic_hash),
-        hash_bytes(b"clang-scan-deps-marker"),
-    )
 }
 
 fn check_provides(
@@ -417,7 +343,7 @@ fn check_provides(
                 || cppm_deps.provides[0].as_str() != expected_provides.as_str()
             {
                 panic!(
-                    "expected `{}` to only provide `{}`, but it provides: `{:?}``",
+                    "expected `{}` to provide `{}`, but it provides: `{:?}`",
                     path, expected_provides, cppm_deps.provides
                 );
             }
@@ -425,7 +351,7 @@ fn check_provides(
         _ => {
             if !cppm_deps.provides.is_empty() {
                 panic!(
-                    "Didn't expect {} to provide any module interface. But it provides: {:?}",
+                    "Didn't expect `{}` to provide any module interface. But it provides: `{:?}`",
                     path, cppm_deps.provides
                 );
             }
@@ -433,38 +359,6 @@ fn check_provides(
     }
 
     cppm_deps.deps
-}
-
-fn listing_part_name(listing: &EntryListing, kind: FileKind, part: usize) -> &str {
-    match kind {
-        FileKind::Mod => &listing.module[part],
-        FileKind::Lib => &listing.lib[part],
-        FileKind::Test => &listing.test[part],
-        FileKind::Bin => &listing.bin[part],
-    }
-}
-
-fn push_targets(
-    targets: &mut Vec<ScanTarget>,
-    config: &Config,
-    entry: usize,
-    entry_name: &str,
-    kind: FileKind,
-    parts: &[String],
-) {
-    for (part, part_name) in parts.iter().enumerate() {
-        let path = config
-            .src_path
-            .join(entry_name)
-            .join(kind.folder())
-            .join(format!("{}.{}", part_name, kind.extension()));
-        targets.push(ScanTarget {
-            entry,
-            kind,
-            part,
-            path: path.to_str().unwrap().to_owned(),
-        });
-    }
 }
 
 fn build_mod_dep_matrix(
@@ -530,13 +424,73 @@ fn build_mod_dep_matrix(
     mod_dep_matrix
 }
 
+#[derive(Clone, Copy)]
+enum ListingResultKind {
+    Deps,
+    Mod,
+    Lib,
+    Test,
+    Bin,
+}
+
+struct ListingResult {
+    kind: ListingResultKind,
+    entry_index: usize,
+    parts: Vec<String>,
+}
+
+#[derive(Clone, Copy)]
+enum ScanTargetKind {
+    Mod,
+    Lib,
+    Test,
+    Bin,
+}
+
+// A single source file that needs to be scanned with clang-scan-deps (or read
+// from the cache) and hashed.
+#[derive(Clone, Copy)]
+struct ScanTarget {
+    kind: ScanTargetKind,
+    entry_index: usize,
+    part_index: usize,
+    path: &'static str,
+}
+
 struct ScanResult {
-    entry: usize,
-    kind: FileKind,
-    part: usize,
+    target: ScanTarget,
     deps: Vec<String>,
-    path: String,
     basic_hash: Hash,
+}
+
+fn spawn_hash_scan_targets(
+    entry_index: usize,
+    entry_path: &Path,
+    parts: &[String],
+    interner: &mut Interner,
+    thread_pool: &ThreadPool,
+    hashes_join_set: &mut JoinSet<(ScanTarget, Hash)>,
+    kind_name: &str,
+    extension: &str,
+) {
+    for (part_index, part_name) in parts.iter().enumerate() {
+        let path = entry_path.join(kind_name).join(format!("{}.{}", part_name, extension));
+        let path_idx = interner.insert(path.to_str().unwrap());
+        let path = interner.get(path_idx);
+
+        let target = ScanTarget {
+           kind: ScanTargetKind::Mod,
+           entry_index: result.entry_index,
+           part_index,
+           path,
+        };
+
+        hashes_join_set.spawn(thread_pool, move || {
+            let data = std::fs::read(scan_target.path).unwrap();
+            let basic_hash = hash_ordered(&[scan_target.path.as_bytes(), data.as_slice()]);
+            (scan_target, basic_hash)
+        });
+    }
 }
 
 pub fn scan(
@@ -544,51 +498,62 @@ pub fn scan(
     interner: &mut Interner,
     thread_pool: &ThreadPool,
     base_hash: Hash,
+    cache_state: &mut CacheState,
 ) -> BuildInfo {
     let dir = std::fs::read_dir(config.src_path).unwrap();
 
-    let mut info = BuildInfo::default();
-
     // First list the source directory to find every entry.
-    let mut entries: Vec<(PathBuf, String)> = Vec::new();
+    let mut entry_names: Vec<Str> = Vec::new();
     for entry in dir {
-        let path = entry.unwrap().path();
-        let name = path.file_name().unwrap().to_str().unwrap().to_owned();
-        check_name(&name);
-        entries.push((path, name));
-    }
+        let entry = entry.unwrap();
+        let path = entry.path();
 
-    // First phase: list each entry's mod/test/bin/lib folders and read its deps
-    // file. Each piece is its own task in a single flat JoinSet so nothing is
-    // listed serially and there is no nested concurrency.
-    let mut join_set = JoinSet::new();
-    for (entry, (path, _)) in entries.iter().enumerate() {
-        let p = path.join("deps");
-        join_set.spawn(thread_pool, move || ListingTask::Deps {
-            entry,
-            deps: read_deps_file(p),
+        if !entry.file_type().unwrap().is_dir() {
+            panic!("Expected source directory to only contain directories but found something that isn't a directory at `{}`", path.display());
+        }
+
+        let name = path.file_name().unwrap().to_str().unwrap();
+        check_name(name);
+
+        let name = interner.insert(name);
+
+        entry_names.push(name);
+    }
+    let entry_names = entry_names;
+
+    // List each entry's mod/test/bin/lib folders and read it's deps
+    // file.
+    let mut listing_join_set: JoinSet<ListingResult>  = JoinSet::new();
+    for (entry_index, entry_name) in entries_names.iter().enumerate() {
+        let entry_path = config.src_path.join(interner.get(entry_name));
+        
+        let p = entry_path.join("deps");
+        listing_join_set.spawn(thread_pool, move || ListingResult {
+            kind: ListingResultKind::Deps,
+            entry_index,
+            parts: read_deps_file(p),
         });
 
-        let p = path.join("mod");
-        join_set.spawn(thread_pool, move || ListingTask::Mod {
+        let p = entry_path.join("mod");
+        listing_join_set.spawn(thread_pool, move || ListingResult::Mod {
             entry,
             parts: scan_subfolder("cppm", &p),
         });
 
-        let p = path.join("lib");
-        join_set.spawn(thread_pool, move || ListingTask::Lib {
+        let p = entry_path.join("lib");
+        listing_join_set.spawn(thread_pool, move || ListingResult::Lib {
             entry,
             parts: scan_subfolder("cc", &p),
         });
 
-        let p = path.join("test");
-        join_set.spawn(thread_pool, move || ListingTask::Test {
+        let p = entry_path.join("test");
+        listing_join_set.spawn(thread_pool, move || ListingResult::Test {
             entry,
             parts: scan_subfolder("cc", &p),
         });
 
-        let p = path.join("bin");
-        join_set.spawn(thread_pool, move || ListingTask::Bin {
+        let p = entry_path.join("bin");
+        listing_join_set.spawn(thread_pool, move || ListingResult::Bin {
             entry,
             parts: scan_subfolder("cc", &p),
         });
@@ -600,80 +565,157 @@ pub fn scan(
     let mut test_list = vec![Vec::new(); entries.len()];
     let mut bin_list = vec![Vec::new(); entries.len()];
 
-    while let Some(task) = join_set.join_next() {
-        match task {
-            ListingTask::Deps { entry, deps } => deps_list[entry] = deps,
-            ListingTask::Mod { entry, parts } => mod_list[entry] = parts,
-            ListingTask::Lib { entry, parts } => lib_list[entry] = parts,
-            ListingTask::Test { entry, parts } => test_list[entry] = parts,
-            ListingTask::Bin { entry, parts } => bin_list[entry] = parts,
+    // We will populate targets and start jobs on the hashes_join_set as the results
+    // are coming from the listing_join_set.
+    //
+    // We could defer spawning into hashes_join_set until later but doing this means we are
+    // pipelining two tasks as much as possible. We will use the same pattern in other parts
+    // of this function.
+    let mut hashes_join_set: JoinSet<(ScanTarget, Hash)> = JoinSet::new();
+
+    while let Some(result) = listing_join_set.join_next() {
+        let entry_path: &Path = &entries[result.entry_index].0;
+        match result.kind {
+            ListingResultKind::Mod => {
+                spawn_hash_scan_targets(
+                    result.entry_index,
+                    entry_path,
+                    &result.parts,
+                    interner,
+                    thread_pool,
+                    &mut hashes_join_set,
+                    "mod",
+                    "cppm",
+                );
+                
+                mod_list.push(result.parts);
+            }
+            ListingResultKind::Lib => {
+                spawn_hash_scan_targets(
+                    result.entry_index,
+                    entry_path,
+                    &result.parts,
+                    interner,
+                    thread_pool,
+                    &mut hashes_join_set,
+                    "lib",
+                    "cc",
+                );
+
+                lib_list.push(result.parts);
+            }
+            ListingResultKind::Test => {
+                spawn_hash_scan_targets(
+                    result.entry_index,
+                    entry_path,
+                    &result.parts,
+                    interner,
+                    thread_pool,
+                    &mut hashes_join_set,
+                    "test",
+                    "cc",
+                );
+
+                test_list.push(result.parts);
+            }
+            ListingResultKind::Bin => {
+                spawn_hash_scan_targets(
+                    result.entry_index,
+                    entry_path,
+                    &result.parts,
+                    interner,
+                    thread_pool,
+                    &mut hashes_join_set,
+                    "bin",
+                    "cc",
+                );
+
+                bin_list.push(result.parts);
+            }
+            ListingResultKind::Deps => {
+                // no scan targets for deps obviously, they are just a list of entry names.
+                // 
+                deps_list.push(result.parts);
+            }
         }
     }
 
-    let mut listings = Vec::with_capacity(entries.len());
-    for (entry, (_, name)) in entries.into_iter().enumerate() {
-        let module = std::mem::take(&mut mod_list[entry]);
-
-        // has to have root module
+    for (entry_index, modules) in mod_list.iter().enumerate() {
+        let entry_name = &entries[entry_index].1;
         assert!(
-            module.contains(&name),
+            modules.contains(entry_name),
             "root module of entry {} not found",
             name,
         );
-
-        listings.push(EntryListing {
-            name,
-            module,
-            lib: std::mem::take(&mut lib_list[entry]),
-            test: std::mem::take(&mut test_list[entry]),
-            bin: std::mem::take(&mut bin_list[entry]),
-            deps: std::mem::take(&mut deps_list[entry]),
-        });
     }
 
-    // Build the flat list of every source file that needs scanning.
-    let mut targets = Vec::new();
-    for (entry, listing) in listings.iter().enumerate() {
-        push_targets(
-            &mut targets,
-            config,
-            entry,
-            &listing.name,
-            FileKind::Mod,
-            &listing.module,
+    assert_eq!(entries.len(), deps_list.len());
+
+    assert_eq!(deps_list.len(), mod_list.len());
+    assert_eq!(deps_list.len(), lib_list.len());
+    assert_eq!(deps_list.len(), test_list.len());
+    assert_eq!(deps_list.len(), bin_list.len());
+
+    // make these immutable
+    let deps_list = deps_list;
+    let mod_list = mod_list;
+    let lib_list = lib_list;
+    let test_list = test_list;
+    let bin_list = bin_list;
+
+    // Pipeline finished hashing tasks into the clang_scan_deps tasks.
+    let mut scan_deps_join_set: JoinSet<ScanResult> = JoinSet::new();
+
+    while let Some((scan_target, basic_hash)) = hashes_join_set.join_next() {
+        // We use this deep hash for the clang-scan-deps result of this file.
+        let scan_deps_hash = mix_hashes(
+            mix_hashes(base_hash, basic_hash),
+            // Mix a deterministic marker in so the deep hash doesn't collide with
+            // some other deep hash.
+            hash_bytes(b"clang-scan-deps-marker"),
         );
-        push_targets(
-            &mut targets,
-            config,
-            entry,
-            &listing.name,
-            FileKind::Lib,
-            &listing.lib,
-        );
-        push_targets(
-            &mut targets,
-            config,
-            entry,
-            &listing.name,
-            FileKind::Test,
-            &listing.test,
-        );
-        push_targets(
-            &mut targets,
-            config,
-            entry,
-            &listing.name,
-            FileKind::Bin,
-            &listing.bin,
-        );
+
+        let entry_name = &entries[scan_target.entry_index].1;
+        let cache_path = config.cache_path.join(format!("{:x}", scan_deps_hash));
+
+        if let Some(target_hash) = cache_state.item(scan_deps_hash) {
+            // Just load from cache
+            scan_deps_join_set.spawn(thread_pool, move || {
+
+                ScanResult {
+                    target: scan_target,
+                    deps,
+                    basic_hash,
+                }
+            });
+        } else {
+            // Do actual scan and store to cache
+
+            let file_path = config.src_path.join(entry_name);
+            
+            scan_deps_join_set.spawn(thread_pool, move || {
+                let raw = run_scan_deps(config, Path::new(&path));
+                std::fs::write(&cache_path, &raw).unwrap();
+                parse_p1689(&raw)
+                
+                ScanResult {
+                    target: scan_target,
+                    deps,
+                    basic_hash,
+                }
+            });
+        }
+    }
+
+    while let Some(scan_result) = scan_deps_join_set.join_next() {
+        
     }
 
     // Second phase: hash and scan every source file in parallel. Each task
     // reads the file and hashes it, then either loads the clang-scan-deps
     // result from the cache or runs clang-scan-deps and stores the result.
-    std::fs::create_dir_all(config.cache_path).unwrap();
     let cache_files_path = config.cache_path.to_str().unwrap();
-    let mut join_set = JoinSet::new();
+    let mut join_set: JoinSet<ScanResult> = JoinSet::new();
     for target in &targets {
         let entry = target.entry;
         let kind = target.kind;
@@ -682,8 +724,6 @@ pub fn scan(
         let entry_name = listings[entry].name.clone();
         let part_name = listing_part_name(&listings[entry], kind, part).to_owned();
         join_set.spawn(thread_pool, move || {
-            let data = std::fs::read(&path).unwrap();
-            let basic_hash = hash_ordered(&[path.as_bytes(), data.as_slice()]);
 
             let cache_key = clang_scan_deps_cache_hash(base_hash, basic_hash);
             let cache_file = format!("{}/{:x}", cache_files_path, cache_key);
@@ -738,6 +778,8 @@ pub fn scan(
         }
         assert!(basic_hashes[entry].insert(path, basic_hash).is_none());
     }
+
+    let mut info = BuildInfo::default();
 
     for (entry, listing) in listings.into_iter().enumerate() {
         let mod_dep_matrix = build_mod_dep_matrix(
