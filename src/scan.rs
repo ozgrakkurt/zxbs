@@ -896,22 +896,103 @@ pub fn scan(
         let entry_mod_parts = &mod_list[target.entry_index];
         let num_parts = entry_mod_parts.len();
 
+        let entry_name_idx = entry_names[target.entry_index];
+        let entry_name = interner.get(entry_name_idx);
+
+        let entry_deps = &deps_list[target.entry_index];
+
         match target.kind {
             ScanTargetKind::Mod => {
+                let entry_mod_parts = &mod_list[target.entry_index];
+                let part_name_idx: Str = entry_mod_parts[target.part_index];
+                let part_name = interner.get(part_name_idx);
+
                 // Construct the module dependency matrix
                 let matrix = &mut mod_dep_matrix[target.entry_index];
-                for name in deps.deps.iter() {
-                    // don't forget to do simple check for cyclic dependency
-                    if name.contains(":") {
-                        todo!();
+                for dep_name in deps.deps.iter() {
+                    let dep_name_idx = interner.insert(dep_name.as_str());
+                    if dep_name.contains(":") {
+                        let parts = dep_name.split(':').collect::<Vec<&str>>();
+                        if parts.len() != 2 {
+                            panic!(
+                                "The submodule `{}:{}` has an invalid dependency name parsed by clang-scan-deps: `{}`",
+                                entry_name, part_name, dep_name
+                            );
+                        }
+
+                        if parts[0] != entry_name {
+                            panic!(
+                                "The submodule `{}:{}` has an invalid dependency on `{}`. It is only allowed to depend on other submodules in the same entry. Depend on the root module of another entry to use a submodule of that entry.",
+                                entry_name, part_name, dep_name
+                            );
+                        }
+
+                        let dep_sub_name_idx = interner.insert(parts[1]);
+                        let dep_sub_name = interner.get(dep_sub_name_idx);
+
+                        if dep_sub_name_idx == part_name_idx {
+                            panic!(
+                                "The submodule `{}:{}` depends on itself.",
+                                entry_name, part_name
+                            );
+                        }
+
+                        let dep_pos = match entry_mod_parts
+                            .iter()
+                            .position(|&x| x == dep_sub_name_idx)
+                        {
+                            None => {
+                                panic!(
+                                    "The submodule `{}:{}` depends on `{}:{}` but `{}` doesn't have a submodule named `{}`",
+                                    entry_name,
+                                    part_name,
+                                    entry_name,
+                                    dep_sub_name,
+                                    entry_name,
+                                    dep_sub_name,
+                                );
+                            }
+                            Some(idx) => idx,
+                        };
+
+                        let part_pos = entry_mod_parts
+                            .iter()
+                            .position(|&x| x == part_name_idx)
+                            .unwrap();
+
+                        matrix[num_parts * part_pos + dep_pos] = true;
                     } else {
-                        todo!();
+                        // has to be an dependended-on entry name, can't be anything else.
+
+                        // can't depend on own root
+                        if dep_name_idx == entry_name_idx {
+                            panic!(
+                                "The submodule `{}:{}` depends on it's own root module. This is not allowed as the root is supposed to depend on all the submodules.",
+                                entry_name, part_name
+                            );
+                        }
+
+                        // not a dependency
+                        if !entry_deps.contains(&dep_name_idx) {
+                            panic!(
+                                "The submodule `{}:{}` depends on the root module of another entry `{}` but this entry isn't listed in dependencies of `{}`",
+                                entry_name, part_name, dep_name, entry_name
+                            );
+                        }
                     }
                 }
             }
             _ => {
-                // Just check that the dependencies are valid.
-                todo!();
+                for dep_name in deps.deps.iter() {
+                    let dep_name_idx = interner.insert(dep_name.as_str());
+
+                    if dep_name_idx != entry_name_idx && entry_deps.contains(&dep_name_idx) {
+                        panic!(
+                            "The source file at `{}` depends on `{}`, this is invalid because source files are only allowed to depend on root module of their own entry or other entries that are listed in the deps file of their own entry.",
+                            target.path, dep_name
+                        );
+                    }
+                }
             }
         }
     }
@@ -924,6 +1005,25 @@ pub fn scan(
             &mod_list[entry_index],
             matrix,
         );
+
+        // Check that the root module depends on all of the submodules.
+
+        let entry_name_idx = entry_names[entry_index];
+        let entry_name = interner.get(entry_name_idx);
+        let mod_parts = &mod_list[entry_index];
+
+        let root_pos = mod_parts.iter().position(|&x| x == entry_name_idx).unwrap();
+
+        for i in 0..mod_parts.len() {
+            if i != root_pos && !matrix[root_pos * mod_parts.len() + i] {
+                panic!(
+                    "Root module of `{}` does NOT have a dependency on the submodule `{}:{}`. Root modules are expected to depend on all submodules of the entry.",
+                    entry_name,
+                    entry_name,
+                    interner.get(mod_parts[i]),
+                );
+            }
+        }
     }
 
     BuildInfo {
