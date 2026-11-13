@@ -413,29 +413,8 @@ fn check_cyclic_dependencies_between_module_parts(
         while let Some(State { part_idx, dep_idx }) = recursion.pop() {
             // Before the dfs loop, as in we just arrived at this layer.
             if dep_idx == 0 {
-                if is_in_current_stack[part_idx] {
-                    // We found a cycle, print the error and exit.
-
-                    let mut err_msg = format!(
-                        "Found a module dependency cycle inside the entry `{}`. Cycle is: ",
-                        interner.get(entry_name)
-                    );
-
-                    let mut arrow = "";
-                    for &p in current_stack.iter() {
-                        err_msg.push_str(interner.get(mod_list[p]));
-                        err_msg.push_str(arrow);
-                        arrow = " -> ";
-                    }
-
-                    err_msg.push_str(interner.get(mod_list[part_idx]));
-
-                    panic!("{}", err_msg);
-                }
-
-                if visited[part_idx] {
-                    continue;
-                }
+                assert!(!visited[part_idx]);
+                assert!(!is_in_current_stack[part_idx]);
 
                 visited[part_idx] = true;
                 is_in_current_stack[part_idx] = true;
@@ -446,6 +425,27 @@ fn check_cyclic_dependencies_between_module_parts(
 
             while dep_idx < num_parts {
                 if mod_deps_matrix[part_idx * num_parts + dep_idx] {
+                    if is_in_current_stack[dep_idx] {
+                        // We found a cycle, print the error and exit.
+
+                        let mut err_msg = format!(
+                            "Found a module dependency cycle inside the entry `{}`. Cycle is: ",
+                            interner.get(entry_name)
+                        );
+
+                        let cycle_start_pos =
+                            current_stack.iter().position(|&x| x == dep_idx).unwrap();
+
+                        for &p in current_stack[cycle_start_pos..].iter() {
+                            err_msg.push_str(interner.get(mod_list[p]));
+                            err_msg.push_str(" -> ");
+                        }
+
+                        err_msg.push_str(interner.get(mod_list[dep_idx]));
+
+                        panic!("{}", err_msg);
+                    }
+
                     // Optimization: don't go into the dep layer if the dep is already visited.
                     if !visited[dep_idx] {
                         // these next two pushes equate to a recursive call to dfs search
@@ -460,9 +460,9 @@ fn check_cyclic_dependencies_between_module_parts(
                             part_idx: dep_idx,
                             dep_idx: 0,
                         });
-                    }
 
-                    break;
+                        break;
+                    }
                 }
 
                 dep_idx += 1;
