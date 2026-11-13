@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use crate::check::check_name;
+use crate::common::check_name;
 use crate::hash::HashMap;
 
 #[derive(Debug, PartialEq)]
@@ -242,9 +242,12 @@ fn leak_str(s: String) -> &'static str {
 
 pub fn parse_subcommand_arg(arg: &str) -> (String, String) {
     let parts: Vec<_> = arg.split(':').collect();
-    assert_eq!(parts.len(), 2, "invalid subcommand argument: `{}`", arg);
-    check_name(parts[0]);
-    check_name(parts[1]);
+    let err_ctx = format!("invalid subcommand argument: `{}`", arg);
+    if parts.len() != 2 {
+        panic!("{}", err_ctx);
+    }
+    check_name(parts[0], &err_ctx);
+    check_name(parts[1], &err_ctx);
     (parts[0].to_owned(), parts[1].to_owned())
 }
 

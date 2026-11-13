@@ -9,8 +9,8 @@
 
 pub mod build;
 pub mod cache;
-pub mod check;
 pub mod command;
+pub mod common;
 pub mod config;
 pub mod directory;
 pub mod hash;

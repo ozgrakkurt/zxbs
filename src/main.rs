@@ -50,7 +50,14 @@ fn run() {
 
     t0 = Instant::now();
     let scan_start = make_duration(&beginning);
-    let info = scan::scan(config, interner, &thread_pool, base_hash);
+    let info = scan::scan(
+        config,
+        interner,
+        &thread_pool,
+        base_hash,
+        &mut cache_state,
+        start_timestamp,
+    );
     info.check_subcommand(interner, &subcommand);
     top_level_timings.insert("Scan".to_owned(), (scan_start, make_duration(&t0)));
 

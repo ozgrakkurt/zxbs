@@ -1,6 +1,11 @@
 pub fn check_name(name_str: &str, err_ctx: &str) {
     let name = name_str.as_bytes();
-    assert!(!name.is_empty(), "Invalid name: {} while processing {}", name_str, err_ctx);
+    assert!(
+        !name.is_empty(),
+        "Invalid name: {} while processing {}",
+        name_str,
+        err_ctx
+    );
     assert!(
         name[0] >= b'a' && name[0] <= b'z',
         "invalid name: {} while processing {}",
