@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use crate::cache::CacheState;
 use crate::common::check_name;
 use crate::config::{Config, Subcommand};
-use crate::hash::{Hash, HashMap, hash_bytes, hash_ordered, mix_hashes};
+use crate::hash::{Hash, HashMap, HashSet, hash_bytes, hash_ordered, mix_hashes};
 use crate::interner::{Interner, Str};
 use crate::thread_pool::{JoinSet, ThreadPool};
 
@@ -170,10 +170,12 @@ fn run_scan_deps(config: &Config, path: &Path) -> Vec<u8> {
 
 pub fn parse_deps_file(path: &Path, contents: &str) -> Vec<String> {
     let mut deps = Vec::new();
+    let mut dedup = HashSet::default();
     for line in contents.trim().split('\n') {
         let line = line.trim();
         if !line.is_empty() {
             check_name(line, &format!("Parse deps file at: `{}`", path.display()));
+            assert!(dedup.insert(line));
             deps.push(line.to_owned());
         }
     }
@@ -368,7 +370,131 @@ fn check_cyclic_dependencies_between_entries(
     entry_name_map: &HashMap<Str, u32>,
     deps_list: &[Vec<Str>],
 ) {
-    todo!()
+    let num_entries = entry_names.len();
+
+    assert_eq!(num_entries, deps_list.len());
+
+    // Resolve the dependency names of each entry to indices first so the dfs
+    // below can index straight into the entry list, just like the module parts
+    // check indexes into its dense matrix.
+    let deps_indices = deps_list
+        .iter()
+        .enumerate()
+        .map(|(entry_index, deps)| {
+            deps.iter()
+                .map(|&dep_name| {
+                    let dep_idx = entry_name_map.get(&dep_name).unwrap_or_else(|| {
+                        panic!(
+                            "Entry `{}` depends on `{}` which is not an entry.",
+                            interner.get(entry_names[entry_index]),
+                            interner.get(dep_name),
+                        )
+                    });
+                    usize::try_from(*dep_idx).unwrap()
+                })
+                .collect::<Vec<usize>>()
+        })
+        .collect::<Vec<Vec<usize>>>();
+
+    if num_entries == 0 {
+        return;
+    }
+
+    let mut visited = vec![false; num_entries];
+    let mut current_stack = Vec::new();
+    let mut is_in_current_stack = vec![false; num_entries];
+
+    struct State {
+        entry_idx: usize,
+        dep_pos: usize,
+    }
+
+    for start_entry_idx in 0..num_entries {
+        if visited[start_entry_idx] {
+            continue;
+        }
+
+        // We use this for doing a depth first search without recursion.
+        // Record current entry idx and current dep_pos we are at in the conceptual loop.
+        // Think as if these are the values of the local variables at the point of recursion call.
+        //
+        // This is the standard algorithm you would find anywhere for cycle detection just modified to
+        // run without recursion.
+        let mut recursion = vec![State {
+            entry_idx: start_entry_idx,
+            dep_pos: 0,
+        }];
+
+        while let Some(State { entry_idx, dep_pos }) = recursion.pop() {
+            // Before the dfs loop, as in we just arrived at this layer.
+            if dep_pos == 0 {
+                assert!(!visited[entry_idx]);
+                assert!(!is_in_current_stack[entry_idx]);
+
+                visited[entry_idx] = true;
+                is_in_current_stack[entry_idx] = true;
+                current_stack.push(entry_idx);
+            }
+
+            let mut dep_pos = dep_pos;
+
+            while dep_pos < deps_indices[entry_idx].len() {
+                let dep_entry_idx = deps_indices[entry_idx][dep_pos];
+
+                if is_in_current_stack[dep_entry_idx] {
+                    // We found a cycle, print the error and exit.
+
+                    let mut err_msg =
+                        String::from("Found a dependency cycle between entries. Cycle is: ");
+
+                    let cycle_start_pos = current_stack
+                        .iter()
+                        .position(|&x| x == dep_entry_idx)
+                        .unwrap();
+
+                    for &p in current_stack[cycle_start_pos..].iter() {
+                        err_msg.push_str(interner.get(entry_names[p]));
+                        err_msg.push_str(" -> ");
+                    }
+
+                    err_msg.push_str(interner.get(entry_names[dep_entry_idx]));
+
+                    panic!("{}", err_msg);
+                }
+
+                // Optimization: don't go into the dep entry if the dep is already visited.
+                if !visited[dep_entry_idx] {
+                    // these next two pushes equate to a recursive call to dfs search
+
+                    // resume at the next dep of the loop when we come back
+                    recursion.push(State {
+                        entry_idx,
+                        dep_pos: dep_pos + 1,
+                    });
+                    // go to the lower layer
+                    recursion.push(State {
+                        entry_idx: dep_entry_idx,
+                        dep_pos: 0,
+                    });
+
+                    break;
+                }
+
+                dep_pos += 1;
+            }
+
+            if dep_pos == deps_indices[entry_idx].len() {
+                // We finished the inner dfs loop, just remove ourselves from the current search stack which
+                // means to going to the above layer in dfs search.
+                is_in_current_stack[entry_idx] = false;
+                assert_eq!(entry_idx, current_stack.pop().unwrap());
+            }
+        }
+    }
+
+    for v in visited {
+        assert!(v);
+    }
 }
 
 fn check_cyclic_dependencies_between_module_parts(
@@ -389,14 +515,14 @@ fn check_cyclic_dependencies_between_module_parts(
     let mut current_stack = Vec::new();
     let mut is_in_current_stack = vec![false; num_parts];
 
+    struct State {
+        part_idx: usize,
+        dep_idx: usize,
+    }
+
     for start_part_idx in 0..num_parts {
         if visited[start_part_idx] {
             continue;
-        }
-
-        struct State {
-            part_idx: usize,
-            dep_idx: usize,
         }
 
         // We use this for doing a depth first search without recursion.
@@ -773,7 +899,6 @@ pub fn scan(
         match target.kind {
             ScanTargetKind::Mod => {
                 // Construct the module dependency matrix
-                let matrix_start = target.part_index * num_parts;
                 let matrix = &mut mod_dep_matrix[target.entry_index];
                 for name in deps.deps.iter() {
                     // don't forget to do simple check for cyclic dependency
