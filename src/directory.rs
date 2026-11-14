@@ -104,7 +104,6 @@ pub fn create_build_directories(
     thread_pool: &ThreadPool,
 ) {
     std::fs::create_dir_all(config.build_path).unwrap();
-    std::fs::create_dir_all(config.cache_path).unwrap();
 
     let mut join_set: JoinSet<()> = JoinSet::new();
 

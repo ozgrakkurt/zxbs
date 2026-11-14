@@ -86,7 +86,7 @@ impl BuildInfo {
         }
 
         panic!(
-            "Subcommand argument has entry `{}:{}. But the entry `{}` doesn't have a {} named `{}`",
+            "Subcommand argument has entry `{}:{}`. But the entry `{}` doesn't have a {} named `{}`",
             entry_name, part_name, entry_name, kind_name, part_name
         );
     }
@@ -175,7 +175,12 @@ pub fn parse_deps_file(path: &Path, contents: &str) -> Vec<String> {
         let line = line.trim();
         if !line.is_empty() {
             check_name(line, &format!("Parse deps file at: `{}`", path.display()));
-            assert!(dedup.insert(line));
+            assert!(
+                dedup.insert(line),
+                "Deps file at `{}` contains a duplicate dependency on `{}`",
+                path.display(),
+                line
+            );
             deps.push(line.to_owned());
         }
     }
@@ -608,6 +613,95 @@ fn check_cyclic_dependencies_between_module_parts(
     }
 }
 
+// make sure that we only have the expected content in the entry folder.
+//
+// - mod folder
+// - lib folder
+// - bin folder
+// - test folder
+// - deps file
+fn check_entry_folder_content(path: &Path) {
+    let dir = match std::fs::read_dir(path) {
+        Ok(v) => v,
+        Err(e) => {
+            panic!("Failed to read_dir on '{}'. Error: {}", path.display(), e);
+        }
+    };
+
+    let mut found_mod = false;
+    let mut found_lib = false;
+    let mut found_bin = false;
+    let mut found_test = false;
+    let mut found_deps = false;
+
+    for entry in dir {
+        let entry = entry.unwrap();
+        let file_path = entry.path();
+        let file_name = file_path.file_name().unwrap().to_str().unwrap();
+        let file_type = entry.file_type().unwrap();
+
+        if file_type.is_dir() {
+            if file_name == "mod" {
+                found_mod = true;
+            } else if file_name == "lib" {
+                found_lib = true;
+            } else if file_name == "bin" {
+                found_bin = true;
+            } else if file_name == "test" {
+                found_test = true;
+            } else {
+                panic!(
+                    "Found unexpected directory `{}` in entry directory at: `{}`",
+                    file_name,
+                    path.display()
+                );
+            }
+        } else if file_type.is_file() {
+            if file_name != "deps" {
+                panic!(
+                    "Found unexpected file `{}` in entry directory at: `{}`",
+                    file_name,
+                    path.display()
+                );
+            } else {
+                found_deps = true;
+            }
+        } else {
+            panic!(
+                "Found unexpected type of file `{}` in entry directory at: `{}`. Only expected folders and regular files.",
+                file_name,
+                path.display()
+            );
+        }
+    }
+
+    assert!(
+        found_mod,
+        "Expected the entry folder at `{}` to contain a `mod` folder but it doesn't.",
+        path.display()
+    );
+    assert!(
+        found_lib,
+        "Expected the entry folder at `{}` to contain a `lib` folder but it doesn't.",
+        path.display()
+    );
+    assert!(
+        found_bin,
+        "Expected the entry folder at `{}` to contain a `bin` folder but it doesn't.",
+        path.display()
+    );
+    assert!(
+        found_test,
+        "Expected the entry folder at `{}` to contain a `test` folder but it doesn't.",
+        path.display()
+    );
+    assert!(
+        found_deps,
+        "Expected the entry folder at `{}` to contain a `deps` file but it doesn't.",
+        path.display()
+    );
+}
+
 pub fn scan(
     config: &'static Config,
     interner: &mut Interner,
@@ -646,6 +740,10 @@ pub fn scan(
     // List each entry's mod/test/bin/lib folders and read it's deps
     // file.
     let mut listing_join_set: JoinSet<ListingResult> = JoinSet::new();
+
+    // just for checking the folder contents of each entry.
+    let mut check_entry_folder_join_set: JoinSet<()> = JoinSet::new();
+
     for (entry_index, &entry_name) in entry_names.iter().enumerate() {
         let entry_path = config.src_path.join(interner.get(entry_name));
 
@@ -682,6 +780,10 @@ pub fn scan(
             kind: ListingResultKind::Bin,
             entry_index,
             parts: scan_subfolder("cc", &p),
+        });
+
+        check_entry_folder_join_set.spawn(thread_pool, move || {
+            check_entry_folder_content(&entry_path);
         });
     }
 
@@ -802,6 +904,8 @@ pub fn scan(
             }
         }
     }
+
+    check_entry_folder_join_set.join_all();
 
     for (entry_index, modules) in mod_list.iter().enumerate() {
         let entry_name = entry_names[entry_index];
@@ -937,7 +1041,7 @@ pub fn scan(
                             );
                         }
 
-                        let dep_pos = match entry_mod_parts
+                        let dep_index = match entry_mod_parts
                             .iter()
                             .position(|&x| x == dep_sub_name_idx)
                         {
@@ -955,12 +1059,7 @@ pub fn scan(
                             Some(idx) => idx,
                         };
 
-                        let part_pos = entry_mod_parts
-                            .iter()
-                            .position(|&x| x == part_name_idx)
-                            .unwrap();
-
-                        matrix[num_parts * part_pos + dep_pos] = true;
+                        matrix[num_parts * target.part_index + dep_index] = true;
                     } else {
                         // has to be an dependended-on entry name, can't be anything else.
 
@@ -986,7 +1085,7 @@ pub fn scan(
                 for dep_name in deps.deps.iter() {
                     let dep_name_idx = interner.insert(dep_name.as_str());
 
-                    if dep_name_idx != entry_name_idx && entry_deps.contains(&dep_name_idx) {
+                    if dep_name_idx != entry_name_idx && !entry_deps.contains(&dep_name_idx) {
                         panic!(
                             "The source file at `{}` depends on `{}`, this is invalid because source files are only allowed to depend on root module of their own entry or other entries that are listed in the deps file of their own entry.",
                             target.path, dep_name

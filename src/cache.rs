@@ -95,6 +95,7 @@ impl CacheState {
 
 pub fn load(cache_path: &Path) -> CacheState {
     if !std::fs::exists(cache_path).unwrap() {
+        std::fs::create_dir_all(cache_path).unwrap();
         return CacheState::new();
     }
 
