@@ -1138,7 +1138,7 @@ fn construct_entry_deep_hash(
 
         // do this so we avoid re-exploring same entries we already explored.
         let mut finished = vec![false; num_entries];
-        let mut worklist: Vec<usize> = Vec::new();
+        let mut worklist: Vec<usize> = vec![entry_idx];
 
         while let Some(eidx) = worklist.pop() {
             let lib_archive_hash = out.entry_lib_archive[eidx];

@@ -418,7 +418,7 @@ impl TestCmd {
 }
 
 // Load a file to output from cache.
-// Checks the file in the cache is expected size and has the expected hash.
+// Checks the file in the cache has the expected hash.
 pub struct CacheLoad {
     pub cache_files_path: &'static str,
     pub output_path: &'static str,

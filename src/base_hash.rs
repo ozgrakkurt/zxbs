@@ -1,3 +1,5 @@
+use std::os::unix::ffi::OsStrExt as _;
+
 use crate::config::Config;
 use crate::hash::{Hash, UnorderedHashCombiner, hash_bytes, hash_ordered};
 use crate::thread_pool::{JoinSet, ThreadPool};
@@ -31,7 +33,23 @@ fn spawn_read_version(
     });
 }
 
-pub fn calculate_base_hash(config: &'static Config, thread_pool: &ThreadPool) -> Hash {
+fn hash_flags(config: &Config) -> Hash {
+    let mut bufs: Vec<&[u8]> = Vec::new();
+
+    for flag in config.cxxflags.iter() {
+        bufs.push(flag.as_bytes());
+    }
+
+    for flag in config.ldflags.iter() {
+        bufs.push(flag.as_bytes());
+    }
+
+    bufs.push(config.src_path.as_os_str().as_bytes());
+
+    hash_ordered(&bufs)
+}
+
+pub fn calculate_base_hash(config: &Config, thread_pool: &ThreadPool) -> Hash {
     let mut join_set = JoinSet::<Hash>::new();
 
     join_set.spawn(thread_pool, || {
@@ -46,6 +64,8 @@ pub fn calculate_base_hash(config: &'static Config, thread_pool: &ThreadPool) ->
     }
 
     let mut combiner = UnorderedHashCombiner::new();
+
+    combiner.add(hash_flags(config));
 
     while let Some(hash) = join_set.join_next() {
         combiner.add(hash);

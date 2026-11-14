@@ -110,10 +110,6 @@ pub fn load(cache_path: &Path) -> CacheState {
 }
 
 pub fn finish(mut state: CacheState, cache_path: &Path, timestamp: u64) {
-    if !std::fs::exists(cache_path).unwrap() {
-        std::fs::create_dir(cache_path).unwrap();
-    }
-
     for &hash in state.new_entries.iter() {
         let file_path = cache_path.join(format!("{:x}", hash));
         let bytes = std::fs::read(file_path).unwrap();
