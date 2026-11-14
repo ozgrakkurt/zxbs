@@ -337,6 +337,11 @@ impl RunBinary {
         if !stdout.trim().is_empty() {
             eprintln!("STDOUT of {}:\n{}", self.print(), stdout.as_str());
         }
+
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        if !stderr.trim().is_empty() {
+            eprintln!("STDERR of {}:\n{}", self.print(), stderr.as_str());
+        }
     }
 }
 
