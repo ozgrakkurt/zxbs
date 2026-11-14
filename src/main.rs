@@ -1,11 +1,7 @@
 use std::time::Instant;
 use zxbs::{
-    build, cache, config, directory,
-    hash::{HashMap, hash_ordered},
-    interner, plan, scan,
-    thread_pool::ThreadPool,
-    timestamp::timestamp,
-    tracer,
+    base_hash::calculate_base_hash, build, cache, config, directory, hash::HashMap, interner, plan,
+    scan, thread_pool::ThreadPool, timestamp::timestamp, tracer,
 };
 
 fn make_duration(start: &Instant) -> u64 {
@@ -19,17 +15,9 @@ fn run() {
 
     let interner: &'static mut interner::Interner = Box::leak(Box::new(interner::Interner::new()));
 
-    // Use more threads than the physical cpu count because the program does IO heavy
+    // It is ok to use more threads than the physical cpu count because the program does IO heavy
     // workloads in some parts.
     let thread_pool = ThreadPool::new(128);
-
-    // The base hash incorporates the build configuration and the hash of this
-    // binary. It is reused by both the scan (for the clang-scan-deps cache key)
-    // and plan (for the deep hashes).
-    const SELF_EXE_PATH: &str = "/proc/self/exe";
-    let self_exe_bytes = std::fs::read(SELF_EXE_PATH).unwrap();
-    let self_exe_hash = hash_ordered(&[SELF_EXE_PATH.as_bytes(), self_exe_bytes.as_slice()]);
-    let base_hash = plan::construct_base_deep_hash(config, self_exe_hash);
 
     let start_timestamp = timestamp();
 
@@ -46,6 +34,17 @@ fn run() {
     top_level_timings.insert(
         "CacheState Load".to_owned(),
         (cache_state_load_start, make_duration(&t0)),
+    );
+
+    t0 = Instant::now();
+    let base_hash_start = make_duration(&beginning);
+    // The base hash incorporates the build configuration and the hash of this
+    // binary. It is reused by both the scan (for the clang-scan-deps cache key)
+    // and plan (for the deep hashes).
+    let base_hash = calculate_base_hash(config, &thread_pool);
+    top_level_timings.insert(
+        "Base Hash".to_owned(),
+        (base_hash_start, make_duration(&t0)),
     );
 
     t0 = Instant::now();

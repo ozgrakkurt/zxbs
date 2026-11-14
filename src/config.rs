@@ -221,15 +221,7 @@ fn make_ldflags(cfg: &FlagCfg) -> Vec<&'static str> {
 
     ldflags.push(format!("-O{}", cfg.opt_level).leak());
 
-    if cfg.debug_info {
-        ldflags.push("-g1");
-        ldflags.push("-gdwarf32");
-        ldflags.push("-gdwarf-5");
-        ldflags.push("-fasynchronous-unwind-tables");
-        ldflags.push("-DZX_DEBUG_INFO");
-    } else {
-        ldflags.push("-fno-unwind-tables");
-        ldflags.push("-fno-asynchronous-unwind-tables");
+    if !cfg.debug_info {
         ldflags.push("-Wl,-s");
     }
 
@@ -252,14 +244,12 @@ pub fn parse_subcommand_arg(arg: &str) -> (String, String) {
 }
 
 impl Config {
-    fn parse_subcommand(
-        flags_is_empty: bool,
-        subcommand: &str,
-        args: &mut std::env::Args,
-    ) -> Subcommand {
+    fn parse_subcommand(subcommand: &str, args: &mut std::env::Args) -> Subcommand {
         match subcommand {
             "run" => {
-                let arg = args.next().expect("Expected argument for `run` sucommand.");
+                let arg = args
+                    .next()
+                    .expect("Expected argument for `run` subcommand.");
                 let (entry_name, bin_name) = parse_subcommand_arg(&arg);
                 Subcommand::RunBinary {
                     entry_name,
@@ -270,6 +260,10 @@ impl Config {
             "test" => {
                 if let Some(arg) = args.next() {
                     let (entry_name, test_name) = parse_subcommand_arg(&arg);
+                    assert!(
+                        args.next().is_none(),
+                        "Didn't expect arguments after the test name in `test` subcommand"
+                    );
                     Subcommand::Test {
                         entry_name,
                         test_name,
@@ -286,10 +280,6 @@ impl Config {
                 Subcommand::Build
             }
             "fmt" => {
-                assert!(
-                    flags_is_empty,
-                    "expected no flags while running the `fmt` subcommand"
-                );
                 assert!(
                     args.next().is_none(),
                     "Didn't expect arguments for `fmt` subcommand"
@@ -400,7 +390,7 @@ impl Config {
 
         let (flags, subcommand_name) = Self::parse_flags(&mut args);
 
-        let subcommand = Self::parse_subcommand(flags.is_empty(), &subcommand_name, &mut args);
+        let subcommand = Self::parse_subcommand(&subcommand_name, &mut args);
 
         let config = Self::parse_config(flags);
 

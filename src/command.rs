@@ -401,11 +401,7 @@ pub struct TestCmd {
 
 impl TestCmd {
     pub fn print(&self) -> String {
-        let mut out = String::with_capacity(1024);
-
-        out.push_str("");
-
-        out
+        String::from("Test Command")
     }
 
     pub fn run(&self) {
@@ -420,16 +416,6 @@ impl TestCmd {
         }
     }
 }
-
-// ### HOW CACHING WORKS
-// # before scan -> Load cache state.
-// # scan -> do basic hash of individual files.
-// # plan -> calculate aggregate hashes and check against db to
-// emit either CacheLoad or regular build + CacheStore. Update cache use
-// timestamps in state. Also save cached file size into the cache state.
-// # after build -> Save cache state and cleanup old stuff if cache
-// is too big.
-//
 
 // Load a file to output from cache.
 // Checks the file in the cache is expected size and has the expected hash.

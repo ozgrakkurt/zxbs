@@ -34,12 +34,6 @@ pub fn list_dir(dir: &Path) -> (Vec<PathBuf>, Vec<PathBuf>) {
 
 // Removes `root` and everything inside it. This is similar to
 // `std::fs::remove_dir_all`, except that the files are unlinked in parallel.
-//
-// The tree is walked level by level. For each level, one task per directory
-// lists its contents and one task per file unlinks it. Both kinds of tasks run
-// in the same JoinSet, so files start getting deleted while other directories
-// at the same level are still being listed. Once every file is gone, the
-// directories are removed level by level from the bottom up.
 pub fn remove_dir_all(root: &Path, thread_pool: &ThreadPool) {
     if !std::fs::exists(root).unwrap() {
         return;
@@ -77,8 +71,6 @@ pub fn remove_dir_all(root: &Path, thread_pool: &ThreadPool) {
         current_level = next_level;
     }
 
-    // This is just a mental model check. Not a problem if it isn't empty at this point but
-    // check anyway.
     assert!(ls_join_set.is_empty());
 
     delete_join_set.join_all();

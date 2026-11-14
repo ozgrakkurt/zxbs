@@ -37,7 +37,7 @@ pub fn mix_hashes(a: Hash, b: Hash) -> Hash {
 //
 // Addition of a duplicate hash will be silently ignored.
 //
-// We want to make it order independant to be more resistant to
+// We want to make it order independent to be more resistant to
 // possible order randomization in scanning.
 //
 // This way, even if scan returns a different ordered output every time,
@@ -51,7 +51,7 @@ pub fn mix_hashes(a: Hash, b: Hash) -> Hash {
 // This approach might be too slow, we can convert to some worse reliability method in that case.
 //
 // Note: Keep in mind that commutative combination of hashes might not be what is wanted in some
-// cases. If the items chaging "order" changes the output then commutative hashing might even be a bug.
+// cases. If the items changing  "order" changes the output then commutative hashing might even be a bug.
 #[derive(Clone)]
 pub struct UnorderedHashCombiner {
     hashes: BTreeSet<Hash>,

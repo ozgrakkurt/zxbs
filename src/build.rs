@@ -46,7 +46,7 @@ pub struct Build<'a> {
     beginning: Instant,
     // used to give a unique temporary id to every currently running task.
     // This is useful for generating timing traces so we can imagine each task running in
-    // it's own thread.
+    // its own thread.
     // Then we are able to visualize how much concurrency we are utilizing at a time and
     // which tasks are running concurrently with each other.
     free_slot_indices: Vec<usize>,
@@ -156,11 +156,12 @@ impl<'a> Build<'a> {
                 }
 
                 let command = self.tasks[task_idx.to_usize()].command.take().unwrap();
-                let task_start = u64::try_from(self.beginning.elapsed().as_micros()).unwrap();
-                let task_begin = Instant::now();
+                let beginning = self.beginning;
                 let slot_index = self.free_slot_indices.pop().unwrap();
 
                 self.running.spawn(self.thread_pool, move || {
+                    let task_start = u64::try_from(beginning.elapsed().as_micros()).unwrap();
+                    let task_begin = Instant::now();
                     command.run();
                     let duration = u64::try_from(task_begin.elapsed().as_micros()).unwrap();
                     (command, task_idx, task_start, duration, slot_index)
@@ -175,5 +176,7 @@ impl<'a> Build<'a> {
         while let Some(output) = self.running.join_next() {
             self.process_task_finished(output);
         }
+
+        assert!(self.n_tasks_finished == self.tasks.len());
     }
 }

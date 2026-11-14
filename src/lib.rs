@@ -6,7 +6,9 @@
 #![allow(clippy::explicit_counter_loop)]
 #![allow(clippy::while_let_on_iterator)]
 #![allow(clippy::needless_range_loop)]
+#![allow(clippy::let_and_return)]
 
+pub mod base_hash;
 pub mod build;
 pub mod cache;
 pub mod command;

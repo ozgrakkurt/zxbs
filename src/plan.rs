@@ -11,7 +11,7 @@ use crate::command::{
     RunBinary, RunTest,
 };
 use crate::config::{Config, Subcommand};
-use crate::hash::{Hash, HashSet, UnorderedHashCombiner, hash_bytes, hash_ordered, mix_hashes};
+use crate::hash::{Hash, HashSet, UnorderedHashCombiner, hash_bytes, mix_hashes};
 use crate::interner::{Interner, Str};
 use crate::scan::BuildInfo;
 
@@ -461,9 +461,6 @@ fn plan_bin_build(
         let exe_path_index = interner.insert(exe_path.to_str().unwrap());
         let exe_path = interner.get(exe_path_index);
 
-        let stamp_path = build_path.join("stamp").join(bin_name);
-        let stamp_path_index = interner.insert(stamp_path.to_str().unwrap());
-
         let obj_hash = obj_hashes[bin_idx];
         let exe_hash = exe_hashes[bin_idx];
 
@@ -563,7 +560,7 @@ fn plan_bin_build(
 
         if let Some(args) = should_run_binary(subcommand, entry_name, bin_name) {
             let input_indices = vec![exe_path_index];
-            let output_indices = vec![stamp_path_index];
+            let output_indices = vec![];
 
             tasks.push(Task {
                 entry_name: entry_name_idx,
@@ -882,7 +879,7 @@ fn plan_fmt(config: &Config, interner: &mut Interner, info: &BuildInfo) -> Vec<T
 // - hash of input source file content, if there is an input source file.
 // - "deep" hashes of the module files that this file depends on in the same entry.
 // - "deep" hashes of other entries that the current entry depends on.
-// - "deep" hash of the build configuration including anything that effects the behavior of the build.
+// - "deep" hash of the build configuration including anything that affects the behavior of the build.
 // - hash of self binary byte content, which is the binary of `zxbs`.
 //    Basically just read "/proc/self/exe" and hash it.
 pub struct DeepHashes {
@@ -913,27 +910,6 @@ impl DeepHashes {
             test_stamp: vec![Vec::new(); len],
         }
     }
-}
-
-pub fn construct_base_deep_hash(config: &Config, self_exe_hash: Hash) -> Hash {
-    let mut bufs: Vec<&[u8]> = Vec::new();
-
-    // Try to include everything that might effect the generated artifacts.
-    bufs.push(config.cxx.as_bytes());
-    bufs.push(config.ar.as_bytes());
-    bufs.push(config.clang_scan_deps.as_bytes());
-
-    for flags in config.cxxflags.iter() {
-        bufs.push(flags.as_bytes());
-    }
-    for flags in config.ldflags.iter() {
-        bufs.push(flags.as_bytes());
-    }
-
-    let self_exe_hash_bytes = self_exe_hash.to_le_bytes();
-    bufs.push(&self_exe_hash_bytes);
-
-    hash_ordered(&bufs)
 }
 
 fn construct_module_deep_hashes(
@@ -1114,7 +1090,7 @@ fn construct_entry_deep_hash(
     // file output so they will depend on the interface (pcm), library (.a, object .o) files.
     //
     // Nothing depends on the object files that are for executables or the executables themselves so we can just forget
-    // their hashes wihout incorporating them into our hash accumulation.
+    // their hashes without  incorporating them into our hash accumulation.
     //
     // hash_builder will only be used for the library hash after this point. Meaning we will use it for only
     // library archive file hash and the linked executables' hashes.
@@ -1235,7 +1211,7 @@ pub fn construct_deep_hashes(
     let mut backlog: Vec<usize> = Vec::new();
 
     let mut remaining_deps: Vec<Vec<usize>> = vec![Vec::new(); num_entries];
-    // this will be used to do a reverse lookup as we calcuate a deep has of an entry so
+    // this will be used to do a reverse lookup as we calculate  a deep has of an entry so
     // we want to update the `remaining deps` accordingly.
     let mut rev_deps: Vec<Vec<usize>> = vec![Vec::new(); num_entries];
     for (entry_idx, deps) in info.deps.iter().enumerate() {
