@@ -1128,13 +1128,32 @@ fn construct_entry_deep_hash(
     let entry_lib_hash = hash_combiner.combine();
     out.entry_lib_archive[entry_idx] = entry_lib_hash;
 
-    // incorporate the lib hashes of entry dependencies into hash_builder
+    // Incorporate the lib hashes of entry dependencies into hash_builder
     // hash builder will only be used for linked executable output hashes after this point.
-    for dep_name in info.deps[entry_idx].iter() {
-        let dep_idx = usize::try_from(*info.map.get(dep_name).unwrap()).unwrap();
-        assert!(entry_was_visited[dep_idx]);
-        let dep_hash = out.entry_lib_archive[dep_idx];
-        hash_combiner.add(dep_hash);
+    //
+    // We need to do this recursively since the executables depend of all libraries in the transitive dependency chain
+    // but we didn't include the transitive library dependencies up to now.
+    {
+        let num_entries = info.name.len();
+
+        // do this so we avoid re-exploring same entries we already explored.
+        let mut finished = vec![false; num_entries];
+        let mut worklist: Vec<usize> = Vec::new();
+
+        while let Some(eidx) = worklist.pop() {
+            let lib_archive_hash = out.entry_lib_archive[eidx];
+            hash_combiner.add(lib_archive_hash);
+
+            for dep_name in info.deps[eidx].iter() {
+                let dep_idx = usize::try_from(*info.map.get(dep_name).unwrap()).unwrap();
+                assert!(entry_was_visited[dep_idx]);
+                if !finished[dep_idx] {
+                    worklist.push(dep_idx);
+                }
+            }
+
+            finished[eidx] = true;
+        }
     }
 
     let link_base_hash = hash_combiner.combine();
