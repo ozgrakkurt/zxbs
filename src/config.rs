@@ -33,15 +33,14 @@ pub struct Config {
     pub time_trace: bool,
 }
 
-fn parse_bool_arg(args: &mut HashMap<String, String>, name: &str, default: bool) -> bool {
+fn parse_bool_arg(args: &mut HashMap<String, Option<String>>, name: &str, default: bool) -> bool {
     let positive = format!("--{}", name);
     let negative = format!("--no-{}", name);
 
     match args.remove(&positive) {
         Some(v) => {
             assert_eq!(
-                v.as_str(),
-                "",
+                v, None,
                 "expected bool flag `{}`` to not have `--flag=<value>` form",
                 name,
             );
@@ -58,9 +57,8 @@ fn parse_bool_arg(args: &mut HashMap<String, String>, name: &str, default: bool)
     match args.remove(&negative) {
         Some(v) => {
             assert_eq!(
-                v.as_str(),
-                "",
-                "expected bool flag `{}`` to not have `--flag=<value>` form",
+                v, None,
+                "expected bool flag `{}` to not have `--flag=<value>` form",
                 name,
             );
             return false;
@@ -69,6 +67,20 @@ fn parse_bool_arg(args: &mut HashMap<String, String>, name: &str, default: bool)
     }
 
     default
+}
+
+fn parse_str_arg(
+    args: &mut HashMap<String, Option<String>>,
+    name: &str,
+    default: &'static str,
+) -> &'static str {
+    match args.remove(name) {
+        Some(v) => match v {
+            None => panic!("Expected a value for flag `{}`", name),
+            Some(v) => v.leak(),
+        },
+        None => default,
+    }
 }
 
 fn make_path_absolute(cwd: &Path, path: &Path) -> PathBuf {
@@ -291,8 +303,8 @@ impl Config {
     }
 
     // returns parsed flag map and the subcommand name
-    fn parse_flags(args: &mut std::env::Args) -> (HashMap<String, String>, String) {
-        let mut flags = HashMap::<String, String>::default();
+    fn parse_flags(args: &mut std::env::Args) -> (HashMap<String, Option<String>>, String) {
+        let mut flags = HashMap::<String, Option<String>>::default();
 
         while let Some(arg) = args.next() {
             if !arg.starts_with("--") {
@@ -303,20 +315,20 @@ impl Config {
 
             match parts.len() {
                 1 => {
-                    if flags.insert(arg.clone(), "".to_owned()).is_some() {
-                        panic!("Duplicate argument: {}", arg);
+                    if flags.insert(arg.clone(), None).is_some() {
+                        panic!("Duplicate flag: {}", arg);
                     }
                 }
                 2 => {
                     if flags
-                        .insert(parts[0].to_owned(), parts[1].to_owned())
+                        .insert(parts[0].to_owned(), Some(parts[1].to_owned()))
                         .is_some()
                     {
-                        panic!("Duplicate argument: {}", parts[0]);
+                        panic!("Duplicate flag: {}", parts[0]);
                     }
                 }
                 _ => {
-                    panic!("Invalid CLI argument: {}", arg);
+                    panic!("Invalid flag: {}", arg);
                 }
             }
         }
@@ -324,23 +336,17 @@ impl Config {
         panic!("Expected a subcommand.");
     }
 
-    pub fn parse_config(mut flags: HashMap<String, String>) -> Config {
-        let cxx = flags.remove("--cxx").map(leak_str).unwrap_or("clang++");
-        let ar = flags.remove("--ar").map(leak_str).unwrap_or("llvm-ar");
-        let clang_scan_deps = flags
-            .remove("--clang-scan-deps")
-            .map(leak_str)
-            .unwrap_or("clang-scan-deps");
-        let clang_format = flags
-            .remove("--clang-format")
-            .map(leak_str)
-            .unwrap_or("clang-format");
-        let opt_level = flags.remove("--opt-level").map(leak_str).unwrap_or("0");
+    pub fn parse_config(mut flags: HashMap<String, Option<String>>) -> Config {
+        let cxx = parse_str_arg(&mut flags, "--cxx", "clang++");
+        let ar = parse_str_arg(&mut flags, "--ar", "llvm-ar");
+        let clang_scan_deps = parse_str_arg(&mut flags, "--clang-scan-deps", "clang-scan-deps");
+        let clang_format = parse_str_arg(&mut flags, "--clang-format", "clang-format");
+        let opt_level = parse_str_arg(&mut flags, "--opt-level", "0");
         let dev_mode = parse_bool_arg(&mut flags, "dev-mode", true);
         let debug_info = parse_bool_arg(&mut flags, "debug-info", true);
         let fuzz = parse_bool_arg(&mut flags, "fuzz", false);
-        let src_dir = flags.remove("--src-dir").map(leak_str).unwrap_or("src");
-        let build_dir: &'static str = flags.remove("--build-dir").map(leak_str).unwrap_or("build");
+        let src_dir = parse_str_arg(&mut flags, "--src-dir", "src");
+        let build_dir = parse_str_arg(&mut flags, "--build-dir", "build");
         let time_trace = parse_bool_arg(&mut flags, "time-trace", false);
         let cxx_time_trace = parse_bool_arg(&mut flags, "cxx-time-trace", false);
 
