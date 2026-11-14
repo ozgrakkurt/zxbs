@@ -262,7 +262,7 @@ fn plan_lib_build(
 
     let parts = &info.lib[entry_index];
     let src_path = config.src_path.join(entry_name).join("lib");
-    let build_path = config.build_path.join(entry_name).join("lib");
+    let build_path = config.build_path.join("entry").join(entry_name).join("lib");
 
     let root_pcm_path = config
         .build_path
@@ -435,7 +435,7 @@ fn plan_bin_build(
     let self_pcm_path_idx = interner.insert(self_pcm_path.to_str().unwrap());
 
     let bins = &info.bin[entry_index];
-    let build_path = config.build_path.join(entry_name).join("bin");
+    let build_path = config.build_path.join("entry").join(entry_name).join("bin");
     let src_path = config.src_path.join(entry_name).join("bin");
 
     let obj_hashes = &deep_hashes.bin_object[entry_index];
@@ -607,7 +607,11 @@ fn plan_test_build(
 
     let tests = &info.test[entry_index];
 
-    let build_path = config.build_path.join(entry_name).join("test");
+    let build_path = config
+        .build_path
+        .join("entry")
+        .join(entry_name)
+        .join("test");
     let src_path = config.src_path.join(entry_name).join("test");
 
     let obj_hashes = &deep_hashes.test_object[entry_index];
@@ -1315,6 +1319,7 @@ pub fn collect_lib_path_list(
 
         let lib_path = config
             .build_path
+            .join("entry")
             .join(name)
             .join("lib")
             .join(format!("lib{}.a", name));

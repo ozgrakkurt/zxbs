@@ -104,17 +104,29 @@ pub fn create_build_directories(
     // and joined between levels so every directory within a level is created
     // in parallel.
 
-    // Level 1: children of the build directory.
+    // Layer 0:
+    let entries_build_path = config.build_path.join("entry");
+    {
+        let p = entries_build_path.clone();
+        join_set.spawn(thread_pool, move || {
+            std::fs::create_dir(p).unwrap();
+        });
+    }
+
     let modules_build_path = config.build_path.join("mod");
     join_set.spawn(thread_pool, move || {
         std::fs::create_dir(modules_build_path).unwrap();
     });
 
+    join_set.join_all();
+
+    // Level 1: children of the build directory.
+
     for &entry_name_idx in info.name.iter() {
         let entry_name = interner.get(entry_name_idx);
-        let entry_build_path = config.build_path.join(entry_name);
+        let entries_build_path = entries_build_path.join(entry_name);
         join_set.spawn(thread_pool, move || {
-            std::fs::create_dir(entry_build_path).unwrap();
+            std::fs::create_dir(entries_build_path).unwrap();
         });
     }
 
@@ -123,18 +135,19 @@ pub fn create_build_directories(
     // Level 2: children of each entry directory.
     for &entry_name_idx in info.name.iter() {
         let entry_name = interner.get(entry_name_idx);
+        let entry_path = entries_build_path.join(entry_name);
 
-        let lib_build_path = config.build_path.join(entry_name).join("lib");
+        let lib_build_path = entry_path.join("lib");
         join_set.spawn(thread_pool, move || {
             std::fs::create_dir(lib_build_path).unwrap();
         });
 
-        let bin_build_path = config.build_path.join(entry_name).join("bin");
+        let bin_build_path = entry_path.join("bin");
         join_set.spawn(thread_pool, move || {
             std::fs::create_dir(bin_build_path).unwrap();
         });
 
-        let test_build_path = config.build_path.join(entry_name).join("test");
+        let test_build_path = entry_path.join("test");
         join_set.spawn(thread_pool, move || {
             std::fs::create_dir(test_build_path).unwrap();
         });
@@ -145,8 +158,7 @@ pub fn create_build_directories(
     // Level 3: children of each entry's test directory.
     for &entry_name_idx in info.name.iter() {
         let entry_name = interner.get(entry_name_idx);
-        let test_stamp_path = config
-            .build_path
+        let test_stamp_path = entries_build_path
             .join(entry_name)
             .join("test")
             .join("stamp");
