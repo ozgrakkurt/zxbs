@@ -319,6 +319,10 @@ pub fn load(cache_path: &Path, thread_pool: &ThreadPool, timestamp: u64) -> Cach
         return CacheState::empty();
     }
 
+    if !std::fs::exists(&wal_path).unwrap() {
+        std::fs::create_dir(&wal_path).unwrap();
+    }
+
     let state_file_path = cache_path.join("cache_state");
 
     let mut entries: BTreeMap<Hash, CacheEntry> = match std::fs::read(&state_file_path) {
@@ -388,25 +392,25 @@ fn merge_new_entries(
 const MAX_CACHE_SIZE: u64 = 1 << 30;
 
 // Delete the least recently used entries, along with their cached files,
-// until the total size of the cached outputs drops back under MAX_CACHE_SIZE.
+// until the total size of the cached outputs drops back under `max_cache_size`.
 fn spawn_prune(
     cache_path: &Path,
     thread_pool: &ThreadPool,
     join_set: &mut JoinSet<()>,
     entries: &mut BTreeMap<Hash, CacheEntry>,
+    max_cache_size: u64,
 ) {
     let total_size: u64 = entries
         .values()
         .map(|entry| u64::from(entry.output_size))
         .sum();
 
-    if total_size <= MAX_CACHE_SIZE {
+    if total_size <= max_cache_size {
         return;
     }
 
-    // The entries map is ordered by deep hash, not by last used timestamp, so
-    // we collect and sort them here to evict the least recently used ones
-    // first. The deep hash breaks the ties so the order is deterministic.
+    // order so the first item is the one with the most recent last_used_timestamp value.
+    // we pop from this list to remove entries so we will be removing the oldest entry first.
     let mut sorted: Vec<(u64, Hash)> = entries
         .iter()
         .map(|(deep_hash, entry)| (entry.last_used_timestamp, *deep_hash))
@@ -416,7 +420,7 @@ fn spawn_prune(
 
     let mut size = total_size;
 
-    while size > MAX_CACHE_SIZE {
+    while size > max_cache_size {
         let (_, deep_hash) = sorted.pop().unwrap();
 
         let entry = entries.remove(&deep_hash).unwrap();
@@ -436,7 +440,9 @@ fn store_state_file(cache_path: &Path, entries: &BTreeMap<Hash, CacheEntry>) {
     let mut out = Vec::new();
     serialize_state_file(entries, &mut out);
 
-    std::fs::write(&state_file_path, &out).unwrap();
+    let tmp_path = format!("{}.tmp", state_file_path.display());
+    std::fs::write(&tmp_path, &out).unwrap();
+    std::fs::rename(&tmp_path, &state_file_path).unwrap();
 }
 
 fn spawn_delete_wal(wal_path: &Path, thread_pool: &ThreadPool, join_set: &mut JoinSet<()>) {
@@ -474,7 +480,13 @@ pub fn finish(mut state: CacheState, cache_path: &Path, thread_pool: &ThreadPool
     // fails a compile or when a test fails. These failures cause a crash BEFORE we call this finish function so
     // we feel safe while we are in this function.
 
-    spawn_prune(cache_path, thread_pool, &mut join_set, &mut state.entries);
+    spawn_prune(
+        cache_path,
+        thread_pool,
+        &mut join_set,
+        &mut state.entries,
+        MAX_CACHE_SIZE,
+    );
 
     spawn_delete_wal(&wal_path, thread_pool, &mut join_set);
 
@@ -484,4 +496,146 @@ pub fn finish(mut state: CacheState, cache_path: &Path, thread_pool: &ThreadPool
     store_state_file(cache_path, &state.entries);
 
     join_set.join_all();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::thread_pool::{JoinSet, ThreadPool};
+    use std::path::PathBuf;
+
+    fn make_cache_dir() -> PathBuf {
+        let path = PathBuf::from(format!(
+            "/tmp/opencode/zxbs-tests/{}",
+            rand::random::<u128>()
+        ));
+        std::fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    fn cache_entry(last_used_timestamp: u64, output_size: u32) -> CacheEntry {
+        CacheEntry {
+            last_used_timestamp,
+            output_hash: 0,
+            output_size,
+        }
+    }
+
+    // Creates the cached file for an entry and returns its path.
+    fn write_cached_file(cache_path: &Path, deep_hash: Hash, size: usize) -> PathBuf {
+        let path = cache_path.join(format!("{:x}", deep_hash));
+        std::fs::write(&path, vec![0u8; size]).unwrap();
+        path
+    }
+
+    // Entries are given as (deep_hash, last_used_timestamp) and all entries get
+    // the same output size so the tests can reason about the total cache size.
+    // Returns the entries map and the path of each entry's cached file, in the
+    // same order as the input list.
+    fn setup_entries(
+        cache_path: &Path,
+        entry_size: u32,
+        entries: &[(Hash, u64)],
+    ) -> (BTreeMap<Hash, CacheEntry>, Vec<PathBuf>) {
+        let mut map = BTreeMap::new();
+        let mut files = Vec::with_capacity(entries.len());
+
+        for &(deep_hash, last_used_timestamp) in entries.iter() {
+            map.insert(deep_hash, cache_entry(last_used_timestamp, entry_size));
+            files.push(write_cached_file(
+                cache_path,
+                deep_hash,
+                usize::try_from(entry_size).unwrap(),
+            ));
+        }
+
+        (map, files)
+    }
+
+    // Runs the pruning and waits for the scheduled file deletions to finish.
+    fn prune(cache_path: &Path, entries: &mut BTreeMap<Hash, CacheEntry>, max_cache_size: u64) {
+        let thread_pool = ThreadPool::new(2);
+        let mut join_set = JoinSet::new();
+
+        spawn_prune(
+            cache_path,
+            &thread_pool,
+            &mut join_set,
+            entries,
+            max_cache_size,
+        );
+
+        join_set.join_all();
+    }
+
+    #[test]
+    fn prune_keeps_everything_when_at_or_under_the_limit() {
+        let cache_path = make_cache_dir();
+
+        // 3 entries * 10 bytes = 30 bytes total, exactly at the limit.
+        let (mut entries, files) = setup_entries(&cache_path, 10, &[(1, 100), (2, 200), (3, 300)]);
+
+        prune(&cache_path, &mut entries, 30);
+
+        assert_eq!(entries.len(), 3);
+        for file in files.iter() {
+            assert!(
+                file.exists(),
+                "{} should not have been deleted",
+                file.display()
+            );
+        }
+
+        std::fs::remove_dir_all(&cache_path).unwrap();
+    }
+
+    #[test]
+    fn prune_evicts_the_oldest_entries_first() {
+        let cache_path = make_cache_dir();
+
+        // 4 entries * 100 bytes = 400 bytes total. The newest entry is first in
+        // the list to make sure the code does not just trust insertion order.
+        let (mut entries, files) =
+            setup_entries(&cache_path, 100, &[(4, 400), (2, 200), (1, 100), (3, 300)]);
+
+        // Evicting the two oldest (200 bytes) gets us down to 200 <= 250.
+        prune(&cache_path, &mut entries, 250);
+
+        assert_eq!(entries.len(), 2);
+        let remaining_timestamps: Vec<u64> = entries
+            .values()
+            .map(|entry| entry.last_used_timestamp)
+            .collect();
+        assert_eq!(remaining_timestamps, vec![300, 400]);
+
+        // The files of the two oldest entries must be gone from disk, too.
+        assert!(
+            !files[1].exists(),
+            "second oldest entry's file was not deleted"
+        );
+        assert!(!files[2].exists(), "oldest entry's file was not deleted");
+        assert!(files[0].exists(), "newest entry's file was deleted");
+        assert!(files[3].exists(), "second newest entry's file was deleted");
+
+        std::fs::remove_dir_all(&cache_path).unwrap();
+    }
+
+    #[test]
+    fn prune_stops_as_soon_as_it_is_under_the_limit() {
+        let cache_path = make_cache_dir();
+
+        // 4 entries * 100 bytes = 400 bytes total.
+        let (mut entries, files) =
+            setup_entries(&cache_path, 100, &[(1, 100), (2, 200), (3, 300), (4, 400)]);
+
+        // Evicting only the oldest entry gets us to 300, which is not over the
+        // limit, so exactly one entry must be evicted.
+        prune(&cache_path, &mut entries, 300);
+
+        assert_eq!(entries.len(), 3);
+        assert!(!entries.contains_key(&1), "oldest entry was not evicted");
+        assert!(!files[0].exists(), "oldest entry's file was not deleted");
+
+        std::fs::remove_dir_all(&cache_path).unwrap();
+    }
 }

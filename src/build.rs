@@ -173,10 +173,6 @@ impl<'a> Build<'a> {
             }
         }
 
-        while let Some(output) = self.running.join_next() {
-            self.process_task_finished(output);
-        }
-
         assert!(self.n_tasks_finished == self.tasks.len());
     }
 }
