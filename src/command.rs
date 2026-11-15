@@ -6,6 +6,17 @@ use crate::cache::write_wal_file as write_cache_wal_file;
 use crate::hash::{Hash, hash_bytes};
 use crate::interner::Str;
 
+/// Temporary name in the same directory as `output`.
+///
+/// Compiler tools never write directly to a build output. They write to a
+/// fresh random file which is then renamed onto the output, so a tool process
+/// orphaned by a crash can never share (and keep busy) the inode we publish.
+/// Keeping the temporary file next to the output also makes the rename atomic,
+/// since it never crosses a filesystem boundary.
+fn make_tmp_name(output: &str) -> String {
+    format!("{}.{:x}.tmp", output, rand::random::<u128>())
+}
+
 pub struct CompileModule {
     pub cxx: &'static str,
     pub cxxflags: &'static [&'static str],
@@ -34,13 +45,16 @@ impl CompileModule {
     }
 
     pub fn run(&self) {
+        let tmp_object_output = make_tmp_name(self.object_output);
+        let tmp_pcm_output = make_tmp_name(self.pcm_output);
+
         let output = match std::process::Command::new(self.cxx)
             .args(self.cxxflags)
             .arg(self.input)
-            .arg(format!("-fmodule-output={}", self.pcm_output))
+            .arg(format!("-fmodule-output={}", tmp_pcm_output))
             .arg("-c")
             .arg("-o")
-            .arg(self.object_output)
+            .arg(&tmp_object_output)
             .output()
         {
             Ok(out) => out,
@@ -67,6 +81,9 @@ impl CompileModule {
         if !stdout.trim().is_empty() {
             eprintln!("STDOUT of {}:\n{}", self.print(), stdout.as_str());
         }
+
+        std::fs::rename(&tmp_object_output, self.object_output).unwrap();
+        std::fs::rename(&tmp_pcm_output, self.pcm_output).unwrap();
     }
 }
 
@@ -93,12 +110,14 @@ impl CompileToObject {
     }
 
     pub fn run(&self) {
+        let tmp_output = make_tmp_name(self.output);
+
         let output = match std::process::Command::new(self.cxx)
             .args(self.cxxflags)
             .arg(self.input)
             .arg("-c")
             .arg("-o")
-            .arg(self.output)
+            .arg(&tmp_output)
             .output()
         {
             Ok(out) => out,
@@ -125,6 +144,8 @@ impl CompileToObject {
         if !stdout.trim().is_empty() {
             eprintln!("STDOUT of {}:\n{}", self.print(), stdout.as_str());
         }
+
+        std::fs::rename(&tmp_output, self.output).unwrap();
     }
 }
 
@@ -151,9 +172,11 @@ impl ArchiveLib {
     }
 
     pub fn run(&self) {
+        let tmp_output = make_tmp_name(self.output);
+
         let output = match std::process::Command::new(self.ar)
             .arg("crs")
-            .arg(self.output)
+            .arg(&tmp_output)
             .args(self.inputs.as_slice())
             .output()
         {
@@ -181,6 +204,8 @@ impl ArchiveLib {
         if !stdout.trim().is_empty() {
             eprintln!("STDOUT of {}:\n{}", self.print(), stdout.as_str());
         }
+
+        std::fs::rename(&tmp_output, self.output).unwrap();
     }
 }
 
@@ -212,12 +237,11 @@ impl LinkBinary {
     }
 
     pub fn run(&self) {
-        // @ is not allowed in regular names so this won't clash with anything.
-        let tmp_path = format!("{}.@TMP", self.output);
+        let tmp_output = make_tmp_name(self.output);
         let output = match std::process::Command::new(self.cxx)
             .args(self.ldflags)
             .arg("-o")
-            .arg(&tmp_path)
+            .arg(&tmp_output)
             .arg(self.object)
             .args(self.deps)
             .output()
@@ -247,7 +271,7 @@ impl LinkBinary {
             eprintln!("STDOUT of {}:\n{}", self.print(), stdout.as_str());
         }
 
-        std::fs::rename(&tmp_path, self.output).unwrap();
+        std::fs::rename(&tmp_output, self.output).unwrap();
     }
 }
 
