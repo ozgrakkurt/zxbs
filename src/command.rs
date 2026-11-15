@@ -212,10 +212,12 @@ impl LinkBinary {
     }
 
     pub fn run(&self) {
+        // @ is not allowed in regular names so this won't clash with anything.
+        let tmp_path = format!("{}.@TMP", self.output);
         let output = match std::process::Command::new(self.cxx)
             .args(self.ldflags)
             .arg("-o")
-            .arg(self.output)
+            .arg(&tmp_path)
             .arg(self.object)
             .args(self.deps)
             .output()
@@ -244,6 +246,8 @@ impl LinkBinary {
         if !stdout.trim().is_empty() {
             eprintln!("STDOUT of {}:\n{}", self.print(), stdout.as_str());
         }
+
+        std::fs::rename(&tmp_path, self.output).unwrap();
     }
 }
 
