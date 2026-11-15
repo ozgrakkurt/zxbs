@@ -447,9 +447,12 @@ impl CacheLoad {
         let data = std::fs::read(&cache_path).unwrap();
         let hash = hash_bytes(&data);
         assert!(hash == self.expected_hash);
+
         // it is crucial to use copy so the file keeps same permissions.
         // we need it to be executable if it is an executable file.
-        std::fs::copy(&cache_path, self.output_path).unwrap();
+        let tmp_path = format!("{}.tmp", self.output_path);
+        std::fs::copy(&cache_path, &tmp_path).unwrap();
+        std::fs::rename(&tmp_path, self.output_path).unwrap();
     }
 }
 
