@@ -26,10 +26,10 @@ struct CacheEntry {
     output_size: u32,
 }
 
-pub struct WalEntry {
-    pub deep_hash: Hash,
-    pub output_hash: Hash,
-    pub output_size: u32,
+struct WalEntry {
+    deep_hash: Hash,
+    output_hash: Hash,
+    output_size: u32,
 }
 
 pub struct CacheState {
@@ -95,9 +95,6 @@ const STATE_FILE_MAGIC: u64 = 0x167045aafea85f3du64;
 // Finding a problem in the loaded state file means we will hard error.
 //
 // State file is read at program start and written at program end.
-//
-// We will merge new_entries in the state with existing ones, do pruning based on total size and
-// delete the wal files when storing the state.
 
 fn serialize_state_file(entries: &BTreeMap<Hash, CacheEntry>, out: &mut Vec<u8>) {
     let start_offset = out.len();
@@ -124,7 +121,7 @@ fn deserialize_state_file(content: &[u8]) -> BTreeMap<Hash, CacheEntry> {
 
     let magic = read_bytes::<u64>(content, &mut offset).unwrap();
 
-    assert!(magic == WAL_FILE_MAGIC);
+    assert!(magic == STATE_FILE_MAGIC);
 
     let num_entries = read_bytes::<u32>(content, &mut offset).unwrap();
 
@@ -174,7 +171,7 @@ fn deserialize_state_file(content: &[u8]) -> BTreeMap<Hash, CacheEntry> {
 //
 // We will delete all wal files after we finish recovery step in cache loading.
 
-pub fn serialize_wal_file(entry: &WalEntry, out: &mut Vec<u8>) {
+fn serialize_wal_file(entry: &WalEntry, out: &mut Vec<u8>) {
     let start_offset = out.len();
 
     out.extend_from_slice(&WAL_FILE_MAGIC.to_le_bytes());
@@ -185,6 +182,22 @@ pub fn serialize_wal_file(entry: &WalEntry, out: &mut Vec<u8>) {
 
     let checksum = hash_bytes(&out.as_slice()[start_offset..]);
     out.extend_from_slice(&checksum.to_le_bytes());
+}
+
+pub fn write_wal_file(cache_path: &Path, deep_hash: Hash, output_hash: Hash, output_size: u32) {
+    let mut out = Vec::new();
+    serialize_wal_file(
+        &WalEntry {
+            deep_hash,
+            output_hash,
+            output_size,
+        },
+        &mut out,
+    );
+
+    let out_path = cache_path.join("wal").join(format!("{:x}", deep_hash));
+
+    std::fs::write(&out_path, out.as_slice()).unwrap();
 }
 
 fn deserialize_wal_file(content: &[u8]) -> Result<WalEntry, ()> {

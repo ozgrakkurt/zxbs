@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::cache::CacheState;
+use crate::cache::write_wal_file as write_cache_wal_file;
 use crate::common::check_name;
 use crate::config::{Config, Subcommand};
 use crate::hash::{Hash, HashMap, HashSet, hash_bytes, hash_ordered, mix_hashes};
@@ -972,6 +973,12 @@ pub fn scan(
             scan_deps_join_set.spawn(thread_pool, move || {
                 let raw = run_scan_deps(config, Path::new(path));
                 std::fs::write(&cache_path, &raw).unwrap();
+
+                let output_hash = hash_bytes(&raw);
+                let output_size = u32::try_from(raw.len()).unwrap();
+
+                write_cache_wal_file(config.cache_path, scan_deps_hash, output_hash, output_size);
+
                 let deps = parse_p1689(&raw);
 
                 ScanResult {

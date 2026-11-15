@@ -1,7 +1,9 @@
 use std::collections::HashSet;
 use std::io::ErrorKind as IoErrorKind;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 
+use crate::cache::write_wal_file as write_cache_wal_file;
 use crate::hash::{Hash, hash_bytes};
 use crate::interner::Str;
 
@@ -446,7 +448,9 @@ impl CacheLoad {
         let data = std::fs::read(&cache_path).unwrap();
         let hash = hash_bytes(&data);
         assert!(hash == self.expected_hash);
-        std::fs::write(self.output_path, &data).unwrap();
+        // it is crucial to use copy so the file keeps same permissions.
+        // we need it to be executable if it is an executable file.
+        std::fs::copy(&cache_path, self.output_path).unwrap();
     }
 }
 
@@ -477,7 +481,7 @@ impl CacheStore {
 
     pub fn run(&self) {
         let data = std::fs::read(self.file_path).unwrap();
-        let expected_hash = hash_bytes(&data);
+        let output_hash = hash_bytes(&data);
 
         let cache_path = format!("{}/{:x}", self.cache_files_path, self.deep_hash);
         // check if the file we are intending to store is already there.
@@ -486,7 +490,7 @@ impl CacheStore {
         match std::fs::read(&cache_path) {
             Ok(data) => {
                 let hash = hash_bytes(&data);
-                assert!(hash == expected_hash);
+                assert!(hash == output_hash);
                 return;
             }
             Err(e) => {
@@ -504,7 +508,18 @@ impl CacheStore {
         // it is ok if our write gets interrupted because of program close because the existence of the file won't be
         // registered until the build finishes and we are sure there won't be any failures.
 
-        std::fs::write(&cache_path, &data).unwrap();
+        // it is crucial to use copy so the file keeps same permissions.
+        // we need it to be executable if it is an executable file.
+        std::fs::copy(self.file_path, &cache_path).unwrap();
+
+        let output_size: u32 = u32::try_from(data.len()).unwrap();
+
+        write_cache_wal_file(
+            Path::new(self.cache_files_path),
+            self.deep_hash,
+            output_hash,
+            output_size,
+        );
     }
 }
 
