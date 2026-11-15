@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+use rand::SeedableRng as _;
 use rand::seq::SliceRandom;
 use zxbs::build::{self, Task};
 use zxbs::command::{self, Command};
@@ -61,7 +62,10 @@ fn simple_run() {
         make_task(&mut interner, finished.clone(), vec![three], vec![four]),
     ];
 
-    let mut rng = rand::rng();
+    // Shuffle the tasks deterministically so a failure of this test is
+    // reproducible. The build system has to come up with a correct schedule
+    // no matter what order the tasks are given in.
+    let mut rng = rand::rngs::StdRng::seed_from_u64(0);
     tasks.shuffle(&mut rng);
 
     build::Build::new(None, &mut interner, tasks, Instant::now(), &thread_pool).build();

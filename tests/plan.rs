@@ -14,7 +14,7 @@ use zxbs::thread_pool::ThreadPool;
 use zxbs::timestamp::timestamp;
 
 mod make_folders;
-use make_folders::{make_baselib, make_iolib, make_myapp};
+use make_folders::{make_baselib, make_chain, make_diamond, make_iolib, make_myapp, make_util_app};
 
 // The source tree used by the plan tests contains 3 entries. The tasks
 // emitted for each entry break down as:
@@ -846,6 +846,156 @@ fn test_simple() {
     std::fs::remove_dir_all(&folder).unwrap();
 }
 
+// Check the complete task list of a tree: the totals against the expected
+// numbers and every entry's tasks in detail with `check_entry_tasks`.
+//
+// `expected_entries` has one (entry name, expected number of tasks, entry
+// names of the libraries in link order) tuple per entry of the tree.
+fn check_tree(
+    folder: &str,
+    make_tree: fn(&Path),
+    expected_entries: &[(&str, usize, &[&str])],
+    expected_total_tasks: usize,
+    expected_total_stores: usize,
+    thread_pool: &ThreadPool,
+) {
+    let cfg = make_config(folder);
+    make_tree(cfg.src_path);
+
+    let ts = timestamp();
+    let mut cache_state = cache::load(cfg.cache_path, thread_pool, ts);
+
+    let mut interner = Interner::new();
+
+    let info = scan::scan(cfg, &mut interner, thread_pool, 0, &mut cache_state, ts);
+
+    let tasks = plan::plan(
+        cfg,
+        &Subcommand::TestAll,
+        &mut interner,
+        &info,
+        &mut cache_state,
+        0,
+        ts,
+    );
+
+    assert_eq!(info.name.len(), expected_entries.len());
+    assert_eq!(tasks.len(), expected_total_tasks);
+
+    let build_path = cfg.build_path.to_str().unwrap();
+    let src_path = cfg.src_path.to_str().unwrap();
+    let cache_files_path = cfg.cache_path.to_str().unwrap();
+
+    let mut store_hashes: Vec<Hash> = Vec::new();
+
+    for eidx in 0..info.name.len() {
+        let entry_name = interner.get(info.name[eidx]);
+
+        let (_, expected_num_tasks, lib_entry_names) = expected_entries
+            .iter()
+            .find(|(name, _, _)| *name == entry_name)
+            .unwrap();
+
+        let entry_tasks: Vec<&Task> = tasks.iter().filter(|t| t.entry_index == eidx).collect();
+        assert_eq!(entry_tasks.len(), *expected_num_tasks);
+
+        for task in entry_tasks.iter() {
+            assert_eq!(interner.get(task.entry_name), entry_name);
+        }
+
+        // The library list used for linking: the entry itself first, then
+        // the entries it depends on so the linker sees them in the right
+        // order.
+        let lib_paths: Vec<String> = lib_entry_names
+            .iter()
+            .map(|&e| format!("{}/entry/{}/lib/lib{}.a", build_path, e, e))
+            .collect();
+
+        check_entry_tasks(
+            &entry_tasks,
+            &interner,
+            &info,
+            eidx,
+            build_path,
+            src_path,
+            &lib_paths,
+            cache_files_path,
+            &mut store_hashes,
+        );
+    }
+
+    // Every artifact that is stored to the cache has its own distinct deep
+    // hash.
+    assert_eq!(store_hashes.len(), expected_total_stores);
+    let mut seen = std::collections::HashSet::new();
+    for hash in store_hashes.iter() {
+        assert!(seen.insert(*hash));
+    }
+}
+
+// Plan the additional trees and check every task they produce.
+#[test]
+fn test_more_trees() {
+    let thread_pool = ThreadPool::new(8);
+
+    // diamond: 4 modules * 3 + 1 lib obj * 2 + 1 archive * 2
+    //          + 2 tests * 6 + 2 bins * 4               = 36 tasks,
+    // 20 of which are cache stores.
+    {
+        let folder = format!("/tmp/opencode/zxbs-tests/{}", rand::random::<u128>());
+        check_tree(
+            &folder,
+            make_diamond,
+            &[("diamond", 36, &["diamond"])],
+            36,
+            20,
+            &thread_pool,
+        );
+        std::fs::remove_dir_all(&folder).unwrap();
+    }
+
+    // util: 1 module * 3 + 1 lib obj * 2 + 1 archive * 2 + 1 test * 6
+    //       + 1 bin * 4                                 = 17 tasks.
+    // app:  2 modules * 3 + 0 lib objs * 2 + 1 archive * 2 + 1 test * 6
+    //       + 0 bins * 4                                = 14 tasks.
+    // 17 of the 31 tasks are cache stores.
+    {
+        let folder = format!("/tmp/opencode/zxbs-tests/{}", rand::random::<u128>());
+        check_tree(
+            &folder,
+            make_util_app,
+            &[("util", 17, &["util"]), ("app", 14, &["app", "util"])],
+            31,
+            17,
+            &thread_pool,
+        );
+        std::fs::remove_dir_all(&folder).unwrap();
+    }
+
+    // core: 1 module * 3 + 1 lib obj * 2 + 1 archive * 2 + 1 test * 6
+    //       + 0 bins * 4                                = 13 tasks.
+    // mid:  1 module * 3 + 0 lib objs * 2 + 1 archive * 2 + 1 test * 6
+    //       + 1 bin * 4                                 = 15 tasks.
+    // top:  2 modules * 3 + 0 lib objs * 2 + 1 archive * 2 + 1 test * 6
+    //       + 1 bin * 4                                 = 18 tasks.
+    // 25 of the 46 tasks are cache stores.
+    {
+        let folder = format!("/tmp/opencode/zxbs-tests/{}", rand::random::<u128>());
+        check_tree(
+            &folder,
+            make_chain,
+            &[
+                ("core", 13, &["core"]),
+                ("mid", 15, &["mid", "core"]),
+                ("top", 18, &["top", "mid", "core"]),
+            ],
+            46,
+            25,
+            &thread_pool,
+        );
+        std::fs::remove_dir_all(&folder).unwrap();
+    }
+}
 // Write a cached file and a wal entry for it, like the build system does when
 // it stores an artifact. The content cached for the artifact is the artifact
 // path itself so the expected hash is easy to compute.

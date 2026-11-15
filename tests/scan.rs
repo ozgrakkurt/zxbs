@@ -3,13 +3,13 @@
 use zxbs::cache;
 use zxbs::config::{Config, Subcommand};
 use zxbs::hash::{HashMap, hash_ordered};
-use zxbs::interner::Interner;
+use zxbs::interner::{Interner, Str};
 use zxbs::scan::{BuildInfo, scan};
 use zxbs::thread_pool::ThreadPool;
 use zxbs::timestamp::timestamp;
 
 mod make_folders;
-use make_folders::{make_baselib, make_iolib, make_myapp};
+use make_folders::{make_baselib, make_chain, make_diamond, make_iolib, make_myapp, make_util_app};
 
 #[test]
 fn test_empty() {
@@ -214,6 +214,64 @@ fn check_myapp_info(info: &BuildInfo, interner: &mut Interner) {
     }
 }
 
+// Find the index of an entry by name and check the name => index map agrees
+// with it.
+fn entry_index(info: &BuildInfo, interner: &mut Interner, name: &str) -> usize {
+    let name_idx = interner.insert(name);
+    let i = info.name.iter().position(|&n| n == name_idx).unwrap();
+    assert_eq!(
+        usize::try_from(*info.map.get(&name_idx).unwrap()).unwrap(),
+        i,
+    );
+    i
+}
+
+// Check the module parts of an entry and its module dependency matrix. The
+// expected matrix is given as (part, submodule dependency) pairs.
+fn check_modules(
+    info: &BuildInfo,
+    interner: &mut Interner,
+    eidx: usize,
+    expected_parts: &[&'static str],
+    expected_module_deps: &[(&'static str, &'static str)],
+) {
+    let n = expected_parts.len();
+    assert_eq!(info.module[eidx].len(), n);
+
+    let mut part_idx_map: HashMap<&'static str, usize> = HashMap::default();
+    for &name in expected_parts {
+        let n_i = interner.insert(name);
+        let pos = info.module[eidx].iter().position(|&x| x == n_i).unwrap();
+        part_idx_map.insert(name, pos);
+    }
+
+    let mut mod_dep_matrix = vec![false; n * n];
+
+    for &(part, dep) in expected_module_deps {
+        let idx = *part_idx_map.get(part).unwrap();
+        let dep_idx = *part_idx_map.get(dep).unwrap();
+        mod_dep_matrix[idx * n + dep_idx] = true;
+    }
+
+    assert_eq!(&mod_dep_matrix, &info.mod_dep_matrix[eidx]);
+}
+
+// Check the list of parts in one of the lib/bin/test folders of an entry.
+fn check_part_list(list: &[Str], interner: &mut Interner, expected: &[&'static str]) {
+    assert_eq!(list.len(), expected.len());
+    for &name in expected {
+        assert!(list.contains(&interner.insert(name)));
+    }
+}
+
+// Check the entry dependencies of an entry.
+fn check_deps(info: &BuildInfo, interner: &mut Interner, eidx: usize, expected: &[&'static str]) {
+    assert_eq!(info.deps[eidx].len(), expected.len());
+    for &name in expected {
+        assert!(info.deps[eidx].contains(&interner.insert(name)));
+    }
+}
+
 // Every source file of an entry must have a basic hash recorded for it and
 // the hash must just be the hash of the path and the file contents.
 fn check_basic_hash(info: &BuildInfo, interner: &Interner, path: String) {
@@ -228,7 +286,12 @@ fn check_basic_hash(info: &BuildInfo, interner: &Interner, path: String) {
     assert_eq!(found, 1, "expected exactly one basic hash for `{}`", path);
 }
 
-fn check_all_basic_hashes(info: &BuildInfo, interner: &Interner, src_path: &str) {
+fn check_all_basic_hashes(
+    info: &BuildInfo,
+    interner: &Interner,
+    src_path: &str,
+    expected_count: usize,
+) {
     let mut num_checked = 0;
 
     for i in 0..info.name.len() {
@@ -258,8 +321,8 @@ fn check_all_basic_hashes(info: &BuildInfo, interner: &Interner, src_path: &str)
         }
     }
 
-    assert_eq!(num_checked, 22);
-    assert_eq!(info.basic_hash.len(), 22);
+    assert_eq!(num_checked, expected_count);
+    assert_eq!(info.basic_hash.len(), expected_count);
 }
 
 #[test]
@@ -301,7 +364,7 @@ fn test_simple() {
     check_iolib_info(&info, &mut interner);
     check_myapp_info(&info, &mut interner);
 
-    check_all_basic_hashes(&info, &interner, cfg.src_path.to_str().unwrap());
+    check_all_basic_hashes(&info, &interner, cfg.src_path.to_str().unwrap(), 22);
 
     // check_subcommand accepts every subcommand that refers to parts that
     // actually exist.
@@ -324,4 +387,182 @@ fn test_simple() {
     info.check_subcommand(&mut interner, &Subcommand::Build);
 
     std::fs::remove_dir_all(&folder).unwrap();
+}
+
+// Scan the additional trees and check the build info derived from them.
+#[test]
+fn test_more_trees() {
+    // A single entry with a diamond shaped module dependency graph, two bins
+    // and two tests.
+    {
+        let folder = format!("/tmp/opencode/zxbs-tests/{}", rand::random::<u128>());
+        let build_path = format!("{}/build", folder);
+        let src_path = format!("{}/src", folder);
+        std::fs::create_dir_all(&src_path).unwrap();
+
+        make_diamond(std::path::Path::new(&src_path));
+
+        let mut flags = HashMap::default();
+        flags.insert("--build-dir".to_owned(), Some(build_path.clone()));
+        flags.insert("--src-dir".to_owned(), Some(src_path.clone()));
+        let cfg: &'static Config = Box::leak(Box::new(Config::parse_config(flags)));
+
+        let thread_pool = ThreadPool::new(4);
+
+        let ts = timestamp();
+        let mut cache_state = cache::load(cfg.cache_path, &thread_pool, ts);
+
+        let mut interner = Interner::new();
+
+        let info = scan(cfg, &mut interner, &thread_pool, 0, &mut cache_state, ts);
+
+        assert_eq!(info.map.len(), 1);
+        let i = entry_index(&info, &mut interner, "diamond");
+        check_modules(
+            &info,
+            &mut interner,
+            i,
+            &["diamond", "left", "right", "common"],
+            &[
+                ("diamond", "left"),
+                ("diamond", "right"),
+                ("diamond", "common"),
+                ("left", "common"),
+                ("right", "common"),
+            ],
+        );
+        check_part_list(&info.lib[i], &mut interner, &["helper"]);
+        check_part_list(&info.bin[i], &mut interner, &["tool_a", "tool_b"]);
+        check_part_list(&info.test[i], &mut interner, &["left", "right"]);
+        check_deps(&info, &mut interner, i, &[]);
+        check_all_basic_hashes(&info, &interner, cfg.src_path.to_str().unwrap(), 9);
+
+        info.check_subcommand(
+            &mut interner,
+            &Subcommand::Test {
+                entry_name: "diamond".to_owned(),
+                test_name: "left".to_owned(),
+            },
+        );
+        info.check_subcommand(
+            &mut interner,
+            &Subcommand::RunBinary {
+                entry_name: "diamond".to_owned(),
+                bin_name: "tool_b".to_owned(),
+                args: &[],
+            },
+        );
+
+        std::fs::remove_dir_all(&folder).unwrap();
+    }
+
+    // Two entries where `app` depends on `util` and imports its root module
+    // from both the root module and a submodule. `app` has no lib or bin
+    // parts.
+    {
+        let folder = format!("/tmp/opencode/zxbs-tests/{}", rand::random::<u128>());
+        let build_path = format!("{}/build", folder);
+        let src_path = format!("{}/src", folder);
+        std::fs::create_dir_all(&src_path).unwrap();
+
+        make_util_app(std::path::Path::new(&src_path));
+
+        let mut flags = HashMap::default();
+        flags.insert("--build-dir".to_owned(), Some(build_path.clone()));
+        flags.insert("--src-dir".to_owned(), Some(src_path.clone()));
+        let cfg: &'static Config = Box::leak(Box::new(Config::parse_config(flags)));
+
+        let thread_pool = ThreadPool::new(4);
+
+        let ts = timestamp();
+        let mut cache_state = cache::load(cfg.cache_path, &thread_pool, ts);
+
+        let mut interner = Interner::new();
+
+        let info = scan(cfg, &mut interner, &thread_pool, 0, &mut cache_state, ts);
+
+        assert_eq!(info.map.len(), 2);
+
+        let util = entry_index(&info, &mut interner, "util");
+        check_modules(&info, &mut interner, util, &["util"], &[]);
+        check_part_list(&info.lib[util], &mut interner, &["string"]);
+        check_part_list(&info.bin[util], &mut interner, &["inspect"]);
+        check_part_list(&info.test[util], &mut interner, &["string"]);
+        check_deps(&info, &mut interner, util, &[]);
+
+        let app = entry_index(&info, &mut interner, "app");
+        check_modules(
+            &info,
+            &mut interner,
+            app,
+            &["app", "core"],
+            &[("app", "core")],
+        );
+        check_part_list(&info.lib[app], &mut interner, &[]);
+        check_part_list(&info.bin[app], &mut interner, &[]);
+        check_part_list(&info.test[app], &mut interner, &["main"]);
+        check_deps(&info, &mut interner, app, &["util"]);
+
+        check_all_basic_hashes(&info, &interner, cfg.src_path.to_str().unwrap(), 7);
+
+        std::fs::remove_dir_all(&folder).unwrap();
+    }
+
+    // A linear chain of three entries: `top` depends on `mid` which depends
+    // on `core`.
+    {
+        let folder = format!("/tmp/opencode/zxbs-tests/{}", rand::random::<u128>());
+        let build_path = format!("{}/build", folder);
+        let src_path = format!("{}/src", folder);
+        std::fs::create_dir_all(&src_path).unwrap();
+
+        make_chain(std::path::Path::new(&src_path));
+
+        let mut flags = HashMap::default();
+        flags.insert("--build-dir".to_owned(), Some(build_path.clone()));
+        flags.insert("--src-dir".to_owned(), Some(src_path.clone()));
+        let cfg: &'static Config = Box::leak(Box::new(Config::parse_config(flags)));
+
+        let thread_pool = ThreadPool::new(4);
+
+        let ts = timestamp();
+        let mut cache_state = cache::load(cfg.cache_path, &thread_pool, ts);
+
+        let mut interner = Interner::new();
+
+        let info = scan(cfg, &mut interner, &thread_pool, 0, &mut cache_state, ts);
+
+        assert_eq!(info.map.len(), 3);
+
+        let core = entry_index(&info, &mut interner, "core");
+        check_modules(&info, &mut interner, core, &["core"], &[]);
+        check_part_list(&info.lib[core], &mut interner, &["base_utils"]);
+        check_part_list(&info.bin[core], &mut interner, &[]);
+        check_part_list(&info.test[core], &mut interner, &["core"]);
+        check_deps(&info, &mut interner, core, &[]);
+
+        let mid = entry_index(&info, &mut interner, "mid");
+        check_modules(&info, &mut interner, mid, &["mid"], &[]);
+        check_part_list(&info.lib[mid], &mut interner, &[]);
+        check_part_list(&info.bin[mid], &mut interner, &["run_42"]);
+        check_part_list(&info.test[mid], &mut interner, &["mid"]);
+        check_deps(&info, &mut interner, mid, &["core"]);
+
+        let top = entry_index(&info, &mut interner, "top");
+        check_modules(
+            &info,
+            &mut interner,
+            top,
+            &["top", "extra"],
+            &[("top", "extra")],
+        );
+        check_part_list(&info.lib[top], &mut interner, &[]);
+        check_part_list(&info.bin[top], &mut interner, &["top_main"]);
+        check_part_list(&info.test[top], &mut interner, &["top"]);
+        check_deps(&info, &mut interner, top, &["mid"]);
+
+        check_all_basic_hashes(&info, &interner, cfg.src_path.to_str().unwrap(), 10);
+
+        std::fs::remove_dir_all(&folder).unwrap();
+    }
 }
