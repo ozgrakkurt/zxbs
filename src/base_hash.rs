@@ -4,7 +4,7 @@ use crate::config::Config;
 use crate::hash::{Hash, UnorderedHashCombiner, hash_bytes, hash_ordered};
 use crate::thread_pool::{JoinSet, ThreadPool};
 
-// YES, we have to do this multithreaded because running `clang --version` takes 8ms on my computer XDXDXD.
+// YES, we want to do this multithreaded because running `clang --version` takes 8ms.
 fn spawn_read_version(
     bin_name: &'static str,
     thread_pool: &ThreadPool,
