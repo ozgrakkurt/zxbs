@@ -324,8 +324,150 @@ pub fn load(cache_path: &Path, thread_pool: &ThreadPool, timestamp: u64) -> Cach
     state
 }
 
+// New entries only record their deep hashes because their outputs are not
+// produced yet when they are inserted during the build. The outputs are
+// stored as cached files in <cache_path>/<deep_hash> by the build system, so
+// we read them back here, calculate their output hashes and sizes and merge
+// them into the existing entries.
+//
+// A new entry without a cached file means its output was never produced (or
+// never cached) in this run of the build system, so we just drop it.
+fn merge_new_entries(cache_path: &Path, timestamp: u64, state: &mut CacheState) {
+    for &deep_hash in state.new_entries.iter() {
+        let cached_file_path = cache_path.join(format!("{:x}", deep_hash));
+
+        let content = match std::fs::read(&cached_file_path) {
+            Ok(v) => v,
+            Err(e) => {
+                assert!(e.kind() == IoErrorKind::NotFound);
+                continue;
+            }
+        };
+
+        let output_hash = hash_bytes(&content);
+        let output_size = u32::try_from(content.len()).unwrap();
+
+        assert!(
+            state
+                .entries
+                .insert(
+                    deep_hash,
+                    CacheEntry {
+                        last_used_timestamp: timestamp,
+                        output_hash,
+                        output_size,
+                    }
+                )
+                .is_none()
+        );
+    }
+}
+
+// This won't hopefully be reached easily in a sane project.
+//
+// But we still don't want the user to du their project directory and see that it grew to 10GB.
+//
+// Just keep it at a generous limit that won't shock the user when they check the size.
+//
+// Another consideration for this might be the number of files since having too many files might
+// make the cache system slower, this should be explored if we find the cache operations to take too much time.
+const MAX_CACHE_SIZE: u64 = 1 << 30;
+
+// Delete the least recently used entries, along with their cached files,
+// until the total size of the cached outputs drops back under MAX_CACHE_SIZE.
+fn spawn_prune(
+    cache_path: &Path,
+    thread_pool: &ThreadPool,
+    join_set: &mut JoinSet<()>,
+    entries: &mut BTreeMap<Hash, CacheEntry>,
+) {
+    let total_size: u64 = entries
+        .values()
+        .map(|entry| u64::from(entry.output_size))
+        .sum();
+
+    if total_size <= MAX_CACHE_SIZE {
+        return;
+    }
+
+    // The entries map is ordered by deep hash, not by last used timestamp, so
+    // we collect and sort them here to evict the least recently used ones
+    // first. The deep hash breaks the ties so the order is deterministic.
+    let mut sorted: Vec<(u64, Hash)> = entries
+        .iter()
+        .map(|(deep_hash, entry)| (entry.last_used_timestamp, *deep_hash))
+        .collect();
+
+    sorted.sort_unstable_by(|a, b| b.0.cmp(a.0));
+
+    let mut size = total_size;
+
+    while size > MAX_CACHE_SIZE {
+        let (_, deep_hash) = sorted.pop().unwrap();
+
+        let entry = entries.remove(&deep_hash).unwrap();
+
+        size -= entry.output_size;
+
+        let cached_file_path = cache_path.join(format!("{:x}", deep_hash));
+        join_set.spawn(thread_pool, move || {
+            std::fs::remove_file(&cached_file_path).unwrap();
+        });
+    }
+}
+
+fn store_state_file(cache_path: &Path, entries: &BTreeMap<Hash, CacheEntry>) {
+    let state_file_path = cache_path.join("cache_state");
+
+    let mut out = Vec::new();
+    serialize_state_file(entries, &mut out);
+
+    std::fs::write(&state_file_path, &out).unwrap();
+}
+
+fn spawn_delete_wal(wal_path: &Path, thread_pool: &ThreadPool, join_set: &mut JoinSet<()>) {
+    let dir = match std::fs::read_dir(wal_path) {
+        Ok(d) => d,
+        Err(e) => {
+            assert!(e.kind() == IoErrorKind::NotFound);
+            return;
+        }
+    };
+
+    for entry in dir {
+        let entry = entry.unwrap();
+        let path = entry.path();
+
+        join_set.spawn(thread_pool, move || {
+            std::fs::remove_file(entry.path()).unwrap();
+        });
+    }
+}
+
 // - Prune the state if size is too big.
 // - Merge new entries with existing ones. Need to collect more info per new entry to do this.
 // - Store state file.
 // - Delete all wal files.
-pub fn finish(state: CacheState, cache_path: &Path, timestamp: u64) {}
+pub fn finish(mut state: CacheState, cache_path: &Path, timestamp: u64) {
+    let wal_path = cache_path.join("wal");
+
+    let mut join_set: JoinSet<()> = JoinSet::new();
+
+    // Doing all this spawns in parallel will likely corrupt everything in a case where we crash.
+    // We don't really care about this much since this should be very rare.
+    //
+    // The main goal of the WAL mechanism is to not lose the progress when one of the build artifacts
+    // fails a compile or when a test fails. These failures cause a crash BEFORE we call this finish function so
+    // we feel safe while we are in this function.
+
+    spawn_prune(cache_path, thread_pool, &mut join_set, &mut state.entries);
+
+    spawn_delete_wal(&wal_path, thread_pool, &mut join_set);
+
+    // merge AFTER pruning so we never prune the new entries.
+    merge_new_entries(cache_path, timestamp, &mut state);
+
+    store_state_file(cache_path, &state.entries);
+
+    join_set.join_all();
+}
