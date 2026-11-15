@@ -1,5 +1,4 @@
 use std::collections::HashSet;
-use std::io::ErrorKind as IoErrorKind;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -460,15 +459,6 @@ pub struct CacheStore {
     pub deep_hash: Hash,
 }
 
-// CACHE STORES MIGHT BE INTERRUPTED BECAUSE OTHER TASKS FAIL WHILE
-// CACHE STORE IS RUNNING.
-//
-// CacheStore SHOULD ALWAYS CHECK if the target file is already there and do nothing
-// if it is.
-//
-// Doing this should cover (compilation etc.) failure resistence. Don't care about actual crash resistence.
-//
-// We need to do this since any failure causes program abort.
 impl CacheStore {
     pub fn print(&self) -> String {
         let mut out = String::with_capacity(1024);
@@ -484,33 +474,12 @@ impl CacheStore {
         let output_hash = hash_bytes(&data);
 
         let cache_path = format!("{}/{:x}", self.cache_files_path, self.deep_hash);
-        // check if the file we are intending to store is already there.
-        // we need to do this instead of "just overwriting" so we don't mess up the file in case
-        // of interruption.
-        match std::fs::read(&cache_path) {
-            Ok(data) => {
-                let hash = hash_bytes(&data);
-                assert!(hash == output_hash);
-                return;
-            }
-            Err(e) => {
-                if e.kind() != IoErrorKind::NotFound {
-                    panic!(
-                        "Unexpected err while checking cached file: {}: {:?}",
-                        cache_path,
-                        e.kind()
-                    );
-                }
-            }
-        };
-
-        // at this point we know there is no file at the destination path so we can freely write what we want.
-        // it is ok if our write gets interrupted because of program close because the existence of the file won't be
-        // registered until the build finishes and we are sure there won't be any failures.
 
         // it is crucial to use copy so the file keeps same permissions.
         // we need it to be executable if it is an executable file.
-        std::fs::copy(self.file_path, &cache_path).unwrap();
+        let tmp_path = format!("{}.tmp", cache_path);
+        std::fs::copy(self.file_path, &tmp_path).unwrap();
+        std::fs::rename(&tmp_path, &cache_path).unwrap();
 
         let output_size: u32 = u32::try_from(data.len()).unwrap();
 

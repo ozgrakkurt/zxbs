@@ -309,7 +309,6 @@ fn load_wal(
 // - Load the state file.
 // - Load and validate wal files.
 // - Merge state_file with state coming from wal files.
-// - Delete all wal files.
 pub fn load(cache_path: &Path, thread_pool: &ThreadPool, timestamp: u64) -> CacheState {
     let wal_path = cache_path.join("wal");
 
@@ -344,8 +343,7 @@ pub fn load(cache_path: &Path, thread_pool: &ThreadPool, timestamp: u64) -> Cach
 // we read them back here, calculate their output hashes and sizes and merge
 // them into the existing entries.
 //
-// A new entry without a cached file means its output was never produced (or
-// never cached) in this run of the build system, so we just drop it.
+// A new entry without a cached file means there is something seriously wrong so we hard error in that case.
 fn merge_new_entries(
     cache_path: &Path,
     thread_pool: &ThreadPool,

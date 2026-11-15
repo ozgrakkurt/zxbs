@@ -972,9 +972,13 @@ pub fn scan(
 
             scan_deps_join_set.spawn(thread_pool, move || {
                 let raw = run_scan_deps(config, Path::new(path));
-                std::fs::write(&cache_path, &raw).unwrap();
 
                 let output_hash = hash_bytes(&raw);
+
+                let tmp_path = format!("{}.tmp", cache_path.display());
+                std::fs::write(&tmp_path, &raw).unwrap();
+                std::fs::rename(&tmp_path, &cache_path).unwrap();
+
                 let output_size = u32::try_from(raw.len()).unwrap();
 
                 write_cache_wal_file(config.cache_path, scan_deps_hash, output_hash, output_size);
