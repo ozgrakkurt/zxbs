@@ -395,7 +395,7 @@ impl Format {
     }
 }
 
-// Dummy command to be used when running tests.
+// Dummy command to be used when running tests and fuzzing.
 //
 // Just checks that everything is consistent and the build isn't running
 // in the wrong order.

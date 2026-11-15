@@ -1,31 +1,36 @@
 #![allow(clippy::single_element_loop)]
 
-use std::path::Path;
-
-use zxbs::config::Config;
-use zxbs::hash::HashMap;
+use zxbs::cache;
+use zxbs::config::{Config, Subcommand};
+use zxbs::hash::{HashMap, hash_ordered};
 use zxbs::interner::Interner;
 use zxbs::scan::{BuildInfo, scan};
+use zxbs::thread_pool::ThreadPool;
+use zxbs::timestamp::timestamp;
 
 mod make_folders;
 use make_folders::{make_baselib, make_iolib, make_myapp};
 
-#[tokio::test]
-async fn test_empty() {
-    let folder_name: u128 = rand::random();
-    let build_path = format!("/tmp/{}/build", folder_name);
-    let src_path = format!("/tmp/{}/src", folder_name);
-    std::fs::create_dir_all(&build_path).unwrap();
+#[test]
+fn test_empty() {
+    let folder = format!("/tmp/opencode/zxbs-tests/{}", rand::random::<u128>());
+    let build_path = format!("{}/build", folder);
+    let src_path = format!("{}/src", folder);
     std::fs::create_dir_all(&src_path).unwrap();
 
     let mut flags = HashMap::default();
-    flags.insert("--build-dir".to_owned(), build_path.clone());
-    flags.insert("--src-dir".to_owned(), src_path.clone());
+    flags.insert("--build-dir".to_owned(), Some(build_path.clone()));
+    flags.insert("--src-dir".to_owned(), Some(src_path.clone()));
     let cfg: &'static Config = Box::leak(Box::new(Config::parse_config(flags)));
+
+    let thread_pool = ThreadPool::new(4);
+
+    let ts = timestamp();
+    let mut cache_state = cache::load(cfg.cache_path, &thread_pool, ts);
 
     let mut interner = Interner::new();
 
-    let info = scan(cfg, &mut interner).await;
+    let info = scan(cfg, &mut interner, &thread_pool, 0, &mut cache_state, ts);
 
     assert!(info.map.is_empty());
     assert!(info.name.is_empty());
@@ -35,6 +40,9 @@ async fn test_empty() {
     assert!(info.bin.is_empty());
     assert!(info.test.is_empty());
     assert!(info.deps.is_empty());
+    assert!(info.basic_hash.is_empty());
+
+    std::fs::remove_dir_all(&folder).unwrap();
 }
 
 fn check_baselib_info(info: &BuildInfo, interner: &mut Interner) {
@@ -206,27 +214,79 @@ fn check_myapp_info(info: &BuildInfo, interner: &mut Interner) {
     }
 }
 
-#[tokio::test]
-async fn test_simple() {
-    let folder_name: u128 = rand::random();
-    let build_path = format!("/tmp/{}/build", folder_name);
-    let src_path = format!("/tmp/{}/src", folder_name);
-    tokio::fs::create_dir_all(&build_path).await.unwrap();
-    tokio::fs::create_dir_all(&src_path).await.unwrap();
+// Every source file of an entry must have a basic hash recorded for it and
+// the hash must just be the hash of the path and the file contents.
+fn check_basic_hash(info: &BuildInfo, interner: &Interner, path: String) {
+    let mut found = 0;
+    for (key, &hash) in info.basic_hash.iter() {
+        if interner.get(*key) == path {
+            let data = std::fs::read(&path).unwrap();
+            assert_eq!(hash, hash_ordered(&[path.as_bytes(), data.as_slice()]));
+            found += 1;
+        }
+    }
+    assert_eq!(found, 1, "expected exactly one basic hash for `{}`", path);
+}
+
+fn check_all_basic_hashes(info: &BuildInfo, interner: &Interner, src_path: &str) {
+    let mut num_checked = 0;
+
+    for i in 0..info.name.len() {
+        let entry_name = interner.get(info.name[i]);
+
+        for folder_and_ext in [
+            ("mod", "cppm"),
+            ("lib", "cc"),
+            ("bin", "cc"),
+            ("test", "cc"),
+        ] {
+            let (folder, ext) = folder_and_ext;
+
+            let parts: Vec<&str> = match folder {
+                "mod" => info.module[i].iter().map(|&p| interner.get(p)).collect(),
+                "lib" => info.lib[i].iter().map(|&p| interner.get(p)).collect(),
+                "bin" => info.bin[i].iter().map(|&p| interner.get(p)).collect(),
+                "test" => info.test[i].iter().map(|&p| interner.get(p)).collect(),
+                _ => unreachable!(),
+            };
+
+            for part in parts {
+                let path = format!("{}/{}/{}/{}.{}", src_path, entry_name, folder, part, ext);
+                check_basic_hash(info, interner, path);
+                num_checked += 1;
+            }
+        }
+    }
+
+    assert_eq!(num_checked, 22);
+    assert_eq!(info.basic_hash.len(), 22);
+}
+
+#[test]
+fn test_simple() {
+    let folder = format!("/tmp/opencode/zxbs-tests/{}", rand::random::<u128>());
+    let build_path = format!("{}/build", folder);
+    let src_path = format!("{}/src", folder);
+    std::fs::create_dir_all(&src_path).unwrap();
 
     // create folders/files
-    make_baselib(Path::new(&src_path)).await;
-    make_iolib(Path::new(&src_path)).await;
-    make_myapp(Path::new(&src_path)).await;
+    make_baselib(std::path::Path::new(&src_path));
+    make_iolib(std::path::Path::new(&src_path));
+    make_myapp(std::path::Path::new(&src_path));
 
     let mut flags = HashMap::default();
-    flags.insert("--build-dir".to_owned(), build_path.clone());
-    flags.insert("--src-dir".to_owned(), src_path.clone());
+    flags.insert("--build-dir".to_owned(), Some(build_path.clone()));
+    flags.insert("--src-dir".to_owned(), Some(src_path.clone()));
     let cfg: &'static Config = Box::leak(Box::new(Config::parse_config(flags)));
+
+    let thread_pool = ThreadPool::new(4);
+
+    let ts = timestamp();
+    let mut cache_state = cache::load(cfg.cache_path, &thread_pool, ts);
 
     let mut interner = Interner::new();
 
-    let info = scan(cfg, &mut interner).await;
+    let info = scan(cfg, &mut interner, &thread_pool, 0, &mut cache_state, ts);
 
     assert_eq!(info.map.len(), 3);
     assert_eq!(info.name.len(), 3);
@@ -241,7 +301,27 @@ async fn test_simple() {
     check_iolib_info(&info, &mut interner);
     check_myapp_info(&info, &mut interner);
 
-    tokio::fs::remove_dir_all(format!("/tmp/{}", folder_name))
-        .await
-        .unwrap();
+    check_all_basic_hashes(&info, &interner, cfg.src_path.to_str().unwrap());
+
+    // check_subcommand accepts every subcommand that refers to parts that
+    // actually exist.
+    info.check_subcommand(
+        &mut interner,
+        &Subcommand::Test {
+            entry_name: "base".to_owned(),
+            test_name: "memcmp".to_owned(),
+        },
+    );
+    info.check_subcommand(
+        &mut interner,
+        &Subcommand::RunBinary {
+            entry_name: "base".to_owned(),
+            bin_name: "memcpy_bench".to_owned(),
+            args: &[],
+        },
+    );
+    info.check_subcommand(&mut interner, &Subcommand::TestAll);
+    info.check_subcommand(&mut interner, &Subcommand::Build);
+
+    std::fs::remove_dir_all(&folder).unwrap();
 }

@@ -9,13 +9,16 @@ use std::collections::HashSet;
 use std::sync::OnceLock;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
+use zxbs::thread_pool::ThreadPool;
 use zxbs::{build, command, interner};
 
 use rand::SeedableRng as _;
 
 static GLOBAL_PATHS: OnceLock<(Interner, Vec<Str>)> = OnceLock::new();
+static GLOBAL_THREAD_POOL: OnceLock<ThreadPool> = OnceLock::new();
 
 const N_PATHS: usize = 4096;
+const N_POOL_THREADS: usize = 4;
 
 fn get_global_paths() -> &'static (Interner, Vec<Str>) {
     GLOBAL_PATHS.get_or_init(|| {
@@ -28,6 +31,10 @@ fn get_global_paths() -> &'static (Interner, Vec<Str>) {
 
         (interner, paths)
     })
+}
+
+fn get_global_thread_pool() -> &'static ThreadPool {
+    GLOBAL_THREAD_POOL.get_or_init(|| ThreadPool::new(N_POOL_THREADS))
 }
 
 fn make_task(
@@ -54,6 +61,8 @@ fuzz_target!(|fuzz_input: &[u8]| {
 
     let (interner, paths) = get_global_paths();
     let mut interner: Interner = interner.clone();
+
+    let thread_pool = get_global_thread_pool();
 
     let mut fuzz_input = Unstructured::new(fuzz_input);
 
@@ -107,11 +116,7 @@ fuzz_target!(|fuzz_input: &[u8]| {
 
     tasks.shuffle(&mut rng);
 
-    let build = build::Build::new(None, &mut interner, tasks, Instant::now());
-
-    let rt = tokio::runtime::Runtime::new().unwrap();
-
-    rt.block_on(build);
+    build::Build::new(None, &mut interner, tasks, Instant::now(), thread_pool).build();
 
     let finished = finished.lock().unwrap();
     for idx in paths.iter().take(path_idx) {

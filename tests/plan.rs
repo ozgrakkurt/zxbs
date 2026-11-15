@@ -1,154 +1,179 @@
 #![allow(clippy::too_many_arguments)]
 
-use build::Task;
-use command::Command;
-use interner::Interner;
-use plan::make_module_artifact_name;
-use zxbs::hash::HashMap;
-use zxbs::{build, command, config, interner, plan, scan};
+use std::path::Path;
+
+use zxbs::build::Task;
+use zxbs::cache;
+use zxbs::command::Command;
+use zxbs::config::{Config, Subcommand};
+use zxbs::hash::{Hash, HashMap, hash_bytes};
+use zxbs::interner::{Interner, Str};
+use zxbs::plan::{self, make_module_artifact_name, should_run_binary, should_run_test};
+use zxbs::scan::{self, BuildInfo};
+use zxbs::thread_pool::ThreadPool;
+use zxbs::timestamp::timestamp;
+
+mod make_folders;
+use make_folders::{make_baselib, make_iolib, make_myapp};
+
+// The source tree used by the plan tests contains 3 entries. The tasks
+// emitted for each entry break down as:
+//
+// base:  5 modules * (1 compile + 2 stores) + 2 lib objs * 2 + 1 archive * 2
+//        + 3 tests * 6 + 1 bin * 4                          = 43
+// io:    5 modules * 3 + 0 lib objs * 2 + 1 archive * 2
+//        + 3 tests * 6 + 1 bin * 4                          = 39
+// myapp: 1 module * 3 + 0 lib objs * 2 + 1 archive * 2
+//        + 0 tests * 6 + 1 bin * 4                          = 9
+//
+// for a total of 91 tasks. 51 distinct artifacts get stored to the cache
+// (91 - 40 non-store commands).
+const NUM_TASKS: usize = 91;
+const NUM_STORED_ARTIFACTS: usize = 51;
+
+fn make_config(folder: &str) -> &'static Config {
+    let build_dir = format!("{}/build", folder);
+    let src_dir = format!("{}/src", folder);
+    std::fs::create_dir_all(&src_dir).unwrap();
+
+    let mut flags = HashMap::default();
+    flags.insert("--build-dir".to_owned(), Some(build_dir));
+    flags.insert("--src-dir".to_owned(), Some(src_dir));
+    Box::leak(Box::new(Config::parse_config(flags)))
+}
+
+fn strs(interner: &Interner, list: &[Str]) -> Vec<&'static str> {
+    list.iter().map(|&s| interner.get(s)).collect()
+}
+
+fn as_strs(list: &[String]) -> Vec<&str> {
+    list.iter().map(|s| s.as_str()).collect()
+}
+
+#[test]
+fn test_should_run_test() {
+    let sc = Subcommand::TestAll;
+    assert!(should_run_test(&sc, "a", "b"));
+    assert!(!should_run_test(&Subcommand::Build, "a", "b"));
+    assert!(!should_run_test(&Subcommand::Fmt, "a", "b"));
+    assert!(!should_run_test(
+        &Subcommand::RunBinary {
+            entry_name: "a".to_owned(),
+            bin_name: "b".to_owned(),
+            args: &[],
+        },
+        "a",
+        "b",
+    ));
+
+    let sc = Subcommand::Test {
+        entry_name: "a".to_owned(),
+        test_name: "t".to_owned(),
+    };
+    assert!(should_run_test(&sc, "a", "t"));
+    assert!(!should_run_test(&sc, "a", "x"));
+    assert!(!should_run_test(&sc, "b", "t"));
+}
+
+#[test]
+fn test_should_run_binary() {
+    let sc = Subcommand::RunBinary {
+        entry_name: "a".to_owned(),
+        bin_name: "b".to_owned(),
+        args: &["--some-arg"],
+    };
+    assert_eq!(
+        should_run_binary(&sc, "a", "b").map(|v| v.to_vec()),
+        Some(vec!["--some-arg"]),
+    );
+    assert_eq!(should_run_binary(&sc, "a", "c"), None);
+    assert_eq!(should_run_binary(&sc, "c", "b"), None);
+
+    assert_eq!(should_run_binary(&Subcommand::Build, "a", "b"), None);
+    assert_eq!(should_run_binary(&Subcommand::TestAll, "a", "b"), None);
+    assert_eq!(
+        should_run_binary(
+            &Subcommand::Test {
+                entry_name: "a".to_owned(),
+                test_name: "b".to_owned(),
+            },
+            "a",
+            "b",
+        ),
+        None,
+    );
+}
 
 #[test]
 fn test_empty() {
-    let folder_name: u128 = rand::random();
-    let build_path = format!("/tmp/{}/build", folder_name);
-    let src_path = format!("/tmp/{}/src", folder_name);
-    std::fs::create_dir_all(&build_path).unwrap();
-    std::fs::create_dir_all(&src_path).unwrap();
+    let folder = format!("/tmp/opencode/zxbs-tests/{}", rand::random::<u128>());
+    let cfg = make_config(&folder);
 
-    let mut flags = HashMap::default();
-    flags.insert("--build-dir".to_owned(), build_path.clone());
-    flags.insert("--src-dir".to_owned(), src_path.clone());
-    let cfg = config::Config::parse_config(flags);
+    let thread_pool = ThreadPool::new(4);
 
-    let mut interner = interner::Interner::new();
+    let ts = timestamp();
+    let mut cache_state = cache::load(cfg.cache_path, &thread_pool, ts);
 
-    let info = scan::BuildInfo::default();
+    let mut interner = Interner::new();
 
-    let tasks = plan::plan(&cfg, &config::Subcommand::TestAll, &mut interner, &info);
+    let info = scan::scan(cfg, &mut interner, &thread_pool, 0, &mut cache_state, ts);
+
+    let tasks = plan::plan(
+        cfg,
+        &Subcommand::TestAll,
+        &mut interner,
+        &info,
+        &mut cache_state,
+        0,
+        ts,
+    );
 
     assert!(tasks.is_empty());
 
-    std::fs::remove_dir_all(format!("/tmp/{}", folder_name)).unwrap();
+    std::fs::remove_dir_all(&folder).unwrap();
 }
 
-fn check_run_bin_task(
+fn check_store_task(
     task: &Task,
-    interner: &mut Interner,
-    build_path: &str,
-    entry_name: &str,
-    bin_name: &str,
-    is_test: bool,
+    interner: &Interner,
+    path: &str,
+    cache_files_path: &str,
+    store_hashes: &mut Vec<Hash>,
 ) {
-    let folder_name = if is_test { "test" } else { "bin" };
-
-    assert_eq!(
-        &task.inputs,
-        &[interner.insert(&format!(
-            "{}/{}/{}/{}",
-            build_path, entry_name, folder_name, bin_name
-        ))]
-    );
-
-    assert_eq!(
-        &task.outputs,
-        &[interner.insert(&format!(
-            "{}/{}/{}/stamp/{}",
-            build_path, entry_name, folder_name, bin_name,
-        ))],
-    );
+    assert!(task.outputs.is_empty());
+    assert_eq!(strs(interner, &task.inputs), vec![path]);
 
     match &task.command {
-        Some(Command::RunBinary(rb)) => {
-            assert_eq!(
-                rb.path,
-                format!("{}/{}/{}/{}", build_path, entry_name, folder_name, bin_name)
-            );
+        Some(Command::CacheStore(cs)) => {
+            assert_eq!(cs.cache_files_path, cache_files_path);
+            assert_eq!(cs.file_path, path);
+            assert_ne!(cs.deep_hash, 0);
+            store_hashes.push(cs.deep_hash);
         }
         _ => unreachable!(),
     }
 }
 
-fn check_link_bin_task(
+// Check a CompileToObject task for a lib/test/bin part.
+fn check_obj_task(
     task: &Task,
-    interner: &mut Interner,
-    build_path: &str,
-    entry_name: &str,
-    bin_name: &str,
-    is_test: bool,
-    dep_names: &[&str],
-) {
-    let folder_name = if is_test { "test" } else { "bin" };
-
-    let mut inputs = vec![interner.insert(&format!(
-        "{}/{}/lib/lib{}.a",
-        build_path, entry_name, entry_name,
-    ))];
-    let mut expected_deps = vec![interner.get(inputs[0]).to_owned()];
-    for dn in dep_names.iter() {
-        inputs.push(interner.insert(&format!("{}/{}/lib/lib{}.a", build_path, dn, dn)));
-        expected_deps.push(format!("{}/{}/lib/lib{}.a", build_path, dn, dn));
-    }
-
-    inputs.push(interner.insert(&format!(
-        "{}/{}/{}/{}.o",
-        build_path, entry_name, folder_name, bin_name
-    )));
-
-    let expected_deps: Vec<&str> = expected_deps.iter().map(|d| d.as_str()).collect();
-
-    assert_eq!(&task.inputs, &inputs,);
-
-    assert_eq!(
-        &task.outputs,
-        &[interner.insert(&format!(
-            "{}/{}/{}/{}",
-            build_path, entry_name, folder_name, bin_name
-        ))],
-    );
-
-    match &task.command {
-        Some(Command::LinkBinary(lb)) => {
-            assert_eq!(lb.cxx, "clang++");
-            assert_eq!(
-                lb.output,
-                format!("{}/{}/{}/{}", build_path, entry_name, folder_name, bin_name)
-            );
-            assert_eq!(
-                lb.object,
-                format!(
-                    "{}/{}/{}/{}.o",
-                    build_path, entry_name, folder_name, bin_name
-                )
-            );
-            assert_eq!(lb.deps, expected_deps.as_slice());
-        }
-        _ => unreachable!(),
-    }
-}
-
-fn check_build_bin_task(
-    task: &Task,
-    interner: &mut Interner,
+    interner: &Interner,
     build_path: &str,
     src_path: &str,
     entry_name: &str,
-    bin_name: &str,
-    is_test: bool,
+    part_name: &str,
+    folder_name: &str,
 ) {
-    let folder_name = if is_test { "test" } else { "bin" };
+    assert_eq!(interner.get(task.part_name), part_name);
 
-    assert_eq!(
-        &task.inputs,
-        &[interner.insert(&format!("{}/mod/{}.pcm", build_path, entry_name)),],
-    );
+    let root_pcm_path = format!("{}/mod/{}.pcm", build_path, entry_name);
+    assert_eq!(strs(interner, &task.inputs), vec![root_pcm_path.as_str()]);
 
-    assert_eq!(
-        &task.outputs,
-        &[interner.insert(&format!(
-            "{}/{}/{}/{}.o",
-            build_path, entry_name, folder_name, bin_name,
-        ))],
+    let obj_path = format!(
+        "{}/entry/{}/{}/{}.o",
+        build_path, entry_name, folder_name, part_name
     );
+    assert_eq!(strs(interner, &task.outputs), vec![obj_path.as_str()]);
 
     match &task.command {
         Some(Command::CompileToObject(co)) => {
@@ -157,589 +182,884 @@ fn check_build_bin_task(
                 co.input,
                 format!(
                     "{}/{}/{}/{}.cc",
-                    src_path, entry_name, folder_name, bin_name
+                    src_path, entry_name, folder_name, part_name
                 ),
             );
-            assert_eq!(
-                co.output,
-                format!(
-                    "{}/{}/{}/{}.o",
-                    build_path, entry_name, folder_name, bin_name
-                ),
-            );
+            assert_eq!(co.output, obj_path);
         }
         _ => unreachable!(),
     }
 }
 
-fn check_lib_archive_task(
+// Check a LinkBinary task for a test/bin part.
+fn check_link_task(
     task: &Task,
-    interner: &mut Interner,
+    interner: &Interner,
     build_path: &str,
-    entry_name: &str,
-    mod_part_names: &[&str],
-    lib_part_names: &[&str],
-) {
-    let mut inputs = Vec::new();
-    for pn in mod_part_names.iter() {
-        inputs.push(interner.insert(&format!(
-            "{}/mod/{}",
-            build_path,
-            make_module_artifact_name(entry_name, pn, "o"),
-        )));
-    }
-    for ln in lib_part_names.iter() {
-        inputs.push(interner.insert(&format!("{}/{}/lib/{}.o", build_path, entry_name, ln,)));
-    }
-
-    assert_eq!(&task.inputs, &inputs);
-
-    assert_eq!(
-        &task.outputs,
-        &[interner.insert(&format!(
-            "{}/{}/lib/lib{}.a",
-            build_path, entry_name, entry_name
-        )),]
-    );
-
-    let expected_input_names: Vec<&'static str> = inputs.iter().map(|&x| interner.get(x)).collect();
-
-    match &task.command {
-        Some(Command::ArchiveLib(al)) => {
-            assert_eq!(al.ar, "llvm-ar");
-            assert_eq!(
-                al.output,
-                format!("{}/{}/lib/lib{}.a", build_path, entry_name, entry_name)
-            );
-            assert_eq!(al.inputs, expected_input_names);
-        }
-        _ => unreachable!(),
-    }
-}
-
-fn check_lib_obj_task(
-    task: &Task,
-    interner: &mut Interner,
-    build_path: &str,
-    src_path: &str,
-    entry_name: &str,
-    obj_name: &str,
-) {
-    assert_eq!(
-        &task.inputs,
-        &[interner.insert(&format!("{}/mod/{}.pcm", build_path, entry_name,))],
-    );
-
-    assert_eq!(
-        &task.outputs,
-        &[interner.insert(&format!("{}/{}/lib/{}.o", build_path, entry_name, obj_name,))],
-    );
-
-    match &task.command {
-        Some(Command::CompileToObject(co)) => {
-            assert_eq!(co.cxx, "clang++");
-            assert_eq!(
-                co.input,
-                format!("{}/{}/lib/{}.cc", src_path, entry_name, obj_name)
-            );
-            assert_eq!(
-                co.output,
-                format!("{}/{}/lib/{}.o", build_path, entry_name, obj_name),
-            );
-        }
-        _ => unreachable!(),
-    }
-}
-
-fn check_pcm_task(
-    task: &Task,
-    interner: &mut Interner,
-    build_path: &str,
-    src_path: &str,
     entry_name: &str,
     part_name: &str,
-    local_deps: &[&str],
-    ext_deps: &[&str],
+    folder_name: &str,
+    lib_paths: &[String],
 ) {
-    let mut expected_inputs = Vec::new();
-    for &extd in ext_deps.iter() {
-        expected_inputs.push(interner.insert(&format!("{}/mod/{}.pcm", build_path, extd)));
-    }
-    for &ld in local_deps.iter() {
-        expected_inputs.push(interner.insert(&format!(
-            "{}/mod/{}",
-            build_path,
-            make_module_artifact_name(entry_name, ld, "pcm")
-        )));
-    }
-    assert_eq!(&task.inputs, &expected_inputs);
+    assert_eq!(interner.get(task.part_name), part_name);
 
-    assert_eq!(
-        &task.outputs,
-        &[
-            interner.insert(&format!(
-                "{}/mod/{}",
-                build_path,
-                make_module_artifact_name(entry_name, part_name, "pcm")
-            )),
-            interner.insert(&format!(
-                "{}/mod/{}",
-                build_path,
-                make_module_artifact_name(entry_name, part_name, "o")
-            )),
-        ]
+    let obj_path = format!(
+        "{}/entry/{}/{}/{}.o",
+        build_path, entry_name, folder_name, part_name
+    );
+    let exe_path = format!(
+        "{}/entry/{}/{}/{}",
+        build_path, entry_name, folder_name, part_name
     );
 
+    let mut expected_inputs = as_strs(lib_paths);
+    expected_inputs.push(obj_path.as_str());
+    assert_eq!(strs(interner, &task.inputs), expected_inputs);
+
+    assert_eq!(strs(interner, &task.outputs), vec![exe_path.as_str()]);
+
     match &task.command {
-        Some(Command::CompileModule(cm)) => {
-            assert_eq!(cm.cxx, "clang++");
-            assert_eq!(
-                cm.input,
-                format!("{}/{}/mod/{}.cppm", src_path, entry_name, part_name)
-            );
-            assert_eq!(
-                cm.object_output,
-                format!(
-                    "{}/mod/{}",
-                    build_path,
-                    make_module_artifact_name(entry_name, part_name, "o")
-                )
-            );
-            assert_eq!(
-                cm.pcm_output,
-                format!(
-                    "{}/mod/{}",
-                    build_path,
-                    make_module_artifact_name(entry_name, part_name, "pcm")
-                )
-            );
+        Some(Command::LinkBinary(lb)) => {
+            assert_eq!(lb.cxx, "clang++");
+            assert_eq!(lb.output, exe_path);
+            assert_eq!(lb.object, obj_path);
+            assert_eq!(lb.deps.to_vec(), as_strs(lib_paths));
         }
         _ => unreachable!(),
     }
+}
+
+fn check_run_test_task(
+    task: &Task,
+    interner: &Interner,
+    build_path: &str,
+    entry_name: &str,
+    test_name: &str,
+) {
+    assert_eq!(interner.get(task.part_name), test_name);
+
+    let exe_path = format!("{}/entry/{}/test/{}", build_path, entry_name, test_name);
+    let stamp_path = format!(
+        "{}/entry/{}/test/stamp/{}",
+        build_path, entry_name, test_name
+    );
+
+    assert_eq!(strs(interner, &task.inputs), vec![exe_path.as_str()]);
+    assert_eq!(strs(interner, &task.outputs), vec![stamp_path.as_str()]);
+
+    match &task.command {
+        Some(Command::RunTest(rt)) => {
+            assert_eq!(rt.path, exe_path);
+            assert_eq!(rt.stamp_path, stamp_path);
+            assert_ne!(rt.stamp_hash, 0);
+        }
+        _ => unreachable!(),
+    }
+}
+
+// Check all tasks of one entry, in order. The expected tasks are derived from
+// the scanned BuildInfo itself because the order of the parts comes from
+// reading the source directories, which is not deterministic.
+fn check_entry_tasks(
+    entry_tasks: &[&Task],
+    interner: &Interner,
+    info: &BuildInfo,
+    eidx: usize,
+    build_path: &str,
+    src_path: &str,
+    lib_paths: &[String],
+    cache_files_path: &str,
+    store_hashes: &mut Vec<Hash>,
+) {
+    let entry_name = interner.get(info.name[eidx]).to_owned();
+    let n_mod_parts = info.module[eidx].len();
+
+    let mut i = 0;
+
+    // Module tasks: for each module part a compile task followed by cache
+    // store tasks for the pcm and the object outputs.
+    for part_idx in 0..n_mod_parts {
+        let part_name = interner.get(info.module[eidx][part_idx]).to_owned();
+
+        let pcm_path = format!(
+            "{}/mod/{}",
+            build_path,
+            make_module_artifact_name(&entry_name, &part_name, "pcm"),
+        );
+        let obj_path = format!(
+            "{}/mod/{}",
+            build_path,
+            make_module_artifact_name(&entry_name, &part_name, "o"),
+        );
+
+        let mut expected_inputs: Vec<String> = Vec::new();
+        for &dep in info.deps[eidx].iter() {
+            expected_inputs.push(format!("{}/mod/{}.pcm", build_path, interner.get(dep)));
+        }
+        for dep_idx in 0..n_mod_parts {
+            if info.mod_dep_matrix[eidx][part_idx * n_mod_parts + dep_idx] {
+                let dep_name = interner.get(info.module[eidx][dep_idx]);
+                expected_inputs.push(format!(
+                    "{}/mod/{}",
+                    build_path,
+                    make_module_artifact_name(&entry_name, dep_name, "pcm"),
+                ));
+            }
+        }
+
+        {
+            let task = entry_tasks[i];
+            assert_eq!(interner.get(task.part_name), part_name);
+
+            assert_eq!(strs(interner, &task.inputs), as_strs(&expected_inputs));
+            assert_eq!(
+                strs(interner, &task.outputs),
+                vec![pcm_path.as_str(), obj_path.as_str()],
+            );
+
+            match &task.command {
+                Some(Command::CompileModule(cm)) => {
+                    assert_eq!(cm.cxx, "clang++");
+                    assert_eq!(
+                        cm.input,
+                        format!("{}/{}/mod/{}.cppm", src_path, entry_name, part_name),
+                    );
+                    assert_eq!(cm.object_output, obj_path);
+                    assert_eq!(cm.pcm_output, pcm_path);
+                }
+                _ => unreachable!(),
+            }
+        }
+        i += 1;
+
+        check_store_task(
+            entry_tasks[i],
+            interner,
+            &pcm_path,
+            cache_files_path,
+            store_hashes,
+        );
+        i += 1;
+
+        check_store_task(
+            entry_tasks[i],
+            interner,
+            &obj_path,
+            cache_files_path,
+            store_hashes,
+        );
+        i += 1;
+    }
+
+    // Lib object tasks.
+    for &part in info.lib[eidx].iter() {
+        let part_name = interner.get(part);
+
+        check_obj_task(
+            entry_tasks[i],
+            interner,
+            build_path,
+            src_path,
+            &entry_name,
+            part_name,
+            "lib",
+        );
+        i += 1;
+
+        let obj_path = format!("{}/entry/{}/lib/{}.o", build_path, entry_name, part_name);
+        check_store_task(
+            entry_tasks[i],
+            interner,
+            &obj_path,
+            cache_files_path,
+            store_hashes,
+        );
+        i += 1;
+    }
+
+    // Lib archive task. Inputs are all the module objects followed by all the
+    // lib objects.
+    {
+        let mut expected_inputs: Vec<String> = Vec::new();
+        for &part in info.module[eidx].iter() {
+            let part_name = interner.get(part);
+            expected_inputs.push(format!(
+                "{}/mod/{}",
+                build_path,
+                make_module_artifact_name(&entry_name, part_name, "o"),
+            ));
+        }
+        for &part in info.lib[eidx].iter() {
+            let part_name = interner.get(part);
+            expected_inputs.push(format!(
+                "{}/entry/{}/lib/{}.o",
+                build_path, entry_name, part_name
+            ));
+        }
+
+        let lib_path = format!(
+            "{}/entry/{}/lib/lib{}.a",
+            build_path, entry_name, entry_name
+        );
+
+        let task = entry_tasks[i];
+        assert_eq!(interner.get(task.part_name), "@ARCHIVE_LIB@");
+
+        assert_eq!(strs(interner, &task.inputs), as_strs(&expected_inputs));
+        assert_eq!(strs(interner, &task.outputs), vec![lib_path.as_str()]);
+
+        match &task.command {
+            Some(Command::ArchiveLib(al)) => {
+                assert_eq!(al.ar, "llvm-ar");
+                assert_eq!(al.output, lib_path);
+                assert_eq!(al.inputs, as_strs(&expected_inputs));
+            }
+            _ => unreachable!(),
+        }
+    }
+    i += 1;
+
+    {
+        let lib_path = format!(
+            "{}/entry/{}/lib/lib{}.a",
+            build_path, entry_name, entry_name
+        );
+        check_store_task(
+            entry_tasks[i],
+            interner,
+            &lib_path,
+            cache_files_path,
+            store_hashes,
+        );
+    }
+    i += 1;
+
+    // Test tasks: obj, link, run for each test.
+    for &part in info.test[eidx].iter() {
+        let test_name = interner.get(part);
+
+        check_obj_task(
+            entry_tasks[i],
+            interner,
+            build_path,
+            src_path,
+            &entry_name,
+            test_name,
+            "test",
+        );
+        i += 1;
+
+        let obj_path = format!("{}/entry/{}/test/{}.o", build_path, entry_name, test_name);
+        check_store_task(
+            entry_tasks[i],
+            interner,
+            &obj_path,
+            cache_files_path,
+            store_hashes,
+        );
+        i += 1;
+
+        check_link_task(
+            entry_tasks[i],
+            interner,
+            build_path,
+            &entry_name,
+            test_name,
+            "test",
+            lib_paths,
+        );
+        i += 1;
+
+        let exe_path = format!("{}/entry/{}/test/{}", build_path, entry_name, test_name);
+        check_store_task(
+            entry_tasks[i],
+            interner,
+            &exe_path,
+            cache_files_path,
+            store_hashes,
+        );
+        i += 1;
+
+        check_run_test_task(entry_tasks[i], interner, build_path, &entry_name, test_name);
+        i += 1;
+
+        let stamp_path = format!(
+            "{}/entry/{}/test/stamp/{}",
+            build_path, entry_name, test_name
+        );
+        check_store_task(
+            entry_tasks[i],
+            interner,
+            &stamp_path,
+            cache_files_path,
+            store_hashes,
+        );
+        i += 1;
+    }
+
+    // Bin tasks: obj, link for each bin.
+    for &part in info.bin[eidx].iter() {
+        let bin_name = interner.get(part);
+
+        check_obj_task(
+            entry_tasks[i],
+            interner,
+            build_path,
+            src_path,
+            &entry_name,
+            bin_name,
+            "bin",
+        );
+        i += 1;
+
+        let obj_path = format!("{}/entry/{}/bin/{}.o", build_path, entry_name, bin_name);
+        check_store_task(
+            entry_tasks[i],
+            interner,
+            &obj_path,
+            cache_files_path,
+            store_hashes,
+        );
+        i += 1;
+
+        check_link_task(
+            entry_tasks[i],
+            interner,
+            build_path,
+            &entry_name,
+            bin_name,
+            "bin",
+            lib_paths,
+        );
+        i += 1;
+
+        let exe_path = format!("{}/entry/{}/bin/{}", build_path, entry_name, bin_name);
+        check_store_task(
+            entry_tasks[i],
+            interner,
+            &exe_path,
+            cache_files_path,
+            store_hashes,
+        );
+        i += 1;
+    }
+
+    assert_eq!(i, entry_tasks.len());
+}
+
+// A comparable representation of a task list, used to check that planning
+// twice on the same input gives the same result.
+fn task_debug_strings<'a>(
+    tasks: impl IntoIterator<Item = &'a Task>,
+    interner: &Interner,
+) -> Vec<String> {
+    tasks
+        .into_iter()
+        .map(|t| {
+            format!(
+                "{} {} {:?} {:?} {}",
+                t.entry_index,
+                interner.get(t.part_name),
+                strs(interner, &t.inputs),
+                strs(interner, &t.outputs),
+                t.command.as_ref().unwrap().print(),
+            )
+        })
+        .collect()
 }
 
 #[test]
 fn test_simple() {
-    let folder_name: u128 = rand::random();
-    let build_dir = format!("/tmp/{}/build", folder_name);
-    let src_dir = format!("/tmp/{}/src", folder_name);
-    std::fs::create_dir_all(&build_dir).unwrap();
-    std::fs::create_dir_all(&src_dir).unwrap();
+    let folder = format!("/tmp/opencode/zxbs-tests/{}", rand::random::<u128>());
+    let cfg = make_config(&folder);
 
-    let mut flags = HashMap::default();
-    flags.insert("--build-dir".to_owned(), build_dir);
-    flags.insert("--src-dir".to_owned(), src_dir);
-    let cfg = config::Config::parse_config(flags);
+    let src_path = std::path::Path::new(cfg.src_path);
+    make_baselib(src_path);
+    make_iolib(src_path);
+    make_myapp(src_path);
+
+    let thread_pool = ThreadPool::new(8);
+
+    let ts = timestamp();
+    let mut cache_state = cache::load(cfg.cache_path, &thread_pool, ts);
+
+    let mut interner = Interner::new();
+
+    let info = scan::scan(cfg, &mut interner, &thread_pool, 0, &mut cache_state, ts);
+
+    let tasks = plan::plan(
+        cfg,
+        &Subcommand::TestAll,
+        &mut interner,
+        &info,
+        &mut cache_state,
+        0,
+        ts,
+    );
+
+    assert_eq!(tasks.len(), NUM_TASKS);
 
     let build_path = cfg.build_path.to_str().unwrap();
     let src_path = cfg.src_path.to_str().unwrap();
+    let cache_files_path = cfg.cache_path.to_str().unwrap();
 
-    let mut interner = interner::Interner::new();
+    // Planning is deterministic: a second run with a fresh cache state must
+    // produce the exact same tasks, including the deep hashes.
+    {
+        let mut cache_state =
+            cache::load(Path::new(&format!("{}/cache2", folder)), &thread_pool, ts);
+        let tasks2 = plan::plan(
+            cfg,
+            &Subcommand::TestAll,
+            &mut interner,
+            &info,
+            &mut cache_state,
+            0,
+            ts,
+        );
+        assert_eq!(
+            task_debug_strings(&tasks, &interner),
+            task_debug_strings(&tasks2, &interner),
+        );
+    }
 
-    let mut info = scan::BuildInfo::default();
+    // Check every task of every entry in detail.
+    let mut store_hashes: Vec<Hash> = Vec::new();
 
-    let baselib = interner.insert("base");
-    let iolib = interner.insert("io");
-    let myapp = interner.insert("myapp");
+    for eidx in 0..info.name.len() {
+        let entry_name = interner.get(info.name[eidx]);
 
-    info.map.insert(baselib, 0);
-    info.name.push(baselib);
-    info.module.push(vec![
-        interner.insert("base"),
-        interner.insert("vec"),
-        interner.insert("start"),
-        interner.insert("arith"),
-        interner.insert("alloc"),
-    ]);
-    #[rustfmt::skip]
-    info.mod_dep_matrix.push(vec![
-        false, true, true, true, true,
-        false, false, false, true, true,
-        false, false, false, false, false,
-        false, false, true, false, false,
-        false, false, true, true, false,
-    ]);
-    info.lib
-        .push(vec![interner.insert("memcmp"), interner.insert("memcpy")]);
-    info.bin.push(vec![interner.insert("memcpy_bench")]);
-    info.test.push(vec![
-        interner.insert("memcmp"),
-        interner.insert("vec"),
-        interner.insert("arith"),
-    ]);
-    info.deps.push(vec![]);
+        let entry_tasks: Vec<&Task> = tasks.iter().filter(|t| t.entry_index == eidx).collect();
 
-    info.map.insert(iolib, 1);
-    info.name.push(iolib);
-    info.module.push(vec![
-        interner.insert("io"),
-        interner.insert("executor"),
-        interner.insert("fs"),
-        interner.insert("net"),
-        interner.insert("base"),
-    ]);
-    #[rustfmt::skip]
-    info.mod_dep_matrix.push(vec![
-        false, true, true, true, true,
-        false, false, false, false, false,
-        false, true, false, false, false,
-        false, true, false, false, false,
-        false, false, false, false, false,
-    ]);
-    info.lib.push(vec![]);
-    info.bin.push(vec![interner.insert("direct_io_example")]);
-    info.test.push(vec![
-        interner.insert("executor_ordering"),
-        interner.insert("fs"),
-        interner.insert("net"),
-    ]);
-    info.deps.push(vec![baselib]);
+        let expected_num_tasks = match entry_name {
+            "base" => 43,
+            "io" => 39,
+            "myapp" => 9,
+            _ => unreachable!(),
+        };
+        assert_eq!(entry_tasks.len(), expected_num_tasks);
 
-    info.map.insert(myapp, 2);
-    info.name.push(myapp);
-    info.module.push(vec![interner.insert("myapp")]);
-    info.mod_dep_matrix.push(vec![false]);
-    info.lib.push(vec![]);
-    info.bin.push(vec![myapp]);
-    info.test.push(vec![]);
-    info.deps.push(vec![baselib, iolib]);
+        for task in entry_tasks.iter() {
+            assert_eq!(interner.get(task.entry_name), entry_name);
+        }
 
-    let tasks = plan::plan(&cfg, &config::Subcommand::TestAll, &mut interner, &info);
+        // The library list used for linking. An entry always comes before the
+        // entries it depends on so the linker sees them in the right order.
+        let lib_paths: Vec<String> = match entry_name {
+            "base" => vec![format!("{}/entry/base/lib/libbase.a", build_path)],
+            "io" => vec![
+                format!("{}/entry/io/lib/libio.a", build_path),
+                format!("{}/entry/base/lib/libbase.a", build_path),
+            ],
+            "myapp" => vec![
+                format!("{}/entry/myapp/lib/libmyapp.a", build_path),
+                format!("{}/entry/io/lib/libio.a", build_path),
+                format!("{}/entry/base/lib/libbase.a", build_path),
+            ],
+            _ => unreachable!(),
+        };
 
-    check_pcm_task(
-        &tasks[0],
-        &mut interner,
-        build_path,
-        src_path,
-        "base",
-        "base",
-        &["vec", "start", "arith", "alloc"],
-        &[],
-    );
-    check_pcm_task(
-        &tasks[1],
-        &mut interner,
-        build_path,
-        src_path,
-        "base",
-        "vec",
-        &["arith", "alloc"],
-        &[],
-    );
-    check_pcm_task(
-        &tasks[2],
-        &mut interner,
-        build_path,
-        src_path,
-        "base",
-        "start",
-        &[],
-        &[],
-    );
-    check_pcm_task(
-        &tasks[3],
-        &mut interner,
-        build_path,
-        src_path,
-        "base",
-        "arith",
-        &["start"],
-        &[],
-    );
-    check_pcm_task(
-        &tasks[4],
-        &mut interner,
-        build_path,
-        src_path,
-        "base",
-        "alloc",
-        &["start", "arith"],
-        &[],
-    );
-    check_lib_obj_task(
-        &tasks[5],
-        &mut interner,
-        build_path,
-        src_path,
-        "base",
-        "memcmp",
-    );
-    check_lib_obj_task(
-        &tasks[6],
-        &mut interner,
-        build_path,
-        src_path,
-        "base",
-        "memcpy",
-    );
-    check_lib_archive_task(
-        &tasks[7],
-        &mut interner,
-        build_path,
-        "base",
-        &["base", "vec", "start", "arith", "alloc"],
-        &["memcmp", "memcpy"],
-    );
-    check_build_bin_task(
-        &tasks[8],
-        &mut interner,
-        build_path,
-        src_path,
-        "base",
-        "memcmp",
-        true,
-    );
-    check_link_bin_task(
-        &tasks[9],
-        &mut interner,
-        build_path,
-        "base",
-        "memcmp",
-        true,
-        &[],
-    );
-    check_run_bin_task(
-        &tasks[10],
-        &mut interner,
-        build_path,
-        "base",
-        "memcmp",
-        true,
-    );
-    check_build_bin_task(
-        &tasks[11],
-        &mut interner,
-        build_path,
-        src_path,
-        "base",
-        "vec",
-        true,
-    );
-    check_link_bin_task(
-        &tasks[12],
-        &mut interner,
-        build_path,
-        "base",
-        "vec",
-        true,
-        &[],
-    );
-    check_run_bin_task(&tasks[13], &mut interner, build_path, "base", "vec", true);
-    check_build_bin_task(
-        &tasks[14],
-        &mut interner,
-        build_path,
-        src_path,
-        "base",
-        "arith",
-        true,
-    );
-    check_link_bin_task(
-        &tasks[15],
-        &mut interner,
-        build_path,
-        "base",
-        "arith",
-        true,
-        &[],
-    );
-    check_run_bin_task(&tasks[16], &mut interner, build_path, "base", "arith", true);
-    check_build_bin_task(
-        &tasks[17],
-        &mut interner,
-        build_path,
-        src_path,
-        "base",
-        "memcpy_bench",
-        false,
-    );
-    check_link_bin_task(
-        &tasks[18],
-        &mut interner,
-        build_path,
-        "base",
-        "memcpy_bench",
-        false,
-        &[],
-    );
-    check_pcm_task(
-        &tasks[19],
-        &mut interner,
-        build_path,
-        src_path,
-        "io",
-        "io",
-        &["executor", "fs", "net", "base"],
-        &["base"],
-    );
-    check_pcm_task(
-        &tasks[20],
-        &mut interner,
-        build_path,
-        src_path,
-        "io",
-        "executor",
-        &[],
-        &["base"],
-    );
-    check_pcm_task(
-        &tasks[21],
-        &mut interner,
-        build_path,
-        src_path,
-        "io",
-        "fs",
-        &["executor"],
-        &["base"],
-    );
-    check_pcm_task(
-        &tasks[22],
-        &mut interner,
-        build_path,
-        src_path,
-        "io",
-        "net",
-        &["executor"],
-        &["base"],
-    );
-    check_pcm_task(
-        &tasks[23],
-        &mut interner,
-        build_path,
-        src_path,
-        "io",
-        "base",
-        &[],
-        &["base"],
-    );
-    check_lib_archive_task(
-        &tasks[24],
-        &mut interner,
-        build_path,
-        "io",
-        &["io", "executor", "fs", "net", "base"],
-        &[],
-    );
-    check_build_bin_task(
-        &tasks[25],
-        &mut interner,
-        build_path,
-        src_path,
-        "io",
-        "executor_ordering",
-        true,
-    );
-    check_link_bin_task(
-        &tasks[26],
-        &mut interner,
-        build_path,
-        "io",
-        "executor_ordering",
-        true,
-        &["base"],
-    );
-    check_run_bin_task(
-        &tasks[27],
-        &mut interner,
-        build_path,
-        "io",
-        "executor_ordering",
-        true,
-    );
-    check_build_bin_task(
-        &tasks[28],
-        &mut interner,
-        build_path,
-        src_path,
-        "io",
-        "fs",
-        true,
-    );
-    check_link_bin_task(
-        &tasks[29],
-        &mut interner,
-        build_path,
-        "io",
-        "fs",
-        true,
-        &["base"],
-    );
-    check_run_bin_task(&tasks[30], &mut interner, build_path, "io", "fs", true);
-    check_build_bin_task(
-        &tasks[31],
-        &mut interner,
-        build_path,
-        src_path,
-        "io",
-        "net",
-        true,
-    );
-    check_link_bin_task(
-        &tasks[32],
-        &mut interner,
-        build_path,
-        "io",
-        "net",
-        true,
-        &["base"],
-    );
-    check_run_bin_task(&tasks[33], &mut interner, build_path, "io", "net", true);
-    check_build_bin_task(
-        &tasks[34],
-        &mut interner,
-        build_path,
-        src_path,
-        "io",
-        "direct_io_example",
-        false,
-    );
-    check_link_bin_task(
-        &tasks[35],
-        &mut interner,
-        build_path,
-        "io",
-        "direct_io_example",
-        false,
-        &["base"],
-    );
-    check_pcm_task(
-        &tasks[36],
-        &mut interner,
-        build_path,
-        src_path,
-        "myapp",
-        "myapp",
-        &[],
-        &["base", "io"],
-    );
-    check_lib_archive_task(
-        &tasks[37],
-        &mut interner,
-        build_path,
-        "myapp",
-        &["myapp"],
-        &[],
-    );
-    check_build_bin_task(
-        &tasks[38],
-        &mut interner,
-        build_path,
-        src_path,
-        "myapp",
-        "myapp",
-        false,
-    );
-    check_link_bin_task(
-        &tasks[39],
-        &mut interner,
-        build_path,
-        "myapp",
-        "myapp",
-        false,
-        &["io", "base"],
-    );
+        check_entry_tasks(
+            &entry_tasks,
+            &interner,
+            &info,
+            eidx,
+            build_path,
+            src_path,
+            &lib_paths,
+            cache_files_path,
+            &mut store_hashes,
+        );
+    }
 
-    assert_eq!(tasks.len(), 40);
+    // Every artifact that is stored to the cache has its own distinct deep
+    // hash.
+    assert_eq!(store_hashes.len(), NUM_STORED_ARTIFACTS);
+    let mut seen = std::collections::HashSet::new();
+    for hash in store_hashes.iter() {
+        assert!(seen.insert(*hash));
+    }
 
-    std::fs::remove_dir_all(format!("/tmp/{}", folder_name)).unwrap();
+    // The `test` subcommand only runs the selected test.
+    {
+        let mut cache_state =
+            cache::load(Path::new(&format!("{}/cache3", folder)), &thread_pool, ts);
+        let tasks = plan::plan(
+            cfg,
+            &Subcommand::Test {
+                entry_name: "base".to_owned(),
+                test_name: "memcmp".to_owned(),
+            },
+            &mut interner,
+            &info,
+            &mut cache_state,
+            0,
+            ts,
+        );
+
+        let run_tests: Vec<&Task> = tasks
+            .iter()
+            .filter(|t| matches!(t.command, Some(Command::RunTest(_))))
+            .collect();
+        assert_eq!(run_tests.len(), 1);
+        assert_eq!(interner.get(run_tests[0].entry_name), "base");
+        assert_eq!(interner.get(run_tests[0].part_name), "memcmp");
+
+        assert!(
+            tasks
+                .iter()
+                .all(|t| !matches!(t.command, Some(Command::RunBinary(_)))),
+        );
+    }
+
+    // The `run` subcommand only runs the selected binary.
+    {
+        let mut cache_state =
+            cache::load(Path::new(&format!("{}/cache4", folder)), &thread_pool, ts);
+        let tasks = plan::plan(
+            cfg,
+            &Subcommand::RunBinary {
+                entry_name: "base".to_owned(),
+                bin_name: "memcpy_bench".to_owned(),
+                args: &["--some-arg"],
+            },
+            &mut interner,
+            &info,
+            &mut cache_state,
+            0,
+            ts,
+        );
+
+        let run_bins: Vec<&Task> = tasks
+            .iter()
+            .filter(|t| matches!(t.command, Some(Command::RunBinary(_))))
+            .collect();
+        assert_eq!(run_bins.len(), 1);
+        assert_eq!(interner.get(run_bins[0].entry_name), "base");
+        assert_eq!(interner.get(run_bins[0].part_name), "memcpy_bench");
+        match &run_bins[0].command {
+            Some(Command::RunBinary(rb)) => {
+                assert_eq!(
+                    rb.path,
+                    format!("{}/entry/base/bin/memcpy_bench", build_path),
+                );
+                assert_eq!(rb.args.to_vec(), vec!["--some-arg"]);
+            }
+            _ => unreachable!(),
+        }
+
+        assert!(
+            tasks
+                .iter()
+                .all(|t| !matches!(t.command, Some(Command::RunTest(_)))),
+        );
+    }
+
+    // The `build` subcommand builds everything but doesn't run any test or
+    // binary.
+    {
+        let mut cache_state =
+            cache::load(Path::new(&format!("{}/cache5", folder)), &thread_pool, ts);
+        let tasks = plan::plan(
+            cfg,
+            &Subcommand::Build,
+            &mut interner,
+            &info,
+            &mut cache_state,
+            0,
+            ts,
+        );
+
+        // Same as TestAll but without the run+store task pair of each of the
+        // 6 tests.
+        assert_eq!(tasks.len(), NUM_TASKS - 6 * 2);
+
+        assert!(tasks.iter().all(|t| {
+            !matches!(t.command, Some(Command::RunTest(_)))
+                && !matches!(t.command, Some(Command::RunBinary(_)))
+        }),);
+    }
+
+    // The `fmt` subcommand emits a format task for every source file and
+    // nothing else.
+    {
+        let tasks = plan::plan(
+            cfg,
+            &Subcommand::Fmt,
+            &mut interner,
+            &info,
+            &mut cache_state,
+            0,
+            ts,
+        );
+
+        assert_eq!(tasks.len(), 22);
+
+        let mut formatted_paths: Vec<&'static str> = tasks
+            .iter()
+            .map(|t| match &t.command {
+                Some(Command::Format(f)) => {
+                    assert_eq!(f.clang_format, "clang-format");
+                    assert!(t.inputs.is_empty());
+                    assert!(t.outputs.is_empty());
+                    f.path
+                }
+                _ => unreachable!(),
+            })
+            .collect();
+        formatted_paths.sort_unstable();
+
+        let mut expected_paths: Vec<&'static str> = Vec::new();
+        for eidx in 0..info.name.len() {
+            let entry_name = interner.get(info.name[eidx]);
+            for (folder, ext) in [
+                ("mod", "cppm"),
+                ("lib", "cc"),
+                ("bin", "cc"),
+                ("test", "cc"),
+            ] {
+                let parts: Vec<&'static str> = match folder {
+                    "mod" => info.module[eidx].iter().map(|&p| interner.get(p)).collect(),
+                    "lib" => info.lib[eidx].iter().map(|&p| interner.get(p)).collect(),
+                    "bin" => info.bin[eidx].iter().map(|&p| interner.get(p)).collect(),
+                    "test" => info.test[eidx].iter().map(|&p| interner.get(p)).collect(),
+                    _ => unreachable!(),
+                };
+                for part in parts {
+                    let path = interner.insert(&format!(
+                        "{}/{}/{}/{}.{}",
+                        cfg.src_path.to_str().unwrap(),
+                        entry_name,
+                        folder,
+                        part,
+                        ext,
+                    ));
+                    expected_paths.push(interner.get(path));
+                }
+            }
+        }
+        expected_paths.sort_unstable();
+
+        assert_eq!(formatted_paths, expected_paths);
+    }
+
+    std::fs::remove_dir_all(&folder).unwrap();
+}
+
+// Write a cached file and a wal entry for it, like the build system does when
+// it stores an artifact. The content cached for the artifact is the artifact
+// path itself so the expected hash is easy to compute.
+fn store_in_cache(cache_dir: &Path, path: &str, deep_hash: Hash) {
+    let content = path.as_bytes();
+    let output_hash = hash_bytes(content);
+    std::fs::write(cache_dir.join(format!("{:x}", deep_hash)), content).unwrap();
+    cache::write_wal_file(
+        cache_dir,
+        deep_hash,
+        output_hash,
+        u32::try_from(content.len()).unwrap(),
+    );
+}
+
+// Check that plan accounts for the cache state correctly: a cached artifact
+// turns into a cache load task instead of a compile/store pair, an artifact
+// that is only partially cached (a module pcm without its object) is fully
+// recompiled, and everything that isn't cached is planned exactly like on a
+// cold cache.
+#[test]
+fn test_cache_state() {
+    let folder = format!("/tmp/opencode/zxbs-tests/{}", rand::random::<u128>());
+    let cfg = make_config(&folder);
+
+    let src_path = std::path::Path::new(cfg.src_path);
+    make_baselib(src_path);
+    make_iolib(src_path);
+    make_myapp(src_path);
+
+    let thread_pool = ThreadPool::new(8);
+
+    let ts = timestamp();
+    let mut cache_state = cache::load(cfg.cache_path, &thread_pool, ts);
+
+    let mut interner = Interner::new();
+
+    let info = scan::scan(cfg, &mut interner, &thread_pool, 0, &mut cache_state, ts);
+
+    let build_path = cfg.build_path.to_str().unwrap();
+    let cache_files_path = cfg.cache_path.to_str().unwrap();
+
+    // A plan on a cold cache emits compile + cache store tasks for
+    // everything.
+    let cold_tasks = plan::plan(
+        cfg,
+        &Subcommand::TestAll,
+        &mut interner,
+        &info,
+        &mut cache_state,
+        0,
+        ts,
+    );
+    assert_eq!(cold_tasks.len(), NUM_TASKS);
+
+    // Collect the deep hash of every artifact from the cache store commands
+    // of the cold plan.
+    let mut deep_to_path: HashMap<Hash, &'static str> = HashMap::default();
+    let mut path_to_deep: HashMap<&'static str, Hash> = HashMap::default();
+    for task in cold_tasks.iter() {
+        if let Some(Command::CacheStore(cs)) = &task.command {
+            assert!(deep_to_path.insert(cs.deep_hash, cs.file_path).is_none());
+            assert!(path_to_deep.insert(cs.file_path, cs.deep_hash).is_none());
+        }
+    }
+    assert_eq!(deep_to_path.len(), NUM_STORED_ARTIFACTS);
+
+    // Fully warm cache: every artifact is a cache hit. The plan must emit
+    // exactly one cache load task per artifact and nothing else. In
+    // particular no test is re-run because their stamps are cached too.
+    {
+        for (&deep, &path) in deep_to_path.iter() {
+            store_in_cache(cfg.cache_path, path, deep);
+        }
+
+        let mut warm_state = cache::load(cfg.cache_path, &thread_pool, ts);
+        let warm_tasks = plan::plan(
+            cfg,
+            &Subcommand::TestAll,
+            &mut interner,
+            &info,
+            &mut warm_state,
+            0,
+            ts,
+        );
+
+        assert_eq!(warm_tasks.len(), NUM_STORED_ARTIFACTS);
+
+        let mut loaded_paths: Vec<&'static str> = Vec::new();
+        for task in warm_tasks.iter() {
+            match &task.command {
+                Some(Command::CacheLoad(cl)) => {
+                    assert_eq!(cl.cache_files_path, cache_files_path);
+                    assert!(task.inputs.is_empty());
+                    assert_eq!(task.outputs.len(), 1);
+                    assert_eq!(interner.get(task.outputs[0]), cl.output_path);
+
+                    // The cache load refers to the right artifact and
+                    // expects the hash of the content we cached for it.
+                    assert_eq!(*deep_to_path.get(&cl.deep_hash).unwrap(), cl.output_path);
+                    assert_eq!(cl.expected_hash, hash_bytes(cl.output_path.as_bytes()));
+
+                    loaded_paths.push(cl.output_path);
+                }
+                _ => panic!(
+                    "expected only cache loads on a warm cache, got: {}",
+                    task.command.as_ref().unwrap().print(),
+                ),
+            }
+        }
+
+        // Every artifact is loaded from the cache.
+        let mut expected_paths: Vec<&'static str> = deep_to_path.values().copied().collect();
+        loaded_paths.sort_unstable();
+        expected_paths.sort_unstable();
+        assert_eq!(loaded_paths, expected_paths);
+    }
+
+    // Partially warm cache: only some artifacts are hits.
+    {
+        let partial_cache_dir = format!("{}/cache6", folder);
+        let partial_cache_dir = Path::new(&partial_cache_dir);
+        // Create the cache directories first.
+        drop(cache::load(partial_cache_dir, &thread_pool, ts));
+
+        // The root module of `base` is fully cached (both its pcm and object)
+        // so it turns into two cache loads.
+        let base_pcm = format!("{}/mod/base.pcm", build_path);
+        let base_obj = format!("{}/mod/base.o", build_path);
+
+        // The `base:vec` module has only its pcm cached. A module is only
+        // loaded from the cache when both its pcm and object are cached, so
+        // this one must be fully recompiled and re-stored instead.
+        let vec_pcm = format!("{}/mod/base-vec.pcm", build_path);
+
+        // The `memcmp` lib object of `base` is cached.
+        let memcmp_obj = format!("{}/entry/base/lib/memcmp.o", build_path);
+
+        for path in [&base_pcm, &base_obj, &vec_pcm, &memcmp_obj] {
+            store_in_cache(
+                partial_cache_dir,
+                path.as_str(),
+                *path_to_deep.get(path.as_str()).unwrap(),
+            );
+        }
+
+        let mut partial_state = cache::load(partial_cache_dir, &thread_pool, ts);
+        let partial_tasks = plan::plan(
+            cfg,
+            &Subcommand::TestAll,
+            &mut interner,
+            &info,
+            &mut partial_state,
+            0,
+            ts,
+        );
+
+        // base:base module part: 3 tasks (compile + 2 stores) become 2 cache
+        // loads. memcmp lib object: 2 tasks (compile + store) become 1 cache
+        // load. base:vec is fully recompiled so it keeps its 3 tasks.
+        assert_eq!(partial_tasks.len(), NUM_TASKS - 2);
+
+        // Exactly the three fully cached artifacts are cache loads.
+        let loads: Vec<&Task> = partial_tasks
+            .iter()
+            .filter(|t| matches!(t.command, Some(Command::CacheLoad(_))))
+            .collect();
+        assert_eq!(loads.len(), 3);
+
+        let mut loaded_paths: Vec<String> = Vec::new();
+        for task in loads.iter() {
+            match &task.command {
+                Some(Command::CacheLoad(cl)) => {
+                    assert_eq!(cl.cache_files_path, cache_files_path);
+                    assert!(task.inputs.is_empty());
+                    assert_eq!(task.outputs.len(), 1);
+                    assert_eq!(interner.get(task.outputs[0]), cl.output_path);
+                    assert_eq!(cl.expected_hash, hash_bytes(cl.output_path.as_bytes()));
+                    assert_eq!(*path_to_deep.get(cl.output_path).unwrap(), cl.deep_hash,);
+                    loaded_paths.push(cl.output_path.to_owned());
+                }
+                _ => unreachable!(),
+            }
+        }
+        loaded_paths.sort_unstable();
+        let mut expected_paths = vec![base_obj.clone(), base_pcm.clone(), memcmp_obj.clone()];
+        expected_paths.sort_unstable();
+        assert_eq!(loaded_paths, expected_paths);
+
+        // Everything that isn't cached is planned exactly like on the cold
+        // cache, with the tasks replaced by the cache loads removed.
+        let is_replaced = |task: &Task| match &task.command {
+            Some(Command::CompileModule(cm)) => cm.pcm_output == base_pcm,
+            Some(Command::CompileToObject(co)) => co.output == memcmp_obj,
+            Some(Command::CacheStore(cs)) => {
+                cs.file_path == base_pcm || cs.file_path == base_obj || cs.file_path == memcmp_obj
+            }
+            _ => false,
+        };
+
+        let cold_rest =
+            task_debug_strings(cold_tasks.iter().filter(|t| !is_replaced(t)), &interner);
+        let partial_rest = task_debug_strings(
+            partial_tasks
+                .iter()
+                .filter(|t| !matches!(t.command, Some(Command::CacheLoad(_)))),
+            &interner,
+        );
+
+        // The `base:vec` module is among the remaining tasks: its compile
+        // task and both of its store tasks (including the pcm store) are
+        // still there because it was only partially cached.
+        assert_eq!(cold_rest, partial_rest);
+    }
+
+    std::fs::remove_dir_all(&folder).unwrap();
 }

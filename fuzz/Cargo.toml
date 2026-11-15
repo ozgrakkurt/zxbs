@@ -10,7 +10,6 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 rand = { version = "0.10.2", features = ["thread_rng"] }
-tokio = { version = "1", features = ["full"] }
 
 [dependencies.zxbs]
 path = ".."

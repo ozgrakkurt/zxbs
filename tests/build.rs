@@ -1,23 +1,25 @@
-use interner::{Interner, Str};
-use rand::seq::SliceRandom;
 use std::collections::HashSet;
-use std::sync::Arc;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
-use zxbs::{build, command, interner};
+
+use rand::seq::SliceRandom;
+use zxbs::build::{self, Task};
+use zxbs::command::{self, Command};
+use zxbs::interner::{Interner, Str};
+use zxbs::thread_pool::ThreadPool;
 
 fn make_task(
     interner: &mut Interner,
     finished: Arc<Mutex<HashSet<Str>>>,
     inputs: Vec<Str>,
     outputs: Vec<Str>,
-) -> build::Task {
-    build::Task {
+) -> Task {
+    Task {
         entry_name: interner.insert("dummy_entry"),
         part_name: interner.insert("dummy_part"),
         inputs: inputs.clone(),
         outputs: outputs.clone(),
-        command: Some(command::Command::TestCmd(command::TestCmd {
+        command: Some(Command::TestCmd(command::TestCmd {
             inputs,
             outputs,
             finished,
@@ -26,16 +28,24 @@ fn make_task(
     }
 }
 
-#[tokio::test]
-async fn empty_run() {
-    let mut interner = interner::Interner::new();
-    let build = build::Build::new(None, &mut interner, Vec::new(), Instant::now());
-    build.await;
+#[test]
+fn empty_run() {
+    let thread_pool = ThreadPool::new(2);
+    let mut interner = Interner::new();
+    build::Build::new(
+        None,
+        &mut interner,
+        Vec::new(),
+        Instant::now(),
+        &thread_pool,
+    )
+    .build();
 }
 
-#[tokio::test]
-async fn simple_run() {
-    let mut interner = interner::Interner::new();
+#[test]
+fn simple_run() {
+    let thread_pool = ThreadPool::new(2);
+    let mut interner = Interner::new();
 
     let one = interner.insert("1");
     let two = interner.insert("2");
@@ -54,8 +64,7 @@ async fn simple_run() {
     let mut rng = rand::rng();
     tasks.shuffle(&mut rng);
 
-    let build = build::Build::new(None, &mut interner, tasks, Instant::now());
-    build.await;
+    build::Build::new(None, &mut interner, tasks, Instant::now(), &thread_pool).build();
 
     let finished = finished.lock().unwrap();
     assert!(finished.contains(&one));
