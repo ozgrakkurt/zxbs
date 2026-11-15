@@ -1,25 +1,23 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+use std::io::ErrorKind as IoErrorKind;
 use std::mem::size_of;
+use std::path::Path;
 
 use crate::hash::{Hash, hash_bytes};
-use crate::thread_pool::{ThreadPool, JoinSet};
+use crate::thread_pool::{JoinSet, ThreadPool};
 
 fn read_bytes<T>(content: &[u8], offset: &mut usize) -> Result<T, ()> {
-    const SIZE: usize = size_of::<T>();
-
     let offs = *offset;
-    let end = size + offs;
-    
+    let end = size_of::<T>() + offs;
+
     if end > content.len() {
         return Err(());
     }
 
     *offset = end;
 
-    let bytes = [u8; SIZE]::try_from(content[offs..end]).unwrap();
-
-    T::from_le_bytes(bytes)
+    // Bite me.
+    Ok(unsafe { ptr::read_unaligned(content.as_ptr().add(offs) as *const T) })
 }
 
 struct CacheEntry {
@@ -72,9 +70,9 @@ const STATE_FILE_MAGIC: u64 = 0x167045aafea85f3du64;
 // CACHED FILE FORMAT
 // name: <deep_hash>
 // content: <output content>
-// 
+//
 // The checksum is hash_bytes(<all file content that came before the checksum>);
-// 
+//
 // location: <cache_path>/
 //
 // We don't ever expect cached files to be corrupted.
@@ -103,7 +101,7 @@ const STATE_FILE_MAGIC: u64 = 0x167045aafea85f3du64;
 
 fn serialize_state_file(entries: &BTreeMap<Hash, CacheEntry>, out: &mut Vec<u8>) {
     let start_offset = out.len();
-    
+
     out.extend_from_slice(&STATE_FILE_MAGIC.to_le_bytes());
 
     let num_entries = u32::try_from(entries.len()).unwrap();
@@ -127,7 +125,7 @@ fn deserialize_state_file(content: &[u8]) -> BTreeMap<Hash, CacheEntry> {
     let magic = read_bytes::<u64>(content, &mut offset).unwrap();
 
     assert!(magic == WAL_FILE_MAGIC);
-    
+
     let num_entries = read_bytes::<u32>(content, &mut offset).unwrap();
 
     let mut out: BTreeMap<Hash, CacheEntry> = BTreeMap::new();
@@ -137,9 +135,17 @@ fn deserialize_state_file(content: &[u8]) -> BTreeMap<Hash, CacheEntry> {
         let output_hash = read_bytes::<Hash>(content, &mut offset).unwrap();
         let output_size = read_bytes::<u32>(content, &mut offset).unwrap();
 
-        assert!(out.insert(deep_hash, CacheEntry {
-            last_used_timestamp, output_hash, output_size,
-        }).is_none());
+        assert!(
+            out.insert(
+                deep_hash,
+                CacheEntry {
+                    last_used_timestamp,
+                    output_hash,
+                    output_size,
+                }
+            )
+            .is_none()
+        );
     }
 
     let checksum_check = hash_bytes(&content[..offset]);
@@ -189,7 +195,7 @@ fn deserialize_wal_file(content: &[u8]) -> Result<WalEntry, ()> {
     if magic != WAL_FILE_MAGIC {
         return Err(());
     }
-    
+
     let deep_hash = read_bytes::<Hash>(content, &mut offset)?;
     let output_hash = read_bytes::<Hash>(content, &mut offset)?;
     let output_size = read_bytes::<u32>(content, &mut offset)?;
@@ -213,45 +219,78 @@ fn deserialize_wal_file(content: &[u8]) -> Result<WalEntry, ()> {
     })
 }
 
-fn load_state_file(state_file_path: &Path) -> CacheState {
-    if !std::fs::exists(&state_file_path).unwrap() {
-        return CacheState::empty();
-    }
-
-    let contents = std::fs::read(&state_file_path).unwrap();
-
-    CacheState::deserialize(&contents)
-}
-
-fn load_wal(state: &mut CacheState, wal_path: &Path) {
-    if !std::fs::exists(&wal_path).unwrap() {
-        std::fs::create_dir(&wal_path).unwrap();
-    }
-
-    let dir = std::fs::list_dir(wal_path).unwrap();
-
-    // load wal files, validate and merge into state.
-    for entry in dir {
-        let entry = entry.unwrap();
-    }
-}
-
-fn load_wal(wal_path: &Path, thread_pool: &ThreadPool, state: &mut CacheState) {
+fn load_wal(
+    cache_path: &Path,
+    wal_path: &Path,
+    thread_pool: &ThreadPool,
+    timestamp: u64,
+    state: &mut CacheState,
+) {
     let dir = match std::fs::read_dir(wal_path) {
         Ok(d) => d,
         Err(e) => {
-            assert!(e.kind() == IoErrorKind::NotFound)
+            assert!(e.kind() == IoErrorKind::NotFound);
             return;
         }
     };
-    
+
+    let mut join_set: JoinSet<Option<(Hash, CacheEntry)>> = JoinSet::new();
+
     for entry in dir {
         let entry = entry.unwrap();
         assert!(entry.file_type().unwrap().is_file());
 
-        let name = entry.file_name().unwrap();
+        let name = entry.file_name().unwrap().to_str().unwrap();
+        let deep_hash = Hash::from_str_radix(name, 16).unwrap();
 
-        
+        let wal_file_path = entry.path();
+        let cached_file_path = cache_path.join(name);
+
+        join_set.spawn(thread_pool, move || {
+            let contents = std::fs::read(&wal_file_path).unwrap();
+
+            let wal_entry = match deserialize_wal_file(&contents) {
+                Ok(v) => v,
+                Err(_) => return None,
+            };
+
+            if wal_entry.deep_hash != deep_hash {
+                return None;
+            }
+
+            let cached_file_content = match std::fs::read(&cached_file_path) {
+                Ok(v) => {
+                    let hash = hash_bytes(&v);
+
+                    if hash != wal_entry.output_hash {
+                        return None;
+                    }
+
+                    if v.len() != wal_entry.output_size {
+                        return None;
+                    }
+                }
+                Err(e) => {
+                    assert!(e.kind() == IoErrorKind::NotFound);
+                    return None;
+                }
+            };
+
+            Some((
+                deep_hash,
+                CacheEntry {
+                    last_used_timestamp: timetamp,
+                    output_size: wal_entry.output_size,
+                    output_hash: wal_entry.output_hash,
+                },
+            ))
+        });
+    }
+
+    while let Some(res) = join_set.join_next() {
+        if let Some((deep_hash, cache_entry)) = res {
+            state.insert(deep_hash, cache_entry);
+        }
     }
 }
 
@@ -260,7 +299,7 @@ fn load_wal(wal_path: &Path, thread_pool: &ThreadPool, state: &mut CacheState) {
 // - Load and validate wal files.
 // - Merge state_file with state coming from wal files.
 // - Delete all wal files.
-pub fn load(cache_path: &Path, thread_pool: &ThreadPool) -> CacheState {
+pub fn load(cache_path: &Path, thread_pool: &ThreadPool, timestamp: u64) -> CacheState {
     let wal_path = cache_path.join("wal");
 
     if !std::fs::exists(cache_path).unwrap() {
@@ -275,12 +314,12 @@ pub fn load(cache_path: &Path, thread_pool: &ThreadPool) -> CacheState {
     let mut state: CacheState = match std::fs::read(&state_file_path) {
         Ok(v) => deserialize_cache_state(&v),
         Err(e) => {
-            assert!(e.kind() == IoErrorKind::NotFound)
+            assert!(e.kind() == IoErrorKind::NotFound);
             CacheState::empty()
         }
     };
 
-    load_wal(&wal_path, thread_pool, &mut state);
+    load_wal(cache_path, &wal_path, thread_pool, timestamp, &mut state);
 
     state
 }
@@ -289,26 +328,4 @@ pub fn load(cache_path: &Path, thread_pool: &ThreadPool) -> CacheState {
 // - Merge new entries with existing ones. Need to collect more info per new entry to do this.
 // - Store state file.
 // - Delete all wal files.
-pub fn finish(mut state: CacheState, cache_path: &Path, timestamp: u64) {
-    for &hash in state.new_entries.iter() {
-        let file_path = cache_path.join(format!("{:x}", hash));
-        let bytes = std::fs::read(file_path).unwrap();
-        let output_hash = hash_bytes(&bytes);
-
-        state.entries.insert(
-            hash,
-            Entry {
-                output_hash,
-                last_used_timestamp: timestamp,
-            },
-        );
-    }
-
-    // TODO: Prune the cache to keep it under some size limit.
-
-    let mut contents = Vec::new();
-    state.serialize(&mut contents);
-
-    let state_file_path = cache_path.join("cache_state");
-    std::fs::write(&state_file_path, &contents).unwrap();
-}
+pub fn finish(state: CacheState, cache_path: &Path, timestamp: u64) {}
