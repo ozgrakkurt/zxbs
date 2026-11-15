@@ -17,7 +17,7 @@ fn read_bytes<T>(content: &[u8], offset: &mut usize) -> Result<T, ()> {
     *offset = end;
 
     // Bite me.
-    Ok(unsafe { ptr::read_unaligned(content.as_ptr().add(offs) as *const T) })
+    Ok(unsafe { std::ptr::read_unaligned(content.as_ptr().add(offs) as *const T) })
 }
 
 struct CacheEntry {
@@ -26,10 +26,10 @@ struct CacheEntry {
     output_size: u32,
 }
 
-struct WalEntry {
-    deep_hash: Hash,
-    output_hash: Hash,
-    output_size: u32,
+pub struct WalEntry {
+    pub deep_hash: Hash,
+    pub output_hash: Hash,
+    pub output_size: u32,
 }
 
 pub struct CacheState {
@@ -115,7 +115,7 @@ fn serialize_state_file(entries: &BTreeMap<Hash, CacheEntry>, out: &mut Vec<u8>)
         out.extend_from_slice(&entry.output_size.to_le_bytes());
     }
 
-    let checksum = hash_bytes(out.as_slice()[start_offset..]);
+    let checksum = hash_bytes(&out.as_slice()[start_offset..]);
     out.extend_from_slice(&checksum.to_le_bytes());
 }
 
@@ -156,7 +156,7 @@ fn deserialize_state_file(content: &[u8]) -> BTreeMap<Hash, CacheEntry> {
 
     assert!(offset == content.len());
 
-    Ok(out)
+    out
 }
 
 // WAL FILE FORMAT
@@ -174,7 +174,7 @@ fn deserialize_state_file(content: &[u8]) -> BTreeMap<Hash, CacheEntry> {
 //
 // We will delete all wal files after we finish recovery step in cache loading.
 
-fn serialize_wal_file(entry: &WalEntry, out: &mut Vec<u8>) {
+pub fn serialize_wal_file(entry: &WalEntry, out: &mut Vec<u8>) {
     let start_offset = out.len();
 
     out.extend_from_slice(&WAL_FILE_MAGIC.to_le_bytes());
@@ -183,7 +183,7 @@ fn serialize_wal_file(entry: &WalEntry, out: &mut Vec<u8>) {
     out.extend_from_slice(&entry.output_hash.to_le_bytes());
     out.extend_from_slice(&entry.output_size.to_le_bytes());
 
-    let checksum = hash_bytes(out.as_slice()[start_offset..]);
+    let checksum = hash_bytes(&out.as_slice()[start_offset..]);
     out.extend_from_slice(&checksum.to_le_bytes());
 }
 
@@ -224,7 +224,7 @@ fn load_wal(
     wal_path: &Path,
     thread_pool: &ThreadPool,
     timestamp: u64,
-    state: &mut CacheState,
+    entries: &mut BTreeMap<Hash, CacheEntry>,
 ) {
     let dir = match std::fs::read_dir(wal_path) {
         Ok(d) => d,
@@ -240,7 +240,8 @@ fn load_wal(
         let entry = entry.unwrap();
         assert!(entry.file_type().unwrap().is_file());
 
-        let name = entry.file_name().unwrap().to_str().unwrap();
+        let file_name = entry.file_name();
+        let name = file_name.to_str().unwrap();
         let deep_hash = Hash::from_str_radix(name, 16).unwrap();
 
         let wal_file_path = entry.path();
@@ -259,27 +260,24 @@ fn load_wal(
             }
 
             let cached_file_content = match std::fs::read(&cached_file_path) {
-                Ok(v) => {
-                    let hash = hash_bytes(&v);
-
-                    if hash != wal_entry.output_hash {
-                        return None;
-                    }
-
-                    if v.len() != wal_entry.output_size {
-                        return None;
-                    }
-                }
+                Ok(v) => v,
                 Err(e) => {
                     assert!(e.kind() == IoErrorKind::NotFound);
                     return None;
                 }
             };
 
+            if hash_bytes(&cached_file_content) != wal_entry.output_hash {
+                return None;
+            }
+            if cached_file_content.len() != usize::try_from(wal_entry.output_size).unwrap() {
+                return None;
+            }
+
             Some((
                 deep_hash,
                 CacheEntry {
-                    last_used_timestamp: timetamp,
+                    last_used_timestamp: timestamp,
                     output_size: wal_entry.output_size,
                     output_hash: wal_entry.output_hash,
                 },
@@ -289,7 +287,7 @@ fn load_wal(
 
     while let Some(res) = join_set.join_next() {
         if let Some((deep_hash, cache_entry)) = res {
-            state.insert(deep_hash, cache_entry);
+            entries.insert(deep_hash, cache_entry);
         }
     }
 }
@@ -304,24 +302,27 @@ pub fn load(cache_path: &Path, thread_pool: &ThreadPool, timestamp: u64) -> Cach
 
     if !std::fs::exists(cache_path).unwrap() {
         std::fs::create_dir_all(cache_path).unwrap();
-        std::fs::create_dir(&wal_path);
+        std::fs::create_dir(&wal_path).unwrap();
 
         return CacheState::empty();
     }
 
     let state_file_path = cache_path.join("cache_state");
 
-    let mut state: CacheState = match std::fs::read(&state_file_path) {
-        Ok(v) => deserialize_cache_state(&v),
+    let mut entries: BTreeMap<Hash, CacheEntry> = match std::fs::read(&state_file_path) {
+        Ok(v) => deserialize_state_file(&v),
         Err(e) => {
             assert!(e.kind() == IoErrorKind::NotFound);
-            CacheState::empty()
+            BTreeMap::new()
         }
     };
 
-    load_wal(cache_path, &wal_path, thread_pool, timestamp, &mut state);
+    load_wal(cache_path, &wal_path, thread_pool, timestamp, &mut entries);
 
-    state
+    CacheState {
+        entries,
+        new_entries: BTreeSet::new(),
+    }
 }
 
 // New entries only record their deep hashes because their outputs are not
@@ -332,34 +333,36 @@ pub fn load(cache_path: &Path, thread_pool: &ThreadPool, timestamp: u64) -> Cach
 //
 // A new entry without a cached file means its output was never produced (or
 // never cached) in this run of the build system, so we just drop it.
-fn merge_new_entries(cache_path: &Path, timestamp: u64, state: &mut CacheState) {
+fn merge_new_entries(
+    cache_path: &Path,
+    thread_pool: &ThreadPool,
+    timestamp: u64,
+    state: &mut CacheState,
+) {
+    let mut join_set: JoinSet<(Hash, CacheEntry)> = JoinSet::new();
+
     for &deep_hash in state.new_entries.iter() {
         let cached_file_path = cache_path.join(format!("{:x}", deep_hash));
 
-        let content = match std::fs::read(&cached_file_path) {
-            Ok(v) => v,
-            Err(e) => {
-                assert!(e.kind() == IoErrorKind::NotFound);
-                continue;
-            }
-        };
+        join_set.spawn(thread_pool, move || {
+            let content = std::fs::read(&cached_file_path).unwrap();
 
-        let output_hash = hash_bytes(&content);
-        let output_size = u32::try_from(content.len()).unwrap();
+            let output_hash = hash_bytes(&content);
+            let output_size = u32::try_from(content.len()).unwrap();
 
-        assert!(
-            state
-                .entries
-                .insert(
-                    deep_hash,
-                    CacheEntry {
-                        last_used_timestamp: timestamp,
-                        output_hash,
-                        output_size,
-                    }
-                )
-                .is_none()
-        );
+            (
+                deep_hash,
+                CacheEntry {
+                    last_used_timestamp: timestamp,
+                    output_hash,
+                    output_size,
+                },
+            )
+        });
+    }
+
+    while let Some((deep_hash, cache_entry)) = join_set.join_next() {
+        assert!(state.entries.insert(deep_hash, cache_entry,).is_none());
     }
 }
 
@@ -398,7 +401,7 @@ fn spawn_prune(
         .map(|(deep_hash, entry)| (entry.last_used_timestamp, *deep_hash))
         .collect();
 
-    sorted.sort_unstable_by(|a, b| b.0.cmp(a.0));
+    sorted.sort_unstable_by(|a, b| b.0.cmp(&a.0));
 
     let mut size = total_size;
 
@@ -407,7 +410,7 @@ fn spawn_prune(
 
         let entry = entries.remove(&deep_hash).unwrap();
 
-        size -= entry.output_size;
+        size -= u64::from(entry.output_size);
 
         let cached_file_path = cache_path.join(format!("{:x}", deep_hash));
         join_set.spawn(thread_pool, move || {
@@ -439,7 +442,7 @@ fn spawn_delete_wal(wal_path: &Path, thread_pool: &ThreadPool, join_set: &mut Jo
         let path = entry.path();
 
         join_set.spawn(thread_pool, move || {
-            std::fs::remove_file(entry.path()).unwrap();
+            std::fs::remove_file(path).unwrap();
         });
     }
 }
@@ -448,7 +451,7 @@ fn spawn_delete_wal(wal_path: &Path, thread_pool: &ThreadPool, join_set: &mut Jo
 // - Merge new entries with existing ones. Need to collect more info per new entry to do this.
 // - Store state file.
 // - Delete all wal files.
-pub fn finish(mut state: CacheState, cache_path: &Path, timestamp: u64) {
+pub fn finish(mut state: CacheState, cache_path: &Path, thread_pool: &ThreadPool, timestamp: u64) {
     let wal_path = cache_path.join("wal");
 
     let mut join_set: JoinSet<()> = JoinSet::new();
@@ -465,7 +468,7 @@ pub fn finish(mut state: CacheState, cache_path: &Path, timestamp: u64) {
     spawn_delete_wal(&wal_path, thread_pool, &mut join_set);
 
     // merge AFTER pruning so we never prune the new entries.
-    merge_new_entries(cache_path, timestamp, &mut state);
+    merge_new_entries(cache_path, thread_pool, timestamp, &mut state);
 
     store_state_file(cache_path, &state.entries);
 

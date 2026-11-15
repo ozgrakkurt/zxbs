@@ -1,4 +1,4 @@
-pub fn check_name(name_str: &str, err_ctx: &str) -> Result<(), ()> {
+pub fn check_name(name_str: &str, err_ctx: &str) {
     let name = name_str.as_bytes();
     assert!(
         !name.is_empty(),

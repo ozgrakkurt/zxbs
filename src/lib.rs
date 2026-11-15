@@ -7,6 +7,7 @@
 #![allow(clippy::while_let_on_iterator)]
 #![allow(clippy::needless_range_loop)]
 #![allow(clippy::let_and_return)]
+#![allow(clippy::unnecessary_sort_by)]
 
 pub mod base_hash;
 pub mod build;

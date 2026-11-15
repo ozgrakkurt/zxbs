@@ -30,7 +30,7 @@ fn run() {
 
     let mut t0 = Instant::now();
     let cache_state_load_start = make_duration(&beginning);
-    let mut cache_state = cache::load(config.cache_path);
+    let mut cache_state = cache::load(config.cache_path, &thread_pool, start_timestamp);
     top_level_timings.insert(
         "CacheState Load".to_owned(),
         (cache_state_load_start, make_duration(&t0)),
@@ -99,7 +99,12 @@ fn run() {
 
     t0 = Instant::now();
     let cache_state_finish = make_duration(&beginning);
-    cache::finish(cache_state, config.cache_path, start_timestamp);
+    cache::finish(
+        cache_state,
+        config.cache_path,
+        &thread_pool,
+        start_timestamp,
+    );
     top_level_timings.insert(
         "CacheState Finish".to_owned(),
         (cache_state_finish, make_duration(&t0)),
