@@ -32,6 +32,7 @@ pub struct Config {
     pub src_path: &'static Path,
     pub cache_path: &'static Path,
     pub time_trace: bool,
+    pub fuzz_unlimited: bool,
 }
 
 fn parse_bool_arg(args: &mut HashMap<String, Option<String>>, name: &str, default: bool) -> bool {
@@ -97,6 +98,7 @@ struct FlagCfg {
     dev_mode: bool,
     debug_info: bool,
     fuzz: bool,
+    fuzz_unlimited: bool,
     build_path: &'static Path,
     cxx_time_trace: bool,
 }
@@ -201,6 +203,13 @@ fn make_cxxflags(cfg: &FlagCfg) -> Vec<&'static str> {
     if cfg.fuzz {
         cxxflags.push("-DZX_FUZZ");
         cxxflags.push("-fsanitize-coverage=trace-pc-guard");
+    }
+
+    if cfg.fuzz_unlimited {
+        if !cfg.fuzz {
+            panic!("Using --fuzz-unlimited without --fuzz doesn't make sense.");
+        }
+        cxxflags.push("-DZX_FUZZ_UNLIMITED");
     }
 
     cxxflags
@@ -353,6 +362,7 @@ impl Config {
         let dev_mode = parse_bool_arg(&mut flags, "dev-mode", true);
         let debug_info = parse_bool_arg(&mut flags, "debug-info", true);
         let fuzz = parse_bool_arg(&mut flags, "fuzz", false);
+        let fuzz_unlimited = parse_bool_arg(&mut flags, "fuzz-unlimited", false);
         let src_dir = parse_str_arg(&mut flags, "--src-dir", "src");
         let build_dir = parse_str_arg(&mut flags, "--build-dir", "build");
         let time_trace = parse_bool_arg(&mut flags, "time-trace", false);
@@ -380,6 +390,7 @@ impl Config {
             fuzz,
             build_path,
             cxx_time_trace,
+            fuzz_unlimited,
         };
         let cxxflags = make_cxxflags(&flag_cfg).leak();
         let ldflags = make_ldflags(&flag_cfg).leak();
@@ -395,6 +406,7 @@ impl Config {
             cxxflags,
             ldflags,
             time_trace,
+            fuzz_unlimited,
         }
     }
 
@@ -407,6 +419,12 @@ impl Config {
         let subcommand = Self::parse_subcommand(&subcommand_name, &mut args);
 
         let config = Self::parse_config(flags);
+
+        if subcommand == Subcommand::TestAll && config.fuzz_unlimited {
+            panic!(
+                "Using `test` command without a specific target while --fuzz-unlimited is not allowed. Doing this would mean some fuzz tests will run forever and some will never run since we have limited concurrency while running tests."
+            );
+        }
 
         (config, subcommand)
     }
