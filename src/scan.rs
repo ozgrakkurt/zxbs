@@ -59,6 +59,10 @@ impl BuildInfo {
             } => (entry_name, test_name, true),
             Subcommand::Build => return,
             Subcommand::Fmt => return,
+            Subcommand::Clean => {
+                // this subcommand should be handled in main.rs so should never come here.
+                unreachable!();
+            }
         };
 
         let entry = interner.insert(entry_name);

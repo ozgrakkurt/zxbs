@@ -257,6 +257,7 @@ version = "1.0.0"
 dependencies = [
  "crossbeam-channel",
  "num_cpus",
+ "rand",
  "serde_json",
  "xxhash-rust",
 ]

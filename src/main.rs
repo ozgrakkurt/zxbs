@@ -1,8 +1,12 @@
+#![allow(clippy::single_match)]
+
 use std::time::Instant;
-use zxbs::{
-    base_hash::calculate_base_hash, build, cache, config, directory, hash::HashMap, interner, plan,
-    scan, thread_pool::ThreadPool, timestamp::timestamp, tracer,
-};
+use zxbs::base_hash::calculate_base_hash;
+use zxbs::config::Subcommand;
+use zxbs::hash::HashMap;
+use zxbs::thread_pool::ThreadPool;
+use zxbs::timestamp::timestamp;
+use zxbs::{build, cache, config, directory, interner, plan, scan, tracer};
 
 fn make_duration(start: &Instant) -> u64 {
     u64::try_from(start.elapsed().as_micros()).unwrap()
@@ -11,13 +15,21 @@ fn make_duration(start: &Instant) -> u64 {
 fn run() {
     let (config, subcommand) = config::Config::parse_cli();
 
-    let config: &'static config::Config = Box::leak(Box::new(config));
-
-    let interner: &'static mut interner::Interner = Box::leak(Box::new(interner::Interner::new()));
-
     // It is ok to use more threads than the physical cpu count because the program does IO heavy
     // workloads in some parts.
     let thread_pool = ThreadPool::new(128);
+
+    match &subcommand {
+        Subcommand::Clean => {
+            directory::remove_dir_all(config.cache_path, &thread_pool);
+            return;
+        }
+        _ => {}
+    }
+
+    let config: &'static config::Config = Box::leak(Box::new(config));
+
+    let interner: &'static mut interner::Interner = Box::leak(Box::new(interner::Interner::new()));
 
     let start_timestamp = timestamp();
 

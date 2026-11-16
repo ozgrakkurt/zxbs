@@ -17,6 +17,7 @@ pub enum Subcommand {
     },
     Build,
     Fmt,
+    Clean,
 }
 
 #[derive(Debug, PartialEq)]
@@ -297,6 +298,13 @@ impl Config {
                     "Didn't expect arguments for `fmt` subcommand"
                 );
                 Subcommand::Fmt
+            }
+            "clean" => {
+                assert!(
+                    args.next().is_none(),
+                    "Didn't expect arguments for `clean` subcommand"
+                );
+                Subcommand::Clean
             }
             sc => panic!("unexpected subcommand name: `{}`", sc),
         }
