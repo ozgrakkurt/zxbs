@@ -374,7 +374,7 @@ fn spawn_hash_scan_targets(
     }
 }
 
-fn check_cyclic_dependencies_between_entries(
+pub fn check_cyclic_dependencies_between_entries(
     interner: &Interner,
     entry_names: &[Str],
     entry_name_map: &HashMap<Str, u32>,
@@ -507,7 +507,7 @@ fn check_cyclic_dependencies_between_entries(
     }
 }
 
-fn check_cyclic_dependencies_between_module_parts(
+pub fn check_cyclic_dependencies_between_module_parts(
     interner: &Interner,
     entry_name: Str,
     mod_list: &[Str],

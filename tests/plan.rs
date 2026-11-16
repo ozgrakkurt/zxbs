@@ -1213,3 +1213,106 @@ fn test_cache_state() {
 
     std::fs::remove_dir_all(&folder).unwrap();
 }
+
+fn find_entry(info: &BuildInfo, interner: &mut Interner, name: &str) -> usize {
+    usize::try_from(*info.map.get(&interner.insert(name)).unwrap()).unwrap()
+}
+
+// The deep hashes are what decide whether an artifact can be loaded from the
+// cache. They must change when anything the artifact depends on changes, and
+// they must not change when unrelated things change. Getting this wrong means
+// either stale binaries or useless cache misses.
+#[test]
+fn test_deep_hash_invalidation() {
+    let folder = format!("/tmp/opencode/zxbs-tests/{}", rand::random::<u128>());
+    let cfg = make_config(&folder);
+    make_chain(cfg.src_path);
+
+    let thread_pool = ThreadPool::new(4);
+    let ts = timestamp();
+    let mut interner = Interner::new();
+
+    let mut cache_state = cache::load(cfg.cache_path, &thread_pool, ts);
+    let info = scan::scan(cfg, &mut interner, &thread_pool, 0, &mut cache_state, ts);
+    let before = plan::construct_deep_hashes(cfg, &mut interner, &info, 0);
+
+    // Change a source file that only ends up in `core`'s library archive. The
+    // module interface of `core` doesn't change, so module artifacts and the
+    // library archives of the dependent entries must stay the same, while the
+    // archive of `core` and everything linked from it must change.
+    std::fs::write(
+        cfg.src_path.join("core/lib/base_utils.cc"),
+        "import core;\n// changed\n",
+    )
+    .unwrap();
+
+    let mut cache_state = cache::load(cfg.cache_path, &thread_pool, ts);
+    let info = scan::scan(cfg, &mut interner, &thread_pool, 0, &mut cache_state, ts);
+    let after = plan::construct_deep_hashes(cfg, &mut interner, &info, 0);
+
+    let core = find_entry(&info, &mut interner, "core");
+    let mid = find_entry(&info, &mut interner, "mid");
+    let top = find_entry(&info, &mut interner, "top");
+
+    assert_eq!(before.entry_pcm[core], after.entry_pcm[core]);
+    assert_eq!(before.module_pcm[core], after.module_pcm[core]);
+    assert_eq!(before.module_object[core], after.module_object[core]);
+    assert_eq!(before.test_object[core], after.test_object[core]);
+
+    assert_ne!(before.lib_object[core], after.lib_object[core]);
+    assert_ne!(
+        before.entry_lib_archive[core],
+        after.entry_lib_archive[core]
+    );
+    assert_ne!(before.test_exe[core], after.test_exe[core]);
+
+    // Dependents link `core`'s library but don't recompile their own modules
+    // or libraries.
+    assert_eq!(before.entry_pcm[mid], after.entry_pcm[mid]);
+    assert_eq!(before.entry_lib_archive[mid], after.entry_lib_archive[mid]);
+    assert_ne!(before.bin_exe[mid], after.bin_exe[mid]);
+    assert_ne!(before.test_exe[mid], after.test_exe[mid]);
+
+    assert_eq!(before.entry_pcm[top], after.entry_pcm[top]);
+    assert_eq!(before.entry_lib_archive[top], after.entry_lib_archive[top]);
+    assert_ne!(before.bin_exe[top], after.bin_exe[top]);
+    assert_ne!(before.test_exe[top], after.test_exe[top]);
+
+    // Now change the module interface of `core`. This propagates through every
+    // entry that (transitively) imports it.
+    let before = after;
+    std::fs::write(
+        cfg.src_path.join("core/mod/core.cppm"),
+        "export module core;\n// changed\n",
+    )
+    .unwrap();
+
+    let mut cache_state = cache::load(cfg.cache_path, &thread_pool, ts);
+    let info = scan::scan(cfg, &mut interner, &thread_pool, 0, &mut cache_state, ts);
+    let after = plan::construct_deep_hashes(cfg, &mut interner, &info, 0);
+
+    let core = find_entry(&info, &mut interner, "core");
+    let mid = find_entry(&info, &mut interner, "mid");
+    let top = find_entry(&info, &mut interner, "top");
+
+    assert_ne!(before.module_pcm[core], after.module_pcm[core]);
+    assert_ne!(before.entry_pcm[core], after.entry_pcm[core]);
+    assert_ne!(before.lib_object[core], after.lib_object[core]);
+    assert_ne!(
+        before.entry_lib_archive[core],
+        after.entry_lib_archive[core]
+    );
+    assert_ne!(before.test_exe[core], after.test_exe[core]);
+
+    assert_ne!(before.entry_pcm[mid], after.entry_pcm[mid]);
+    assert_ne!(before.entry_lib_archive[mid], after.entry_lib_archive[mid]);
+    assert_ne!(before.bin_exe[mid], after.bin_exe[mid]);
+    assert_ne!(before.test_exe[mid], after.test_exe[mid]);
+
+    assert_ne!(before.entry_pcm[top], after.entry_pcm[top]);
+    assert_ne!(before.entry_lib_archive[top], after.entry_lib_archive[top]);
+    assert_ne!(before.bin_exe[top], after.bin_exe[top]);
+    assert_ne!(before.test_exe[top], after.test_exe[top]);
+
+    std::fs::remove_dir_all(&folder).unwrap();
+}

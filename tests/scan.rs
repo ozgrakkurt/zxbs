@@ -4,7 +4,10 @@ use zxbs::cache;
 use zxbs::config::{Config, Subcommand};
 use zxbs::hash::{HashMap, hash_ordered};
 use zxbs::interner::{Interner, Str};
-use zxbs::scan::{BuildInfo, scan};
+use zxbs::scan::{
+    BuildInfo, check_cyclic_dependencies_between_entries,
+    check_cyclic_dependencies_between_module_parts, scan,
+};
 use zxbs::thread_pool::ThreadPool;
 use zxbs::timestamp::timestamp;
 
@@ -565,4 +568,74 @@ fn test_more_trees() {
 
         std::fs::remove_dir_all(&folder).unwrap();
     }
+}
+
+fn make_entry_graph(interner: &mut Interner, names: &[&str]) -> (Vec<Str>, HashMap<Str, u32>) {
+    let strs: Vec<Str> = names.iter().map(|name| interner.insert(name)).collect();
+    let map: HashMap<Str, u32> = strs
+        .iter()
+        .enumerate()
+        .map(|(idx, &s)| (s, u32::try_from(idx).unwrap()))
+        .collect();
+    (strs, map)
+}
+
+fn make_dep_matrix(num_parts: usize, deps: &[(usize, usize)]) -> Vec<bool> {
+    let mut matrix = vec![false; num_parts * num_parts];
+    for &(part, dep) in deps.iter() {
+        matrix[part * num_parts + dep] = true;
+    }
+    matrix
+}
+
+#[test]
+fn test_entry_cycle_check_accepts_dag() {
+    let mut interner = Interner::new();
+    // a -> b, c; b -> d; c -> d; e is disconnected.
+    let (names, map) = make_entry_graph(&mut interner, &["a", "b", "c", "d", "e"]);
+    let deps = vec![
+        vec![names[1], names[2]],
+        vec![names[3]],
+        vec![names[3]],
+        Vec::new(),
+        Vec::new(),
+    ];
+
+    check_cyclic_dependencies_between_entries(&interner, &names, &map, &deps);
+}
+
+#[test]
+#[should_panic(expected = "dependency cycle between entries")]
+fn test_entry_cycle_check_rejects_cycle() {
+    let mut interner = Interner::new();
+    // d is independent and visited first. a -> b -> c -> a is a cycle.
+    let (names, map) = make_entry_graph(&mut interner, &["d", "a", "b", "c"]);
+    let deps = vec![Vec::new(), vec![names[2]], vec![names[3]], vec![names[1]]];
+
+    check_cyclic_dependencies_between_entries(&interner, &names, &map, &deps);
+}
+
+#[test]
+fn test_module_cycle_check_accepts_dag() {
+    let mut interner = Interner::new();
+    let names = ["root", "left", "right", "common"];
+    let parts: Vec<Str> = names.iter().map(|name| interner.insert(name)).collect();
+    // root -> left, right, common; left/right -> common.
+    let matrix = make_dep_matrix(4, &[(0, 1), (0, 2), (0, 3), (1, 3), (2, 3)]);
+    let entry_name = interner.insert("entry");
+
+    check_cyclic_dependencies_between_module_parts(&interner, entry_name, &parts, &matrix);
+}
+
+#[test]
+#[should_panic(expected = "module dependency cycle")]
+fn test_module_cycle_check_rejects_cycle() {
+    let mut interner = Interner::new();
+    let names = ["a", "b", "c"];
+    let parts: Vec<Str> = names.iter().map(|name| interner.insert(name)).collect();
+    // a -> b -> c -> a.
+    let matrix = make_dep_matrix(3, &[(0, 1), (1, 2), (2, 0)]);
+    let entry_name = interner.insert("entry");
+
+    check_cyclic_dependencies_between_module_parts(&interner, entry_name, &parts, &matrix);
 }

@@ -15,9 +15,14 @@ pub fn hash_bytes(bytes: &[u8]) -> Hash {
 }
 
 // Order DEPENDENT hashing of multiple buffers into a single hash value.
+//
+// The length of each buffer is mixed in before its contents so that different
+// splits of the same bytes don't hash to the same value. Without that,
+// `[b"ab", b"c"]` and `[b"a", b"bc"]` would be indistinguishable.
 pub fn hash_ordered(buffers: &[&[u8]]) -> Hash {
     let mut builder = HashBuilder::new();
     for &buf in buffers.iter() {
+        builder.update(&u64::try_from(buf.len()).unwrap().to_le_bytes());
         builder.update(buf);
     }
     builder.digest128()
