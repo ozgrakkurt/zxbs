@@ -7,17 +7,14 @@ use zxbs::thread_pool::{JoinSet, ThreadPool};
 use zxbs::timestamp::timestamp;
 
 fn make_cache_dir() -> PathBuf {
-    let path = PathBuf::from(format!(
-        "/tmp/opencode/zxbs-tests/{}",
-        rand::random::<u128>()
-    ));
+    let path = PathBuf::from(format!("/tmp/zxbs-tests/{}", rand::random::<u128>()));
     std::fs::create_dir_all(&path).unwrap();
     path
 }
 
 #[test]
 fn test_cache_roundtrip() {
-    let folder = format!("/tmp/opencode/zxbs-tests/{}", rand::random::<u128>());
+    let folder = format!("/tmp/zxbs-tests/{}", rand::random::<u128>());
     let cache_dir = format!("{}/cache", folder);
     let cache_path = Path::new(&cache_dir);
 
@@ -99,7 +96,7 @@ fn test_cache_roundtrip() {
 // have been partially written or tampered with.
 #[test]
 fn test_invalid_wal_recovery_is_ignored() {
-    let folder = format!("/tmp/opencode/zxbs-tests/{}", rand::random::<u128>());
+    let folder = format!("/tmp/zxbs-tests/{}", rand::random::<u128>());
     let cache_dir = format!("{}/cache", folder);
     let cache_path = Path::new(&cache_dir);
 

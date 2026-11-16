@@ -16,7 +16,7 @@ use make_folders::{make_baselib, make_chain, make_diamond, make_iolib, make_myap
 
 #[test]
 fn test_empty() {
-    let folder = format!("/tmp/opencode/zxbs-tests/{}", rand::random::<u128>());
+    let folder = format!("/tmp/zxbs-tests/{}", rand::random::<u128>());
     let build_path = format!("{}/build", folder);
     let src_path = format!("{}/src", folder);
     std::fs::create_dir_all(&src_path).unwrap();
@@ -330,7 +330,7 @@ fn check_all_basic_hashes(
 
 #[test]
 fn test_simple() {
-    let folder = format!("/tmp/opencode/zxbs-tests/{}", rand::random::<u128>());
+    let folder = format!("/tmp/zxbs-tests/{}", rand::random::<u128>());
     let build_path = format!("{}/build", folder);
     let src_path = format!("{}/src", folder);
     std::fs::create_dir_all(&src_path).unwrap();
@@ -398,7 +398,7 @@ fn test_more_trees() {
     // A single entry with a diamond shaped module dependency graph, two bins
     // and two tests.
     {
-        let folder = format!("/tmp/opencode/zxbs-tests/{}", rand::random::<u128>());
+        let folder = format!("/tmp/zxbs-tests/{}", rand::random::<u128>());
         let build_path = format!("{}/build", folder);
         let src_path = format!("{}/src", folder);
         std::fs::create_dir_all(&src_path).unwrap();
@@ -463,7 +463,7 @@ fn test_more_trees() {
     // from both the root module and a submodule. `app` has no lib or bin
     // parts.
     {
-        let folder = format!("/tmp/opencode/zxbs-tests/{}", rand::random::<u128>());
+        let folder = format!("/tmp/zxbs-tests/{}", rand::random::<u128>());
         let build_path = format!("{}/build", folder);
         let src_path = format!("{}/src", folder);
         std::fs::create_dir_all(&src_path).unwrap();
@@ -514,7 +514,7 @@ fn test_more_trees() {
     // A linear chain of three entries: `top` depends on `mid` which depends
     // on `core`.
     {
-        let folder = format!("/tmp/opencode/zxbs-tests/{}", rand::random::<u128>());
+        let folder = format!("/tmp/zxbs-tests/{}", rand::random::<u128>());
         let build_path = format!("{}/build", folder);
         let src_path = format!("{}/src", folder);
         std::fs::create_dir_all(&src_path).unwrap();

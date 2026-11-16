@@ -106,7 +106,7 @@ fn test_should_run_binary() {
 
 #[test]
 fn test_empty() {
-    let folder = format!("/tmp/opencode/zxbs-tests/{}", rand::random::<u128>());
+    let folder = format!("/tmp/zxbs-tests/{}", rand::random::<u128>());
     let cfg = make_config(&folder);
 
     let thread_pool = ThreadPool::new(4);
@@ -570,7 +570,7 @@ fn task_debug_strings<'a>(
 
 #[test]
 fn test_simple() {
-    let folder = format!("/tmp/opencode/zxbs-tests/{}", rand::random::<u128>());
+    let folder = format!("/tmp/zxbs-tests/{}", rand::random::<u128>());
     let cfg = make_config(&folder);
 
     let src_path = std::path::Path::new(cfg.src_path);
@@ -942,7 +942,7 @@ fn test_more_trees() {
     //          + 2 tests * 6 + 2 bins * 4               = 36 tasks,
     // 20 of which are cache stores.
     {
-        let folder = format!("/tmp/opencode/zxbs-tests/{}", rand::random::<u128>());
+        let folder = format!("/tmp/zxbs-tests/{}", rand::random::<u128>());
         check_tree(
             &folder,
             make_diamond,
@@ -960,7 +960,7 @@ fn test_more_trees() {
     //       + 0 bins * 4                                = 14 tasks.
     // 17 of the 31 tasks are cache stores.
     {
-        let folder = format!("/tmp/opencode/zxbs-tests/{}", rand::random::<u128>());
+        let folder = format!("/tmp/zxbs-tests/{}", rand::random::<u128>());
         check_tree(
             &folder,
             make_util_app,
@@ -980,7 +980,7 @@ fn test_more_trees() {
     //       + 1 bin * 4                                 = 18 tasks.
     // 25 of the 46 tasks are cache stores.
     {
-        let folder = format!("/tmp/opencode/zxbs-tests/{}", rand::random::<u128>());
+        let folder = format!("/tmp/zxbs-tests/{}", rand::random::<u128>());
         check_tree(
             &folder,
             make_chain,
@@ -1018,7 +1018,7 @@ fn store_in_cache(cache_dir: &Path, path: &str, deep_hash: Hash) {
 // cold cache.
 #[test]
 fn test_cache_state() {
-    let folder = format!("/tmp/opencode/zxbs-tests/{}", rand::random::<u128>());
+    let folder = format!("/tmp/zxbs-tests/{}", rand::random::<u128>());
     let cfg = make_config(&folder);
 
     let src_path = std::path::Path::new(cfg.src_path);
@@ -1224,7 +1224,7 @@ fn find_entry(info: &BuildInfo, interner: &mut Interner, name: &str) -> usize {
 // either stale binaries or useless cache misses.
 #[test]
 fn test_deep_hash_invalidation() {
-    let folder = format!("/tmp/opencode/zxbs-tests/{}", rand::random::<u128>());
+    let folder = format!("/tmp/zxbs-tests/{}", rand::random::<u128>());
     let cfg = make_config(&folder);
     make_chain(cfg.src_path);
 

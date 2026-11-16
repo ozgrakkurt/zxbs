@@ -23,7 +23,7 @@ const NUM_ARTIFACTS: usize = 51;
 
 #[test]
 fn test_smoke() {
-    let folder = format!("/tmp/opencode/zxbs-tests/{}", rand::random::<u128>());
+    let folder = format!("/tmp/zxbs-tests/{}", rand::random::<u128>());
     let build_path = format!("{}/build", folder);
     let src_path = format!("{}/src", folder);
     std::fs::create_dir_all(&src_path).unwrap();

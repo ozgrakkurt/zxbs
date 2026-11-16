@@ -10,10 +10,7 @@ fn sorted(mut paths: Vec<PathBuf>) -> Vec<PathBuf> {
 
 #[test]
 fn test_list_and_remove_directory_tree() {
-    let folder = PathBuf::from(format!(
-        "/tmp/opencode/zxbs-tests/{}",
-        rand::random::<u128>()
-    ));
+    let folder = PathBuf::from(format!("/tmp/zxbs-tests/{}", rand::random::<u128>()));
     let root = folder.join("root");
 
     std::fs::create_dir_all(root.join("a").join("b")).unwrap();
