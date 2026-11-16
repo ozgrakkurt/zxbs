@@ -254,15 +254,22 @@ fn leak_str(s: String) -> &'static str {
     s.leak()
 }
 
-pub fn parse_subcommand_arg(arg: &str) -> (String, String) {
+pub fn try_parse_subcommand_arg(arg: &str) -> Result<(String, String), String> {
     let parts: Vec<_> = arg.split(':').collect();
-    let err_ctx = format!("invalid subcommand argument: `{}`", arg);
+    let map_err = |_| format!("invalid subcommand argument: `{}`", arg);
     if parts.len() != 2 {
-        panic!("{}", err_ctx);
+        return Err(format!(
+            "Invalid subcommand argument `{}`, expected subcommand argument to have exactly one `:` character.",
+            arg
+        ));
     }
-    check_name(parts[0], &err_ctx);
-    check_name(parts[1], &err_ctx);
-    (parts[0].to_owned(), parts[1].to_owned())
+    check_name(parts[0]).map_err(map_err)?;
+    check_name(parts[1]).map_err(map_err)?;
+    Ok((parts[0].to_owned(), parts[1].to_owned()))
+}
+
+pub fn parse_subcommand_arg(arg: &str) -> (String, String) {
+    try_parse_subcommand_arg(arg).unwrap_or_else(|e| panic!("{}", e))
 }
 
 impl Config {

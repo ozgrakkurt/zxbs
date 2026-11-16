@@ -20,16 +20,18 @@ fn read_bytes<T>(content: &[u8], offset: &mut usize) -> Result<T, ()> {
     Ok(unsafe { std::ptr::read_unaligned(content.as_ptr().add(offs) as *const T) })
 }
 
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub struct CacheEntry {
     pub last_used_timestamp: u64,
     pub output_hash: Hash,
     pub output_size: u32,
 }
 
-struct WalEntry {
-    deep_hash: Hash,
-    output_hash: Hash,
-    output_size: u32,
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub struct WalEntry {
+    pub deep_hash: Hash,
+    pub output_hash: Hash,
+    pub output_size: u32,
 }
 
 pub struct CacheState {
@@ -96,7 +98,7 @@ const STATE_FILE_MAGIC: u64 = 0x167045aafea85f3du64;
 //
 // State file is read at program start and written at program end.
 
-fn serialize_state_file(entries: &BTreeMap<Hash, CacheEntry>, out: &mut Vec<u8>) {
+pub fn serialize_state_file(entries: &BTreeMap<Hash, CacheEntry>, out: &mut Vec<u8>) {
     let start_offset = out.len();
 
     out.extend_from_slice(&STATE_FILE_MAGIC.to_le_bytes());
@@ -116,44 +118,56 @@ fn serialize_state_file(entries: &BTreeMap<Hash, CacheEntry>, out: &mut Vec<u8>)
     out.extend_from_slice(&checksum.to_le_bytes());
 }
 
-fn deserialize_state_file(content: &[u8]) -> BTreeMap<Hash, CacheEntry> {
+pub fn try_deserialize_state_file(content: &[u8]) -> Result<BTreeMap<Hash, CacheEntry>, ()> {
     let mut offset: usize = 0;
 
-    let magic = read_bytes::<u64>(content, &mut offset).unwrap();
+    let magic = read_bytes::<u64>(content, &mut offset)?;
 
-    assert!(magic == STATE_FILE_MAGIC);
+    if magic != STATE_FILE_MAGIC {
+        return Err(());
+    }
 
-    let num_entries = read_bytes::<u32>(content, &mut offset).unwrap();
+    let num_entries = read_bytes::<u32>(content, &mut offset)?;
 
     let mut out: BTreeMap<Hash, CacheEntry> = BTreeMap::new();
     for _ in 0..num_entries {
-        let deep_hash = read_bytes::<Hash>(content, &mut offset).unwrap();
-        let last_used_timestamp = read_bytes::<u64>(content, &mut offset).unwrap();
-        let output_hash = read_bytes::<Hash>(content, &mut offset).unwrap();
-        let output_size = read_bytes::<u32>(content, &mut offset).unwrap();
+        let deep_hash = read_bytes::<Hash>(content, &mut offset)?;
+        let last_used_timestamp = read_bytes::<u64>(content, &mut offset)?;
+        let output_hash = read_bytes::<Hash>(content, &mut offset)?;
+        let output_size = read_bytes::<u32>(content, &mut offset)?;
 
-        assert!(
-            out.insert(
+        if out
+            .insert(
                 deep_hash,
                 CacheEntry {
                     last_used_timestamp,
                     output_hash,
                     output_size,
-                }
+                },
             )
-            .is_none()
-        );
+            .is_some()
+        {
+            return Err(());
+        }
     }
 
     let checksum_check = hash_bytes(&content[..offset]);
 
-    let checksum = read_bytes::<Hash>(content, &mut offset).unwrap();
+    let checksum = read_bytes::<Hash>(content, &mut offset)?;
 
-    assert!(checksum_check == checksum);
+    if checksum_check != checksum {
+        return Err(());
+    }
 
-    assert!(offset == content.len());
+    if offset != content.len() {
+        return Err(());
+    }
 
-    out
+    Ok(out)
+}
+
+fn deserialize_state_file(content: &[u8]) -> BTreeMap<Hash, CacheEntry> {
+    try_deserialize_state_file(content).unwrap_or_else(|_| panic!("Corrupted cache state file"))
 }
 
 // WAL FILE FORMAT
@@ -171,7 +185,7 @@ fn deserialize_state_file(content: &[u8]) -> BTreeMap<Hash, CacheEntry> {
 //
 // We will delete all wal files after we finish recovery step in cache loading.
 
-fn serialize_wal_file(entry: &WalEntry, out: &mut Vec<u8>) {
+pub fn serialize_wal_file(entry: &WalEntry, out: &mut Vec<u8>) {
     let start_offset = out.len();
 
     out.extend_from_slice(&WAL_FILE_MAGIC.to_le_bytes());
@@ -200,7 +214,7 @@ pub fn write_wal_file(cache_path: &Path, deep_hash: Hash, output_hash: Hash, out
     std::fs::write(&out_path, out.as_slice()).unwrap();
 }
 
-fn deserialize_wal_file(content: &[u8]) -> Result<WalEntry, ()> {
+pub fn deserialize_wal_file(content: &[u8]) -> Result<WalEntry, ()> {
     let mut offset: usize = 0;
 
     let magic = read_bytes::<u64>(content, &mut offset)?;

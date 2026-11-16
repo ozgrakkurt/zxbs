@@ -61,6 +61,25 @@ impl<'a> Build<'a> {
         beginning: Instant,
         thread_pool: &'a ThreadPool,
     ) -> Build<'a> {
+        Self::new_with_concurrency(
+            tracer,
+            interner,
+            tasks,
+            beginning,
+            thread_pool,
+            num_cpus::get(),
+        )
+    }
+
+    pub fn new_with_concurrency(
+        tracer: Option<&'a mut tracer::Tracer>,
+        interner: &'a mut Interner,
+        tasks: Vec<Task>,
+        beginning: Instant,
+        thread_pool: &'a ThreadPool,
+        concurrency: usize,
+    ) -> Build<'a> {
+        assert!(concurrency > 0);
         let mut dependencies = Vec::with_capacity(tasks.len());
 
         let mut dependants = vec![Vec::new(); interner.len()];
@@ -86,8 +105,6 @@ impl<'a> Build<'a> {
         }
 
         let is_built = vec![false; interner.len()];
-
-        let concurrency = num_cpus::get();
 
         let free_slot_indices: Vec<usize> = (0..concurrency).rev().collect();
 

@@ -268,5 +268,6 @@ version = "0.0.0"
 dependencies = [
  "libfuzzer-sys",
  "rand",
+ "serde_json",
  "zxbs",
 ]

@@ -45,23 +45,27 @@ pub struct BuildInfo {
 }
 
 impl BuildInfo {
-    pub fn check_subcommand(&self, interner: &mut Interner, subcommand: &Subcommand) {
+    pub fn try_check_subcommand(
+        &self,
+        interner: &mut Interner,
+        subcommand: &Subcommand,
+    ) -> Result<(), String> {
         let (entry_name, part_name, is_test) = match subcommand {
             Subcommand::RunBinary {
                 entry_name,
                 bin_name,
                 ..
             } => (entry_name, bin_name, false),
-            Subcommand::TestAll => return,
+            Subcommand::TestAll => return Ok(()),
             Subcommand::Test {
                 entry_name,
                 test_name,
             } => (entry_name, test_name, true),
-            Subcommand::Build => return,
-            Subcommand::Fmt => return,
+            Subcommand::Build => return Ok(()),
+            Subcommand::Fmt => return Ok(()),
             Subcommand::Clean => {
                 // this subcommand should be handled in main.rs so should never come here.
-                unreachable!();
+                return Err("clean subcommand reached build info check".to_owned());
             }
         };
 
@@ -70,10 +74,12 @@ impl BuildInfo {
 
         let eidx = match self.map.get(&entry) {
             Some(eidx) => usize::try_from(*eidx).unwrap(),
-            None => panic!(
-                "Subcommand argument `{}:{}` has entry as `{}`. But an entry with this name wasn't found after scanning.",
-                entry_name, part_name, entry_name
-            ),
+            None => {
+                return Err(format!(
+                    "Subcommand argument `{}:{}` has entry as `{}`. But an entry with this name wasn't found after scanning.",
+                    entry_name, part_name, entry_name
+                ));
+            }
         };
 
         let kind_name = if is_test { "test" } else { "binary" };
@@ -86,14 +92,20 @@ impl BuildInfo {
 
         for p in list.iter() {
             if *p == part {
-                return;
+                return Ok(());
             }
         }
 
-        panic!(
+        Err(format!(
             "Subcommand argument has entry `{}:{}`. But the entry `{}` doesn't have a {} named `{}`",
             entry_name, part_name, entry_name, kind_name, part_name
-        );
+        ))
+    }
+
+    pub fn check_subcommand(&self, interner: &mut Interner, subcommand: &Subcommand) {
+        if let Err(msg) = self.try_check_subcommand(interner, subcommand) {
+            panic!("{}", msg);
+        }
     }
 }
 
@@ -102,46 +114,64 @@ pub struct CppmDeps {
     pub provides: Vec<String>,
 }
 
-pub fn parse_p1689(contents: &[u8]) -> CppmDeps {
-    let root = serde_json::from_slice::<serde_json::Value>(contents).unwrap();
-    let root = root.as_object().unwrap();
+pub fn try_parse_p1689(contents: &[u8]) -> Result<CppmDeps, String> {
+    let root = serde_json::from_slice::<serde_json::Value>(contents)
+        .map_err(|e| format!("Failed to parse p1689 json: {}", e))?;
+    let root = root
+        .as_object()
+        .ok_or_else(|| "p1689 root is not an object".to_owned())?;
 
     let mut deps = Vec::new();
     let mut provides = Vec::new();
 
     if let Some(rules) = root.get("rules") {
-        for rule in rules.as_array().unwrap().iter() {
-            let rule = rule.as_object().unwrap();
+        let rules = rules
+            .as_array()
+            .ok_or_else(|| "p1689 `rules` is not an array".to_owned())?;
+        for rule in rules.as_slice() {
+            let rule = rule
+                .as_object()
+                .ok_or_else(|| "p1689 rule is not an object".to_owned())?;
 
             if let Some(prov) = rule.get("provides") {
-                for p in prov.as_array().unwrap().iter() {
+                let prov = prov
+                    .as_array()
+                    .ok_or_else(|| "p1689 `provides` is not an array".to_owned())?;
+                for p in prov.as_slice() {
                     let name = p
                         .as_object()
-                        .unwrap()
+                        .ok_or_else(|| "p1689 provides entry is not an object".to_owned())?
                         .get("logical-name")
-                        .unwrap()
+                        .ok_or_else(|| "p1689 provides entry has no logical-name".to_owned())?
                         .as_str()
-                        .unwrap();
+                        .ok_or_else(|| "p1689 logical-name is not a string".to_owned())?;
                     provides.push(name.to_owned());
                 }
             }
 
             if let Some(reqs) = rule.get("requires") {
-                for p in reqs.as_array().unwrap().iter() {
+                let reqs = reqs
+                    .as_array()
+                    .ok_or_else(|| "p1689 `requires` is not an array".to_owned())?;
+                for p in reqs.as_slice() {
                     let name = p
                         .as_object()
-                        .unwrap()
+                        .ok_or_else(|| "p1689 requires entry is not an object".to_owned())?
                         .get("logical-name")
-                        .unwrap()
+                        .ok_or_else(|| "p1689 requires entry has no logical-name".to_owned())?
                         .as_str()
-                        .unwrap();
+                        .ok_or_else(|| "p1689 logical-name is not a string".to_owned())?;
                     deps.push(name.to_owned());
                 }
             }
         }
     }
 
-    CppmDeps { deps, provides }
+    Ok(CppmDeps { deps, provides })
+}
+
+pub fn parse_p1689(contents: &[u8]) -> CppmDeps {
+    try_parse_p1689(contents).unwrap_or_else(|e| panic!("{}", e))
 }
 
 fn run_scan_deps(config: &Config, path: &Path) -> Vec<u8> {
@@ -173,23 +203,28 @@ fn run_scan_deps(config: &Config, path: &Path) -> Vec<u8> {
     output.stdout
 }
 
-pub fn parse_deps_file(path: &Path, contents: &str) -> Vec<String> {
+pub fn try_parse_deps_file(contents: &str) -> Result<Vec<String>, String> {
     let mut deps = Vec::new();
     let mut dedup = HashSet::default();
     for line in contents.trim().split('\n') {
         let line = line.trim();
         if !line.is_empty() {
-            check_name(line, &format!("Parse deps file at: `{}`", path.display()));
-            assert!(
-                dedup.insert(line),
-                "Deps file at `{}` contains a duplicate dependency on `{}`",
-                path.display(),
-                line
-            );
+            check_name(line).map_err(|_| format!("Invalid name `{}` in deps file.", line))?;
+            if !dedup.insert(line) {
+                return Err(format!(
+                    "Deps file contains a duplicate dependency on `{}`",
+                    line
+                ));
+            }
             deps.push(line.to_owned());
         }
     }
-    deps
+    Ok(deps)
+}
+
+pub fn parse_deps_file(path: &Path, contents: &str) -> Vec<String> {
+    try_parse_deps_file(contents)
+        .unwrap_or_else(|e| panic!("Failed to parse deps file at: `{}`: {}", path.display(), e))
 }
 
 fn read_deps_file(path: PathBuf) -> Vec<String> {
@@ -210,35 +245,44 @@ fn read_deps_file(path: PathBuf) -> Vec<String> {
     parse_deps_file(&path, contents.as_str())
 }
 
+pub fn try_parse_file_name<'name>(
+    expected_extension: &str,
+    file_name: &'name str,
+) -> Result<&'name str, String> {
+    let parts: Vec<_> = file_name.split(".").collect();
+    if parts.len() != 2 {
+        return Err(format!(
+            "invalid file name: {}, expected the file name to contain exactly one `.` character.",
+            file_name,
+        ));
+    }
+    let name = parts[0];
+    let extension = parts[1];
+
+    check_name(name).map_err(|_| {
+        format!(
+            "Unexpected name part of file name: {}, expected it to be a valid name.",
+            name
+        )
+    })?;
+
+    if expected_extension != extension {
+        return Err(format!(
+            "Unexpected extension on filename: {}, expected extension: {}",
+            file_name, expected_extension,
+        ));
+    }
+
+    Ok(name)
+}
+
 pub fn parse_file_name<'name>(
     path: &Path,
     expected_extension: &str,
     file_name: &'name str,
 ) -> &'name str {
-    let parts: Vec<_> = file_name.split(".").collect();
-    assert_eq!(
-        parts.len(),
-        2,
-        "invalid file name: {}, expected extension: {}. Path={}",
-        file_name,
-        expected_extension,
-        path.display(),
-    );
-    let name = parts[0];
-    let extension = parts[1];
-
-    check_name(name, &format!("Parse file name of: {}", path.display()));
-
-    assert_eq!(
-        expected_extension,
-        extension,
-        "unexpected extension on filename: {}, expected extension: {}. Path={}",
-        file_name,
-        expected_extension,
-        path.display(),
-    );
-
-    name
+    try_parse_file_name(expected_extension, file_name)
+        .unwrap_or_else(|e| panic!("{} Path={}", e, path.display()))
 }
 
 fn scan_subfolder(expected_extension: &'static str, path: &Path) -> Vec<String> {
@@ -264,10 +308,9 @@ fn scan_subfolder(expected_extension: &'static str, path: &Path) -> Vec<String> 
             file.file_name().to_str().unwrap(),
         )
         .to_owned();
-        check_name(
-            &name,
-            &format!("Name of file at: `{}`", file_path.display()),
-        );
+        check_name(&name)
+            .map_err(|_| format!("Invalid file name at: `{}`", file_path.display()))
+            .unwrap();
         names.push(name);
     }
     names
@@ -374,12 +417,12 @@ fn spawn_hash_scan_targets(
     }
 }
 
-pub fn check_cyclic_dependencies_between_entries(
+pub fn try_check_cyclic_dependencies_between_entries(
     interner: &Interner,
     entry_names: &[Str],
     entry_name_map: &HashMap<Str, u32>,
     deps_list: &[Vec<Str>],
-) {
+) -> Result<(), String> {
     let num_entries = entry_names.len();
 
     assert_eq!(num_entries, deps_list.len());
@@ -393,21 +436,21 @@ pub fn check_cyclic_dependencies_between_entries(
         .map(|(entry_index, deps)| {
             deps.iter()
                 .map(|&dep_name| {
-                    let dep_idx = entry_name_map.get(&dep_name).unwrap_or_else(|| {
-                        panic!(
-                            "Entry `{}` depends on `{}` which is not an entry.",
+                    let dep_idx = entry_name_map.get(&dep_name).ok_or_else(|| {
+                        format!(
+                            "Entry `{}` depends on `{}`. But an entry with that name wasn't found while scanning",
                             interner.get(entry_names[entry_index]),
                             interner.get(dep_name),
                         )
-                    });
-                    usize::try_from(*dep_idx).unwrap()
+                    })?;
+                    Ok(usize::try_from(*dep_idx).unwrap())
                 })
-                .collect::<Vec<usize>>()
+                .collect::<Result<Vec<usize>, String>>()
         })
-        .collect::<Vec<Vec<usize>>>();
+        .collect::<Result<Vec<Vec<usize>>, String>>()?;
 
     if num_entries == 0 {
-        return;
+        return Ok(());
     }
 
     let mut visited = vec![false; num_entries];
@@ -469,7 +512,7 @@ pub fn check_cyclic_dependencies_between_entries(
 
                     err_msg.push_str(interner.get(entry_names[dep_entry_idx]));
 
-                    panic!("{}", err_msg);
+                    return Err(err_msg);
                 }
 
                 // Optimization: don't go into the dep entry if the dep is already visited.
@@ -505,20 +548,38 @@ pub fn check_cyclic_dependencies_between_entries(
     for v in visited {
         assert!(v);
     }
+
+    Ok(())
 }
 
-pub fn check_cyclic_dependencies_between_module_parts(
+pub fn check_cyclic_dependencies_between_entries(
+    interner: &Interner,
+    entry_names: &[Str],
+    entry_name_map: &HashMap<Str, u32>,
+    deps_list: &[Vec<Str>],
+) {
+    if let Err(msg) = try_check_cyclic_dependencies_between_entries(
+        interner,
+        entry_names,
+        entry_name_map,
+        deps_list,
+    ) {
+        panic!("Failed entry dependency cycle check. Error = {}", msg);
+    }
+}
+
+pub fn try_check_cyclic_dependencies_between_module_parts(
     interner: &Interner,
     entry_name: Str,
     mod_list: &[Str],
     mod_deps_matrix: &[bool],
-) {
+) -> Result<(), String> {
     let num_parts = mod_list.len();
 
     assert_eq!(num_parts * num_parts, mod_deps_matrix.len());
 
     if num_parts == 0 {
-        return;
+        return Ok(());
     }
 
     let mut visited = vec![false; num_parts];
@@ -579,7 +640,7 @@ pub fn check_cyclic_dependencies_between_module_parts(
 
                         err_msg.push_str(interner.get(mod_list[dep_idx]));
 
-                        panic!("{}", err_msg);
+                        return Err(err_msg);
                     }
 
                     // Optimization: don't go into the dep layer if the dep is already visited.
@@ -615,6 +676,28 @@ pub fn check_cyclic_dependencies_between_module_parts(
 
     for v in visited {
         assert!(v);
+    }
+
+    Ok(())
+}
+
+pub fn check_cyclic_dependencies_between_module_parts(
+    interner: &Interner,
+    entry_name: Str,
+    mod_list: &[Str],
+    mod_deps_matrix: &[bool],
+) {
+    if let Err(msg) = try_check_cyclic_dependencies_between_module_parts(
+        interner,
+        entry_name,
+        mod_list,
+        mod_deps_matrix,
+    ) {
+        panic!(
+            "Failed cyclic dependency check between modules of entry `{}`. Error = {}",
+            interner.get(entry_name),
+            msg
+        );
     }
 }
 
@@ -732,7 +815,9 @@ pub fn scan(
         }
 
         let name = path.file_name().unwrap().to_str().unwrap();
-        check_name(name, "Parse entry name");
+        check_name(name)
+            .map_err(|_| format!("Invalid entry name `{}`", name))
+            .unwrap();
 
         let name = interner.insert(name);
 
