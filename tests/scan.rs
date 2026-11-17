@@ -563,6 +563,106 @@ fn test_more_trees() {
     }
 }
 
+// A `deps` file and the lib/bin/test folders are optional. Only the root
+// module inside the `mod` folder is required.
+#[test]
+fn test_optional_folders_and_deps() {
+    let folder = TempDir::new();
+    let build_path = format!("{}/build", folder.as_str());
+    let src_path = format!("{}/src", folder.as_str());
+    let src = std::path::Path::new(&src_path);
+
+    // A module-only entry: no deps file and no lib, bin or test folder.
+    let mod_path = src.join("solo").join("mod");
+    std::fs::create_dir_all(&mod_path).unwrap();
+    std::fs::write(mod_path.join("solo.cppm"), "export module solo;\n").unwrap();
+
+    // Another module-only entry that other entries can depend on.
+    let mod_path = src.join("leaf").join("mod");
+    std::fs::create_dir_all(&mod_path).unwrap();
+    std::fs::write(mod_path.join("leaf.cppm"), "export module leaf;\n").unwrap();
+
+    // An entry with a deps file but no lib, bin or test folder.
+    let mod_path = src.join("app").join("mod");
+    std::fs::create_dir_all(&mod_path).unwrap();
+    std::fs::write(
+        mod_path.join("app.cppm"),
+        "export module app;\nimport leaf;\n",
+    )
+    .unwrap();
+    std::fs::write(src.join("app").join("deps"), "leaf\n").unwrap();
+
+    // An entry with all the source folders but no deps file.
+    let entry_path = src.join("parts");
+    let mod_path = entry_path.join("mod");
+    std::fs::create_dir_all(&mod_path).unwrap();
+    std::fs::write(mod_path.join("parts.cppm"), "export module parts;\n").unwrap();
+
+    let lib_path = entry_path.join("lib");
+    std::fs::create_dir_all(&lib_path).unwrap();
+    std::fs::write(lib_path.join("helper.cc"), "import parts;\n").unwrap();
+
+    let bin_path = entry_path.join("bin");
+    std::fs::create_dir_all(&bin_path).unwrap();
+    std::fs::write(
+        bin_path.join("tool.cc"),
+        "import parts;\nint main(void) { return 0; }\n",
+    )
+    .unwrap();
+
+    let test_path = entry_path.join("test");
+    std::fs::create_dir_all(&test_path).unwrap();
+    std::fs::write(
+        test_path.join("check.cc"),
+        "import parts;\nint main(void) { return 0; }\n",
+    )
+    .unwrap();
+
+    let mut flags = HashMap::default();
+    flags.insert("--build-dir".to_owned(), Some(build_path.clone()));
+    flags.insert("--src-dir".to_owned(), Some(src_path.clone()));
+    let cfg: &'static Config = Box::leak(Box::new(Config::parse_config(flags)));
+
+    let thread_pool = ThreadPool::new(4);
+
+    let ts = timestamp();
+    let mut cache_state = cache::load(cfg.cache_path, &thread_pool, ts);
+
+    let mut interner = Interner::new();
+
+    let info = scan(cfg, &mut interner, &thread_pool, 0, &mut cache_state, ts);
+
+    assert_eq!(info.map.len(), 4);
+
+    let solo = entry_index(&info, &mut interner, "solo");
+    check_modules(&info, &mut interner, solo, &["solo"], &[]);
+    check_part_list(&info.lib[solo], &mut interner, &[]);
+    check_part_list(&info.bin[solo], &mut interner, &[]);
+    check_part_list(&info.test[solo], &mut interner, &[]);
+    check_deps(&info, &mut interner, solo, &[]);
+
+    let leaf = entry_index(&info, &mut interner, "leaf");
+    check_modules(&info, &mut interner, leaf, &["leaf"], &[]);
+    check_deps(&info, &mut interner, leaf, &[]);
+
+    let app = entry_index(&info, &mut interner, "app");
+    check_modules(&info, &mut interner, app, &["app"], &[]);
+    check_part_list(&info.lib[app], &mut interner, &[]);
+    check_part_list(&info.bin[app], &mut interner, &[]);
+    check_part_list(&info.test[app], &mut interner, &[]);
+    check_deps(&info, &mut interner, app, &["leaf"]);
+
+    let parts = entry_index(&info, &mut interner, "parts");
+    check_modules(&info, &mut interner, parts, &["parts"], &[]);
+    check_part_list(&info.lib[parts], &mut interner, &["helper"]);
+    check_part_list(&info.bin[parts], &mut interner, &["tool"]);
+    check_part_list(&info.test[parts], &mut interner, &["check"]);
+    check_deps(&info, &mut interner, parts, &[]);
+
+    // solo(1) + leaf(1) + app(1) + parts(4)
+    check_all_basic_hashes(&info, &interner, cfg.src_path.to_str().unwrap(), 7);
+}
+
 fn make_entry_graph(interner: &mut Interner, names: &[&str]) -> (Vec<Str>, HashMap<Str, u32>) {
     let strs: Vec<Str> = names.iter().map(|name| interner.insert(name)).collect();
     let map: HashMap<Str, u32> = strs

@@ -9,7 +9,7 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 use zxbs::cache::{self, CacheEntry};
 use zxbs::hash::Hash;
-use zxbs::thread_pool::{JoinSet, ThreadPool};
+use zxbs::thread_pool::ThreadPool;
 
 fn thread_pool() -> &'static ThreadPool {
     static POOL: OnceLock<ThreadPool> = OnceLock::new();
@@ -66,15 +66,13 @@ fuzz_target!(|data: &[u8]| {
     ))
     .unwrap();
 
-    let mut join_set = JoinSet::new();
-    cache::spawn_prune(
-        &cache_path,
-        thread_pool(),
-        &mut join_set,
-        &mut entries,
-        max_cache_size,
-    );
-    join_set.join_all();
+    // Pruning only updates the state. Deleting the files of the evicted
+    // entries happens afterwards, exactly like `cache::finish` does after it
+    // writes the new state file.
+    cache::prune_state(max_cache_size, &mut entries);
+
+    std::fs::create_dir_all(cache_path.join("wal")).unwrap();
+    cache::cleanup(&cache_path, thread_pool(), &entries);
 
     let remaining_size: u64 = entries
         .values()

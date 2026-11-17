@@ -1,3 +1,4 @@
+use std::io::ErrorKind as IoErrorKind;
 use std::path::{Path, PathBuf};
 
 use crate::cache::CacheState;
@@ -228,14 +229,22 @@ pub fn parse_deps_file(path: &Path, contents: &str) -> Vec<String> {
 }
 
 fn read_deps_file(path: PathBuf) -> Vec<String> {
-    let contents = String::from_utf8(std::fs::read(&path).unwrap_or_else(|e| {
-        panic!(
-            "failed to read deps file at: {}. Error={}",
-            path.display(),
-            e
-        )
-    }))
-    .unwrap_or_else(|e| {
+    let contents = match std::fs::read(&path) {
+        Ok(c) => c,
+        Err(e) => {
+            if e.kind() != IoErrorKind::NotFound {
+                panic!(
+                    "failed to read deps file at: {}. Error={}",
+                    path.display(),
+                    e
+                )
+            } else {
+                return Vec::new();
+            }
+        }
+    };
+
+    let contents = String::from_utf8(contents).unwrap_or_else(|e| {
         panic!(
             "failed to parse UTF8 from file at: {}. Error={}",
             path.display(),
@@ -289,7 +298,11 @@ fn scan_subfolder(expected_extension: &'static str, path: &Path) -> Vec<String> 
     let dir = match std::fs::read_dir(path) {
         Ok(v) => v,
         Err(e) => {
-            panic!("Failed to read_dir on '{}'. Error: {}", path.display(), e);
+            if e.kind() != IoErrorKind::NotFound {
+                panic!("Failed to read_dir on '{}'. Error: {}", path.display(), e);
+            } else {
+                return Vec::new();
+            }
         }
     };
     let mut names = Vec::new();
@@ -703,11 +716,15 @@ pub fn check_cyclic_dependencies_between_module_parts(
 
 // make sure that we only have the expected content in the entry folder.
 //
+// The expected contents are:
 // - mod folder
 // - lib folder
 // - bin folder
 // - test folder
 // - deps file
+//
+// All of them are optional. The root module inside the mod folder is still
+// required and is checked after scanning.
 fn check_entry_folder_content(path: &Path) {
     let dir = match std::fs::read_dir(path) {
         Ok(v) => v,
@@ -716,12 +733,6 @@ fn check_entry_folder_content(path: &Path) {
         }
     };
 
-    let mut found_mod = false;
-    let mut found_lib = false;
-    let mut found_bin = false;
-    let mut found_test = false;
-    let mut found_deps = false;
-
     for entry in dir {
         let entry = entry.unwrap();
         let file_path = entry.path();
@@ -729,15 +740,8 @@ fn check_entry_folder_content(path: &Path) {
         let file_type = entry.file_type().unwrap();
 
         if file_type.is_dir() {
-            if file_name == "mod" {
-                found_mod = true;
-            } else if file_name == "lib" {
-                found_lib = true;
-            } else if file_name == "bin" {
-                found_bin = true;
-            } else if file_name == "test" {
-                found_test = true;
-            } else {
+            if file_name != "mod" && file_name != "lib" && file_name != "bin" && file_name != "test"
+            {
                 panic!(
                     "Found unexpected directory `{}` in entry directory at: `{}`",
                     file_name,
@@ -751,8 +755,6 @@ fn check_entry_folder_content(path: &Path) {
                     file_name,
                     path.display()
                 );
-            } else {
-                found_deps = true;
             }
         } else {
             panic!(
@@ -762,32 +764,6 @@ fn check_entry_folder_content(path: &Path) {
             );
         }
     }
-
-    assert!(
-        found_mod,
-        "Expected the entry folder at `{}` to contain a `mod` folder but it doesn't.",
-        path.display()
-    );
-    assert!(
-        found_lib,
-        "Expected the entry folder at `{}` to contain a `lib` folder but it doesn't.",
-        path.display()
-    );
-    assert!(
-        found_bin,
-        "Expected the entry folder at `{}` to contain a `bin` folder but it doesn't.",
-        path.display()
-    );
-    assert!(
-        found_test,
-        "Expected the entry folder at `{}` to contain a `test` folder but it doesn't.",
-        path.display()
-    );
-    assert!(
-        found_deps,
-        "Expected the entry folder at `{}` to contain a `deps` file but it doesn't.",
-        path.display()
-    );
 }
 
 pub fn scan(

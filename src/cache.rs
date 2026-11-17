@@ -476,7 +476,12 @@ fn write_state_file(cache_path: &Path, entries: &BTreeMap<Hash, CacheEntry>) {
     std::fs::rename(&tmp_path, &state_file_path).unwrap();
 }
 
-fn cleanup(cache_path: &Path, thread_pool: &ThreadPool, entries: &BTreeMap<Hash, CacheEntry>) {
+// Remove cached files that are not referenced by `entries`, stale temporary
+// files and all wal files.
+//
+// `finish` calls this after writing the state file. It is public so tests and
+// fuzz targets can exercise the filesystem cleanup on its own.
+pub fn cleanup(cache_path: &Path, thread_pool: &ThreadPool, entries: &BTreeMap<Hash, CacheEntry>) {
     let mut join_set: JoinSet<()> = JoinSet::new();
 
     let dir = std::fs::read_dir(cache_path).unwrap();
