@@ -1,7 +1,10 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use zxbs::directory::{list_dir, remove_dir_all};
 use zxbs::thread_pool::ThreadPool;
+
+mod tmp_dir;
+use tmp_dir::TempDir;
 
 fn sorted(mut paths: Vec<PathBuf>) -> Vec<PathBuf> {
     paths.sort_unstable();
@@ -10,7 +13,7 @@ fn sorted(mut paths: Vec<PathBuf>) -> Vec<PathBuf> {
 
 #[test]
 fn test_list_and_remove_directory_tree() {
-    let folder = PathBuf::from(format!("/tmp/zxbs-tests/{}", rand::random::<u128>()));
+    let folder = TempDir::new();
     let root = folder.join("root");
 
     std::fs::create_dir_all(root.join("a").join("b")).unwrap();
@@ -39,6 +42,4 @@ fn test_list_and_remove_directory_tree() {
     // Removing a directory that doesn't exist anymore is a no-op.
     remove_dir_all(&root, &thread_pool);
     assert!(!root.exists());
-
-    std::fs::remove_dir_all(Path::new(&folder)).unwrap();
 }

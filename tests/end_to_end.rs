@@ -16,6 +16,9 @@ use zxbs::{cache, directory};
 mod make_folders;
 use make_folders::{make_baselib, make_iolib, make_myapp};
 
+mod tmp_dir;
+use tmp_dir::TempDir;
+
 // The source tree contains 3 entries with a total of 51 build artifacts that
 // get stored to the cache. A fully cached rebuild produces one cache load
 // task per artifact.
@@ -23,9 +26,9 @@ const NUM_ARTIFACTS: usize = 51;
 
 #[test]
 fn test_smoke() {
-    let folder = format!("/tmp/zxbs-tests/{}", rand::random::<u128>());
-    let build_path = format!("{}/build", folder);
-    let src_path = format!("{}/src", folder);
+    let folder = TempDir::new();
+    let build_path = format!("{}/build", folder.as_str());
+    let src_path = format!("{}/src", folder.as_str());
     std::fs::create_dir_all(&src_path).unwrap();
 
     // create folders/files
@@ -164,6 +167,4 @@ fn test_smoke() {
     // The outputs were restored from the cache.
     assert!(cfg.build_path.join("entry/myapp/bin/myapp").exists());
     assert!(cfg.build_path.join("entry/base/test/stamp/memcmp").exists());
-
-    std::fs::remove_dir_all(&folder).unwrap();
 }

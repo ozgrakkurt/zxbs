@@ -206,6 +206,7 @@ name = "zxbs"
 version = "1.0.0"
 dependencies = [
  "crossbeam-channel",
+ "libc",
  "num_cpus",
  "rand",
  "serde_json",

@@ -6,16 +6,17 @@ use zxbs::hash::{Hash, hash_bytes};
 use zxbs::thread_pool::{JoinSet, ThreadPool};
 use zxbs::timestamp::timestamp;
 
-fn make_cache_dir() -> PathBuf {
-    let path = PathBuf::from(format!("/tmp/zxbs-tests/{}", rand::random::<u128>()));
-    std::fs::create_dir_all(&path).unwrap();
-    path
+mod tmp_dir;
+use tmp_dir::TempDir;
+
+fn make_cache_dir() -> TempDir {
+    TempDir::new()
 }
 
 #[test]
 fn test_cache_roundtrip() {
-    let folder = format!("/tmp/zxbs-tests/{}", rand::random::<u128>());
-    let cache_dir = format!("{}/cache", folder);
+    let folder = TempDir::new();
+    let cache_dir = format!("{}/cache", folder.as_str());
     let cache_path = Path::new(&cache_dir);
 
     let thread_pool = ThreadPool::new(2);
@@ -87,8 +88,6 @@ fn test_cache_roundtrip() {
     assert_eq!(state.item(deep, ts), Some(output_hash));
     assert_eq!(state.item(deep2, ts), Some(hash_bytes(content2)));
     cache::finish(state, cache_path, &thread_pool, ts);
-
-    std::fs::remove_dir_all(&folder).unwrap();
 }
 
 // A wal entry that is structurally valid and points at a valid cached file can
@@ -96,8 +95,8 @@ fn test_cache_roundtrip() {
 // have been partially written or tampered with.
 #[test]
 fn test_invalid_wal_recovery_is_ignored() {
-    let folder = format!("/tmp/zxbs-tests/{}", rand::random::<u128>());
-    let cache_dir = format!("{}/cache", folder);
+    let folder = TempDir::new();
+    let cache_dir = format!("{}/cache", folder.as_str());
     let cache_path = Path::new(&cache_dir);
 
     let thread_pool = ThreadPool::new(2);
@@ -158,8 +157,6 @@ fn test_invalid_wal_recovery_is_ignored() {
     for deep in [wrong_size, wrong_name, bad_checksum, truncated] {
         assert_eq!(state.item(deep, ts), None);
     }
-
-    std::fs::remove_dir_all(&folder).unwrap();
 }
 
 // A cache directory can exist without a wal directory, for example after a
@@ -176,8 +173,6 @@ fn test_load_creates_missing_wal_directory() {
 
     assert!(cache_path.join("wal").is_dir());
     assert_eq!(state.item(42, ts), None);
-
-    std::fs::remove_dir_all(&cache_path).unwrap();
 }
 
 fn cache_entry(last_used_timestamp: u64, output_size: u32) -> CacheEntry {
@@ -252,8 +247,6 @@ fn prune_keeps_everything_when_at_or_under_the_limit() {
             file.display()
         );
     }
-
-    std::fs::remove_dir_all(&cache_path).unwrap();
 }
 
 #[test]
@@ -283,8 +276,6 @@ fn prune_evicts_the_oldest_entries_first() {
     assert!(!files[2].exists(), "oldest entry's file was not deleted");
     assert!(files[0].exists(), "newest entry's file was deleted");
     assert!(files[3].exists(), "second newest entry's file was deleted");
-
-    std::fs::remove_dir_all(&cache_path).unwrap();
 }
 
 #[test]
@@ -302,6 +293,4 @@ fn prune_stops_as_soon_as_it_is_under_the_limit() {
     assert_eq!(entries.len(), 3);
     assert!(!entries.contains_key(&1), "oldest entry was not evicted");
     assert!(!files[0].exists(), "oldest entry's file was not deleted");
-
-    std::fs::remove_dir_all(&cache_path).unwrap();
 }

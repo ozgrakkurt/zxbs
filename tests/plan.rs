@@ -16,6 +16,9 @@ use zxbs::timestamp::timestamp;
 mod make_folders;
 use make_folders::{make_baselib, make_chain, make_diamond, make_iolib, make_myapp, make_util_app};
 
+mod tmp_dir;
+use tmp_dir::TempDir;
+
 // The source tree used by the plan tests contains 3 entries. The tasks
 // emitted for each entry break down as:
 //
@@ -106,8 +109,8 @@ fn test_should_run_binary() {
 
 #[test]
 fn test_empty() {
-    let folder = format!("/tmp/zxbs-tests/{}", rand::random::<u128>());
-    let cfg = make_config(&folder);
+    let folder = TempDir::new();
+    let cfg = make_config(folder.as_str());
 
     let thread_pool = ThreadPool::new(4);
 
@@ -129,8 +132,6 @@ fn test_empty() {
     );
 
     assert!(tasks.is_empty());
-
-    std::fs::remove_dir_all(&folder).unwrap();
 }
 
 fn check_store_task(
@@ -570,8 +571,8 @@ fn task_debug_strings<'a>(
 
 #[test]
 fn test_simple() {
-    let folder = format!("/tmp/zxbs-tests/{}", rand::random::<u128>());
-    let cfg = make_config(&folder);
+    let folder = TempDir::new();
+    let cfg = make_config(folder.as_str());
 
     let src_path = std::path::Path::new(cfg.src_path);
     make_baselib(src_path);
@@ -606,8 +607,11 @@ fn test_simple() {
     // Planning is deterministic: a second run with a fresh cache state must
     // produce the exact same tasks, including the deep hashes.
     {
-        let mut cache_state =
-            cache::load(Path::new(&format!("{}/cache2", folder)), &thread_pool, ts);
+        let mut cache_state = cache::load(
+            Path::new(&format!("{}/cache2", folder.as_str())),
+            &thread_pool,
+            ts,
+        );
         let tasks2 = plan::plan(
             cfg,
             &Subcommand::TestAll,
@@ -682,8 +686,11 @@ fn test_simple() {
 
     // The `test` subcommand only runs the selected test.
     {
-        let mut cache_state =
-            cache::load(Path::new(&format!("{}/cache3", folder)), &thread_pool, ts);
+        let mut cache_state = cache::load(
+            Path::new(&format!("{}/cache3", folder.as_str())),
+            &thread_pool,
+            ts,
+        );
         let tasks = plan::plan(
             cfg,
             &Subcommand::Test {
@@ -714,8 +721,11 @@ fn test_simple() {
 
     // The `run` subcommand only runs the selected binary.
     {
-        let mut cache_state =
-            cache::load(Path::new(&format!("{}/cache4", folder)), &thread_pool, ts);
+        let mut cache_state = cache::load(
+            Path::new(&format!("{}/cache4", folder.as_str())),
+            &thread_pool,
+            ts,
+        );
         let tasks = plan::plan(
             cfg,
             &Subcommand::RunBinary {
@@ -758,8 +768,11 @@ fn test_simple() {
     // The `build` subcommand builds everything but doesn't run any test or
     // binary.
     {
-        let mut cache_state =
-            cache::load(Path::new(&format!("{}/cache5", folder)), &thread_pool, ts);
+        let mut cache_state = cache::load(
+            Path::new(&format!("{}/cache5", folder.as_str())),
+            &thread_pool,
+            ts,
+        );
         let tasks = plan::plan(
             cfg,
             &Subcommand::Build,
@@ -842,8 +855,6 @@ fn test_simple() {
 
         assert_eq!(formatted_paths, expected_paths);
     }
-
-    std::fs::remove_dir_all(&folder).unwrap();
 }
 
 // Check the complete task list of a tree: the totals against the expected
@@ -942,16 +953,15 @@ fn test_more_trees() {
     //          + 2 tests * 6 + 2 bins * 4               = 36 tasks,
     // 20 of which are cache stores.
     {
-        let folder = format!("/tmp/zxbs-tests/{}", rand::random::<u128>());
+        let folder = TempDir::new();
         check_tree(
-            &folder,
+            folder.as_str(),
             make_diamond,
             &[("diamond", 36, &["diamond"])],
             36,
             20,
             &thread_pool,
         );
-        std::fs::remove_dir_all(&folder).unwrap();
     }
 
     // util: 1 module * 3 + 1 lib obj * 2 + 1 archive * 2 + 1 test * 6
@@ -960,16 +970,15 @@ fn test_more_trees() {
     //       + 0 bins * 4                                = 14 tasks.
     // 17 of the 31 tasks are cache stores.
     {
-        let folder = format!("/tmp/zxbs-tests/{}", rand::random::<u128>());
+        let folder = TempDir::new();
         check_tree(
-            &folder,
+            folder.as_str(),
             make_util_app,
             &[("util", 17, &["util"]), ("app", 14, &["app", "util"])],
             31,
             17,
             &thread_pool,
         );
-        std::fs::remove_dir_all(&folder).unwrap();
     }
 
     // core: 1 module * 3 + 1 lib obj * 2 + 1 archive * 2 + 1 test * 6
@@ -980,9 +989,9 @@ fn test_more_trees() {
     //       + 1 bin * 4                                 = 18 tasks.
     // 25 of the 46 tasks are cache stores.
     {
-        let folder = format!("/tmp/zxbs-tests/{}", rand::random::<u128>());
+        let folder = TempDir::new();
         check_tree(
-            &folder,
+            folder.as_str(),
             make_chain,
             &[
                 ("core", 13, &["core"]),
@@ -993,7 +1002,6 @@ fn test_more_trees() {
             25,
             &thread_pool,
         );
-        std::fs::remove_dir_all(&folder).unwrap();
     }
 }
 // Write a cached file and a wal entry for it, like the build system does when
@@ -1018,8 +1026,8 @@ fn store_in_cache(cache_dir: &Path, path: &str, deep_hash: Hash) {
 // cold cache.
 #[test]
 fn test_cache_state() {
-    let folder = format!("/tmp/zxbs-tests/{}", rand::random::<u128>());
-    let cfg = make_config(&folder);
+    let folder = TempDir::new();
+    let cfg = make_config(folder.as_str());
 
     let src_path = std::path::Path::new(cfg.src_path);
     make_baselib(src_path);
@@ -1116,7 +1124,7 @@ fn test_cache_state() {
 
     // Partially warm cache: only some artifacts are hits.
     {
-        let partial_cache_dir = format!("{}/cache6", folder);
+        let partial_cache_dir = format!("{}/cache6", folder.as_str());
         let partial_cache_dir = Path::new(&partial_cache_dir);
         // Create the cache directories first.
         drop(cache::load(partial_cache_dir, &thread_pool, ts));
@@ -1210,8 +1218,6 @@ fn test_cache_state() {
         // still there because it was only partially cached.
         assert_eq!(cold_rest, partial_rest);
     }
-
-    std::fs::remove_dir_all(&folder).unwrap();
 }
 
 fn find_entry(info: &BuildInfo, interner: &mut Interner, name: &str) -> usize {
@@ -1224,8 +1230,8 @@ fn find_entry(info: &BuildInfo, interner: &mut Interner, name: &str) -> usize {
 // either stale binaries or useless cache misses.
 #[test]
 fn test_deep_hash_invalidation() {
-    let folder = format!("/tmp/zxbs-tests/{}", rand::random::<u128>());
-    let cfg = make_config(&folder);
+    let folder = TempDir::new();
+    let cfg = make_config(folder.as_str());
     make_chain(cfg.src_path);
 
     let thread_pool = ThreadPool::new(4);
@@ -1313,6 +1319,4 @@ fn test_deep_hash_invalidation() {
     assert_ne!(before.entry_lib_archive[top], after.entry_lib_archive[top]);
     assert_ne!(before.bin_exe[top], after.bin_exe[top]);
     assert_ne!(before.test_exe[top], after.test_exe[top]);
-
-    std::fs::remove_dir_all(&folder).unwrap();
 }

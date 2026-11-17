@@ -107,6 +107,41 @@ Go into the project root and run:
 RUSTFLAGS="-C target-cpu=native" cargo install --path . --locked
 ```
 
+## Test
+
+Regular tests:
+
+`cargo test --all-features --all-targets`
+
+Fuzz tests:
+
+`make fuzz`
+
+## Lint - Format
+
+`cargo clippy --all-targets --all-features`
+
+`cargo fmt`
+
+Go into the `fuzz` directory and repeat the commands with `cargo +nightly`.
+
+## Profiling
+
+Enabling the `--time-trace` flag makes the build system output a `time_trace.json` in the `build/out` directory.
+
+This file can be opened in a chromium browser by going to the `chrome://tracing` page and opening it.
+
+It can also be opened in `Perfetto`.
+
+This is crucial for keeping a project building fast. It is recommended to check the profiles as soon as you find the total
+build time getting slower and it is also recommended to check the uncached full build time of your c++ project from time to time using
+something like this:
+
+```
+zxbs clean
+time zxbs --time-trace test
+```
+
 ## CLI
 
 The form of the command is:
@@ -118,8 +153,28 @@ zxbs [flags] <subcommand> [subcommand-args]
 ```
 
 Available flags are:
+- `--cxx=<clang_command_name>` defaults to `clang++`.
+- `--ar=<archiver>` defaults to `llvm-ar`.
+- `--clang-scan-deps=<clang_scan_deps_command_name>` defaults to `clang-scan-deps`.
+- `--clang-format=<clang_format_command_name>` defaults to `clang-format`.
+- `--opt-level=<level>`. This is directly passed to the c++ compiler via the `-O` flag. Defaults to `0`.
+- `--[no]-dev-mode`. Enables or disables the `-DZX_DEV` definition passed into the c++ code. Defaults to enabled.
+- `--[no]-debug-info`. Enables or disables debug info generation via c++ compiler flags like `-g`. Defaults to enabled.
+- `--[no]-fuzz`. Enables or disables compiler instrumentation for fuzzing and also controls the `-DZX_FUZZ` define passed into the c++ code. Defaults to disabled.
+- `--[no]-fuzz-unlimited`. Enables or disables the `-DZX_FUZZ_UNLIMITED` define passed into c++ code. This is intended to control whether if fuzz tests will run indefinitely
+      or they will terminate after some time. Defaults to disabled.
+- `--src-dir=<path>`. Path to the source directory. Defaults to `src`.
+- `--build-dir=<path>`. Path to output build artifacts including the cache. Defaults to `build`.
+- `--[no]-time-trace`. Enables or disables the `chrome://tracing` formatted timing output generation. Disabled by default.
+- `--[no]-cxx-time-trace`. Enables or disables passing `-ftime-trace` flag to clang which makes it generate `chrome://tracing` formatted files per compilation unit. These
+  files can later be found in the build directory.
 
 Available subcommands are:
+- `run <entry_name:binary_name> [target_arg]*` -> Builds everything and then runs the indicated binary target. The [target_arg]* list is passed through to the binary that is being run.
+- `test [entry_name:test_name]` -> Builds everything and then runs the indicated test or runs all tests if there is no argument.
+- `build` -> Just builds everything.
+- `fmt` -> Formats all of the source files using clang-format.
+- `clean` -> Deletes the cache.
 
 ## Example projects / Projects that use this build system
 

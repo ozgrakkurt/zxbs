@@ -14,11 +14,14 @@ use zxbs::timestamp::timestamp;
 mod make_folders;
 use make_folders::{make_baselib, make_chain, make_diamond, make_iolib, make_myapp, make_util_app};
 
+mod tmp_dir;
+use tmp_dir::TempDir;
+
 #[test]
 fn test_empty() {
-    let folder = format!("/tmp/zxbs-tests/{}", rand::random::<u128>());
-    let build_path = format!("{}/build", folder);
-    let src_path = format!("{}/src", folder);
+    let folder = TempDir::new();
+    let build_path = format!("{}/build", folder.as_str());
+    let src_path = format!("{}/src", folder.as_str());
     std::fs::create_dir_all(&src_path).unwrap();
 
     let mut flags = HashMap::default();
@@ -44,8 +47,6 @@ fn test_empty() {
     assert!(info.test.is_empty());
     assert!(info.deps.is_empty());
     assert!(info.basic_hash.is_empty());
-
-    std::fs::remove_dir_all(&folder).unwrap();
 }
 
 fn check_baselib_info(info: &BuildInfo, interner: &mut Interner) {
@@ -330,9 +331,9 @@ fn check_all_basic_hashes(
 
 #[test]
 fn test_simple() {
-    let folder = format!("/tmp/zxbs-tests/{}", rand::random::<u128>());
-    let build_path = format!("{}/build", folder);
-    let src_path = format!("{}/src", folder);
+    let folder = TempDir::new();
+    let build_path = format!("{}/build", folder.as_str());
+    let src_path = format!("{}/src", folder.as_str());
     std::fs::create_dir_all(&src_path).unwrap();
 
     // create folders/files
@@ -388,8 +389,6 @@ fn test_simple() {
     );
     info.check_subcommand(&mut interner, &Subcommand::TestAll);
     info.check_subcommand(&mut interner, &Subcommand::Build);
-
-    std::fs::remove_dir_all(&folder).unwrap();
 }
 
 // Scan the additional trees and check the build info derived from them.
@@ -398,9 +397,9 @@ fn test_more_trees() {
     // A single entry with a diamond shaped module dependency graph, two bins
     // and two tests.
     {
-        let folder = format!("/tmp/zxbs-tests/{}", rand::random::<u128>());
-        let build_path = format!("{}/build", folder);
-        let src_path = format!("{}/src", folder);
+        let folder = TempDir::new();
+        let build_path = format!("{}/build", folder.as_str());
+        let src_path = format!("{}/src", folder.as_str());
         std::fs::create_dir_all(&src_path).unwrap();
 
         make_diamond(std::path::Path::new(&src_path));
@@ -455,17 +454,15 @@ fn test_more_trees() {
                 args: &[],
             },
         );
-
-        std::fs::remove_dir_all(&folder).unwrap();
     }
 
     // Two entries where `app` depends on `util` and imports its root module
     // from both the root module and a submodule. `app` has no lib or bin
     // parts.
     {
-        let folder = format!("/tmp/zxbs-tests/{}", rand::random::<u128>());
-        let build_path = format!("{}/build", folder);
-        let src_path = format!("{}/src", folder);
+        let folder = TempDir::new();
+        let build_path = format!("{}/build", folder.as_str());
+        let src_path = format!("{}/src", folder.as_str());
         std::fs::create_dir_all(&src_path).unwrap();
 
         make_util_app(std::path::Path::new(&src_path));
@@ -507,16 +504,14 @@ fn test_more_trees() {
         check_deps(&info, &mut interner, app, &["util"]);
 
         check_all_basic_hashes(&info, &interner, cfg.src_path.to_str().unwrap(), 7);
-
-        std::fs::remove_dir_all(&folder).unwrap();
     }
 
     // A linear chain of three entries: `top` depends on `mid` which depends
     // on `core`.
     {
-        let folder = format!("/tmp/zxbs-tests/{}", rand::random::<u128>());
-        let build_path = format!("{}/build", folder);
-        let src_path = format!("{}/src", folder);
+        let folder = TempDir::new();
+        let build_path = format!("{}/build", folder.as_str());
+        let src_path = format!("{}/src", folder.as_str());
         std::fs::create_dir_all(&src_path).unwrap();
 
         make_chain(std::path::Path::new(&src_path));
@@ -565,8 +560,6 @@ fn test_more_trees() {
         check_deps(&info, &mut interner, top, &["mid"]);
 
         check_all_basic_hashes(&info, &interner, cfg.src_path.to_str().unwrap(), 10);
-
-        std::fs::remove_dir_all(&folder).unwrap();
     }
 }
 
