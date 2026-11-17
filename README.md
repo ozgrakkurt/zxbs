@@ -178,7 +178,7 @@ Available subcommands are:
 
 ## Example projects / Projects that use this build system
 
-- [zx]()
+- [zx](https://github.com/ozgrakkurt/zx)
 
 ## LLM usage
 
