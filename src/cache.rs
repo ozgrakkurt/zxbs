@@ -433,15 +433,9 @@ fn merge_new_entries(
 // make the cache system slower, this should be explored if we find the cache operations to take too much time.
 const MAX_CACHE_SIZE: u64 = 1 << 30;
 
-// Delete the least recently used entries, along with their cached files,
+// Delete the least recently used entries from state
 // until the total size of the cached outputs drops back under `max_cache_size`.
-pub fn spawn_prune(
-    cache_path: &Path,
-    thread_pool: &ThreadPool,
-    join_set: &mut JoinSet<()>,
-    entries: &mut BTreeMap<Hash, CacheEntry>,
-    max_cache_size: u64,
-) {
+pub fn prune_state(max_cache_size: u64, entries: &mut BTreeMap<Hash, CacheEntry>) {
     let total_size: u64 = entries
         .values()
         .map(|entry| u64::from(entry.output_size))
@@ -468,15 +462,10 @@ pub fn spawn_prune(
         let entry = entries.remove(&deep_hash).unwrap();
 
         size -= u64::from(entry.output_size);
-
-        let cached_file_path = cache_path.join(format!("{:x}", deep_hash));
-        join_set.spawn(thread_pool, move || {
-            std::fs::remove_file(&cached_file_path).unwrap();
-        });
     }
 }
 
-fn store_state_file(cache_path: &Path, entries: &BTreeMap<Hash, CacheEntry>) {
+fn write_state_file(cache_path: &Path, entries: &BTreeMap<Hash, CacheEntry>) {
     let state_file_path = cache_path.join("cache_state");
 
     let mut out = Vec::new();
@@ -487,55 +476,98 @@ fn store_state_file(cache_path: &Path, entries: &BTreeMap<Hash, CacheEntry>) {
     std::fs::rename(&tmp_path, &state_file_path).unwrap();
 }
 
-fn spawn_delete_wal(wal_path: &Path, thread_pool: &ThreadPool, join_set: &mut JoinSet<()>) {
-    let dir = match std::fs::read_dir(wal_path) {
-        Ok(d) => d,
-        Err(e) => {
-            assert!(e.kind() == IoErrorKind::NotFound);
-            return;
-        }
-    };
+fn cleanup(cache_path: &Path, thread_pool: &ThreadPool, entries: &BTreeMap<Hash, CacheEntry>) {
+    let mut join_set: JoinSet<()> = JoinSet::new();
+
+    let dir = std::fs::read_dir(cache_path).unwrap();
 
     for entry in dir {
         let entry = entry.unwrap();
+
+        let file_type = entry.file_type().unwrap();
+        let name = entry.file_name();
+        let name = name.to_str().unwrap();
         let path = entry.path();
 
-        join_set.spawn(thread_pool, move || {
-            std::fs::remove_file(path).unwrap();
-        });
+        if file_type.is_file() {
+            // The state file is not a cached artifact. The state temp (if any)
+            // was already renamed by `write_state_file` before cleanup runs.
+            if name == "cache_state" {
+                continue;
+            }
+
+            if name.ends_with(".tmp") {
+                join_set.spawn(thread_pool, move || {
+                    std::fs::remove_file(&path).unwrap();
+                });
+                continue;
+            }
+
+            let deep_hash = Hash::from_str_radix(name, 16).unwrap_or_else(|_| {
+                panic!(
+                    "Found file with invalid name in cache directory at: `{}`",
+                    path.display()
+                );
+            });
+
+            // Everything that is not referenced by the final state is either
+            // an evicted entry, a file left by a crash, or an invalid wal
+            // recovery candidate.
+            if !entries.contains_key(&deep_hash) {
+                join_set.spawn(thread_pool, move || {
+                    std::fs::remove_file(&path).unwrap();
+                });
+            }
+        } else if file_type.is_dir() {
+            assert_eq!(
+                name,
+                "wal",
+                "Found unexpected folder in the cache directory at: `{}`",
+                path.display()
+            );
+
+            let wal_dir = std::fs::read_dir(&path).unwrap();
+
+            for wal_entry in wal_dir {
+                let wal_entry = wal_entry.unwrap();
+                let wal_file_path = wal_entry.path();
+                let wal_file_type = wal_entry.file_type().unwrap();
+
+                assert!(
+                    wal_file_type.is_file(),
+                    "Found unexpected kind of entry in the wal directory at: `{}`",
+                    wal_file_path.display()
+                );
+
+                join_set.spawn(thread_pool, move || {
+                    std::fs::remove_file(&wal_file_path).unwrap();
+                });
+            }
+        } else {
+            panic!(
+                "Found unexpected kind of file in the cache directory at: `{}`",
+                path.display()
+            );
+        }
     }
+
+    join_set.join_all();
 }
 
 // - Prune the state if size is too big.
 // - Merge new entries with existing ones. Need to collect more info per new entry to do this.
 // - Store state file.
-// - Delete all wal files.
+// - Delete unreferenced cache files, stale temp files and all wal files.
 pub fn finish(mut state: CacheState, cache_path: &Path, thread_pool: &ThreadPool, timestamp: u64) {
-    let wal_path = cache_path.join("wal");
-
-    let mut join_set: JoinSet<()> = JoinSet::new();
-
-    // Doing all this spawns in parallel will likely corrupt everything in a case where we crash.
-    // We don't really care about this much since this should be very rare.
-    //
-    // The main goal of the WAL mechanism is to not lose the progress when one of the build artifacts
-    // fails a compile or when a test fails. These failures cause a crash BEFORE we call this finish function so
-    // we feel safe while we are in this function.
-
-    spawn_prune(
-        cache_path,
-        thread_pool,
-        &mut join_set,
-        &mut state.entries,
-        MAX_CACHE_SIZE,
-    );
-
-    spawn_delete_wal(&wal_path, thread_pool, &mut join_set);
-
+    prune_state(MAX_CACHE_SIZE, &mut state.entries);
     // merge AFTER pruning so we never prune the new entries.
     merge_new_entries(cache_path, thread_pool, timestamp, &mut state);
 
-    store_state_file(cache_path, &state.entries);
+    write_state_file(cache_path, &state.entries);
 
-    join_set.join_all();
+    // Cleanup runs after the final state is written: files for pruned entries,
+    // orphaned cache files, stale temp files and all wal files are removed.
+    // Keeping this after `write_state_file` also means the state temp is never
+    // in the directory while cleanup scans it.
+    cleanup(cache_path, thread_pool, &state.entries);
 }

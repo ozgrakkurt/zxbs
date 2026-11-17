@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use zxbs::cache::{self, CacheEntry};
 use zxbs::hash::{Hash, hash_bytes};
-use zxbs::thread_pool::{JoinSet, ThreadPool};
+use zxbs::thread_pool::ThreadPool;
 use zxbs::timestamp::timestamp;
 
 mod tmp_dir;
@@ -81,6 +81,11 @@ fn test_cache_roundtrip() {
     // Wal files are cleaned up after finish.
     let wal_count = std::fs::read_dir(cache_path.join("wal")).unwrap().count();
     assert_eq!(wal_count, 0);
+
+    // The invalid recovery candidate's cached file is not referenced by the
+    // final state, so cleanup removes it too.
+    assert!(!cache_path.join(format!("{:x}", deep + 2)).exists());
+    assert!(cache_path.join("cache_state").exists());
 
     // A reload without any wal files reads the state file and still knows
     // both entries.
@@ -214,30 +219,20 @@ fn setup_entries(
     (map, files)
 }
 
-// Runs the pruning and waits for the scheduled file deletions to finish.
-fn prune(cache_path: &Path, entries: &mut BTreeMap<Hash, CacheEntry>, max_cache_size: u64) {
-    let thread_pool = ThreadPool::new(2);
-    let mut join_set = JoinSet::new();
-
-    cache::spawn_prune(
-        cache_path,
-        &thread_pool,
-        &mut join_set,
-        entries,
-        max_cache_size,
-    );
-
-    join_set.join_all();
+// `prune_state` only updates the state map. Deleting evicted files is done by
+// `cleanup` in `finish` after the final state has been written.
+fn prune_state(entries: &mut BTreeMap<Hash, CacheEntry>, max_cache_size: u64) {
+    cache::prune_state(max_cache_size, entries);
 }
 
 #[test]
-fn prune_keeps_everything_when_at_or_under_the_limit() {
+fn prune_state_keeps_everything_when_at_or_under_the_limit() {
     let cache_path = make_cache_dir();
 
     // 3 entries * 10 bytes = 30 bytes total, exactly at the limit.
     let (mut entries, files) = setup_entries(&cache_path, 10, &[(1, 100), (2, 200), (3, 300)]);
 
-    prune(&cache_path, &mut entries, 30);
+    prune_state(&mut entries, 30);
 
     assert_eq!(entries.len(), 3);
     for file in files.iter() {
@@ -250,7 +245,7 @@ fn prune_keeps_everything_when_at_or_under_the_limit() {
 }
 
 #[test]
-fn prune_evicts_the_oldest_entries_first() {
+fn prune_state_evicts_the_oldest_entries_first() {
     let cache_path = make_cache_dir();
 
     // 4 entries * 100 bytes = 400 bytes total. The newest entry is first in
@@ -259,7 +254,7 @@ fn prune_evicts_the_oldest_entries_first() {
         setup_entries(&cache_path, 100, &[(4, 400), (2, 200), (1, 100), (3, 300)]);
 
     // Evicting the two oldest (200 bytes) gets us down to 200 <= 250.
-    prune(&cache_path, &mut entries, 250);
+    prune_state(&mut entries, 250);
 
     assert_eq!(entries.len(), 2);
     let remaining_timestamps: Vec<u64> = entries
@@ -268,18 +263,19 @@ fn prune_evicts_the_oldest_entries_first() {
         .collect();
     assert_eq!(remaining_timestamps, vec![300, 400]);
 
-    // The files of the two oldest entries must be gone from disk, too.
-    assert!(
-        !files[1].exists(),
-        "second oldest entry's file was not deleted"
-    );
-    assert!(!files[2].exists(), "oldest entry's file was not deleted");
-    assert!(files[0].exists(), "newest entry's file was deleted");
-    assert!(files[3].exists(), "second newest entry's file was deleted");
+    // prune_state does not touch the filesystem; finish/cleanup removes the
+    // evicted files after writing the new state.
+    for file in files.iter() {
+        assert!(
+            file.exists(),
+            "prune_state must not delete files itself: {}",
+            file.display()
+        );
+    }
 }
 
 #[test]
-fn prune_stops_as_soon_as_it_is_under_the_limit() {
+fn prune_state_stops_as_soon_as_it_is_under_the_limit() {
     let cache_path = make_cache_dir();
 
     // 4 entries * 100 bytes = 400 bytes total.
@@ -288,9 +284,145 @@ fn prune_stops_as_soon_as_it_is_under_the_limit() {
 
     // Evicting only the oldest entry gets us to 300, which is not over the
     // limit, so exactly one entry must be evicted.
-    prune(&cache_path, &mut entries, 300);
+    prune_state(&mut entries, 300);
 
     assert_eq!(entries.len(), 3);
     assert!(!entries.contains_key(&1), "oldest entry was not evicted");
-    assert!(!files[0].exists(), "oldest entry's file was not deleted");
+
+    // Again, file deletion is cleanup's job.
+    for file in files.iter() {
+        assert!(file.exists(), "unexpected deletion of {}", file.display());
+    }
+}
+
+#[test]
+fn test_finish_cleans_unreferenced_files() {
+    let folder = TempDir::new();
+    let cache_path = folder.join("cache");
+    let thread_pool = ThreadPool::new(4);
+    let ts = timestamp();
+
+    drop(cache::load(&cache_path, &thread_pool, ts));
+
+    // An existing entry that must survive finish.
+    let keep: Hash = 0x10;
+    let keep_content: &[u8] = b"keep";
+    let keep_output_hash = hash_bytes(keep_content);
+    let mut entries = BTreeMap::new();
+    entries.insert(
+        keep,
+        CacheEntry {
+            last_used_timestamp: ts,
+            output_hash: keep_output_hash,
+            output_size: u32::try_from(keep_content.len()).unwrap(),
+        },
+    );
+
+    let mut state_bytes = Vec::new();
+    cache::serialize_state_file(&entries, &mut state_bytes);
+    std::fs::write(cache_path.join("cache_state"), &state_bytes).unwrap();
+    std::fs::write(cache_path.join(format!("{:x}", keep)), keep_content).unwrap();
+
+    let mut state = cache::load(&cache_path, &thread_pool, ts);
+    assert_eq!(state.item(keep, ts), Some(keep_output_hash));
+
+    // A new entry whose cached file is written before finish.
+    let new: Hash = 0x11;
+    let new_content: &[u8] = b"new";
+    assert_eq!(state.item(new, ts), None);
+    std::fs::write(cache_path.join(format!("{:x}", new)), new_content).unwrap();
+
+    // Files that cleanup must remove: an orphan cache file, a stale temp file,
+    // a stale state temp, and a leftover wal file. Creating cache_state.tmp
+    // also checks that it does not race with write_state_file.
+    let orphan: Hash = 0x12;
+    std::fs::write(cache_path.join(format!("{:x}", orphan)), b"orphan").unwrap();
+    let stale_tmp = cache_path.join("stale.tmp");
+    std::fs::write(&stale_tmp, b"tmp").unwrap();
+    let state_tmp = cache_path.join("cache_state.tmp");
+    std::fs::write(&state_tmp, b"state tmp").unwrap();
+    let wal_junk = cache_path.join("wal").join("junk");
+    std::fs::write(&wal_junk, b"wal").unwrap();
+
+    cache::finish(state, &cache_path, &thread_pool, ts);
+
+    // Referenced cache files and the state file survive.
+    assert!(cache_path.join(format!("{:x}", keep)).exists());
+    assert!(cache_path.join(format!("{:x}", new)).exists());
+    assert!(cache_path.join("cache_state").exists());
+
+    // Unreferenced files, temps and wal files are gone.
+    assert!(!cache_path.join(format!("{:x}", orphan)).exists());
+    assert!(!stale_tmp.exists());
+    assert!(!state_tmp.exists());
+    assert!(!wal_junk.exists());
+
+    let mut loaded = cache::load(&cache_path, &thread_pool, ts);
+    assert_eq!(loaded.item(keep, ts), Some(keep_output_hash));
+    assert_eq!(loaded.item(new, ts), Some(hash_bytes(new_content)));
+}
+
+#[test]
+fn test_finish_prunes_and_removes_evicted_files() {
+    let folder = TempDir::new();
+    let cache_path = folder.join("cache");
+    let thread_pool = ThreadPool::new(2);
+    let ts = timestamp();
+
+    drop(cache::load(&cache_path, &thread_pool, ts));
+
+    let keep: Hash = 0x20;
+    let keep_content: &[u8] = b"keep";
+    let keep_output_hash = hash_bytes(keep_content);
+
+    // Use an exaggerated output_size to trigger pruning without creating a
+    // gigabyte-sized cache file.
+    let evict: Hash = 0x21;
+    let evict_content: &[u8] = b"evict";
+    let evict_output_hash = hash_bytes(evict_content);
+
+    let mut entries = BTreeMap::new();
+    entries.insert(
+        evict,
+        CacheEntry {
+            last_used_timestamp: 100,
+            output_hash: evict_output_hash,
+            output_size: u32::MAX,
+        },
+    );
+    entries.insert(
+        keep,
+        CacheEntry {
+            last_used_timestamp: 200,
+            output_hash: keep_output_hash,
+            output_size: u32::try_from(keep_content.len()).unwrap(),
+        },
+    );
+
+    let mut state_bytes = Vec::new();
+    cache::serialize_state_file(&entries, &mut state_bytes);
+    std::fs::write(cache_path.join("cache_state"), &state_bytes).unwrap();
+    std::fs::write(cache_path.join(format!("{:x}", evict)), evict_content).unwrap();
+    std::fs::write(cache_path.join(format!("{:x}", keep)), keep_content).unwrap();
+
+    // A new entry is merged after pruning, so it must not be pruned even though
+    // the old state is over the size limit.
+    let mut state = cache::load(&cache_path, &thread_pool, ts);
+    let new: Hash = 0x22;
+    let new_content: &[u8] = b"new after prune";
+    assert_eq!(state.item(new, ts), None);
+    std::fs::write(cache_path.join(format!("{:x}", new)), new_content).unwrap();
+
+    cache::finish(state, &cache_path, &thread_pool, ts);
+
+    // The older oversized entry is evicted from state, and cleanup removes its
+    // file. The newer entries and their files survive.
+    assert!(!cache_path.join(format!("{:x}", evict)).exists());
+    assert!(cache_path.join(format!("{:x}", keep)).exists());
+    assert!(cache_path.join(format!("{:x}", new)).exists());
+
+    let mut loaded = cache::load(&cache_path, &thread_pool, ts);
+    assert_eq!(loaded.item(keep, ts), Some(keep_output_hash));
+    assert_eq!(loaded.item(new, ts), Some(hash_bytes(new_content)));
+    assert_eq!(loaded.item(evict, ts), None);
 }
