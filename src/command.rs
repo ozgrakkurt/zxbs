@@ -318,7 +318,9 @@ impl RunTest {
             eprintln!("STDOUT of {}:\n{}", self.print(), stdout.as_str());
         }
 
-        std::fs::write(self.stamp_path, self.stamp_hash.to_le_bytes()).unwrap();
+        let tmp_output = make_tmp_name(self.stamp_path);
+        std::fs::write(&tmp_output, self.stamp_hash.to_le_bytes()).unwrap();
+        std::fs::rename(&tmp_output, self.stamp_path).unwrap()
     }
 }
 
@@ -478,7 +480,7 @@ impl CacheLoad {
 
         // it is crucial to use copy so the file keeps same permissions.
         // we need it to be executable if it is an executable file.
-        let tmp_path = format!("{}.tmp", self.output_path);
+        let tmp_path = make_tmp_name(self.output_path);
         std::fs::copy(&cache_path, &tmp_path).unwrap();
         std::fs::rename(&tmp_path, self.output_path).unwrap();
     }
@@ -508,7 +510,7 @@ impl CacheStore {
 
         // it is crucial to use copy so the file keeps same permissions.
         // we need it to be executable if it is an executable file.
-        let tmp_path = format!("{}.tmp", cache_path);
+        let tmp_path = make_tmp_name(&cache_path);
         std::fs::copy(self.file_path, &tmp_path).unwrap();
         std::fs::rename(&tmp_path, &cache_path).unwrap();
 
