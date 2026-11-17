@@ -1,11 +1,13 @@
 #![allow(clippy::too_many_arguments)]
 
 use std::path::Path;
+use std::time::Instant;
 
-use zxbs::build::Task;
+use zxbs::build::{Build, Task};
 use zxbs::cache;
 use zxbs::command::Command;
 use zxbs::config::{Config, Subcommand};
+use zxbs::directory;
 use zxbs::hash::{Hash, HashMap, hash_bytes};
 use zxbs::interner::{Interner, Str};
 use zxbs::plan::{self, make_module_artifact_name, should_run_binary, should_run_test};
@@ -1071,6 +1073,17 @@ fn test_cache_state() {
     }
     assert_eq!(deep_to_path.len(), NUM_STORED_ARTIFACTS);
 
+    // A cache load must carry the same dependency inputs as the non-cache
+    // task it replaces. Map every cold-plan output to that task's inputs.
+    let cold_inputs: HashMap<Str, &[Str]> = cold_tasks
+        .iter()
+        .flat_map(|task| {
+            task.outputs
+                .iter()
+                .map(|&output| (output, task.inputs.as_slice()))
+        })
+        .collect();
+
     // Fully warm cache: every artifact is a cache hit. The plan must emit
     // exactly one cache load task per artifact and nothing else. In
     // particular no test is re-run because their stamps are cached too.
@@ -1097,9 +1110,18 @@ fn test_cache_state() {
             match &task.command {
                 Some(Command::CacheLoad(cl)) => {
                     assert_eq!(cl.cache_files_path, cache_files_path);
-                    assert!(task.inputs.is_empty());
                     assert_eq!(task.outputs.len(), 1);
                     assert_eq!(interner.get(task.outputs[0]), cl.output_path);
+
+                    let expected_inputs = cold_inputs.get(&task.outputs[0]).unwrap_or_else(|| {
+                        panic!("no cold-plan task produces `{}`", cl.output_path)
+                    });
+                    assert_eq!(
+                        task.inputs.as_slice(),
+                        *expected_inputs,
+                        "cache load for `{}` must have the same inputs as its non-cache task",
+                        cl.output_path,
+                    );
 
                     // The cache load refers to the right artifact and
                     // expects the hash of the content we cached for it.
@@ -1178,9 +1200,19 @@ fn test_cache_state() {
             match &task.command {
                 Some(Command::CacheLoad(cl)) => {
                     assert_eq!(cl.cache_files_path, cache_files_path);
-                    assert!(task.inputs.is_empty());
                     assert_eq!(task.outputs.len(), 1);
                     assert_eq!(interner.get(task.outputs[0]), cl.output_path);
+
+                    let expected_inputs = cold_inputs.get(&task.outputs[0]).unwrap_or_else(|| {
+                        panic!("no cold-plan task produces `{}`", cl.output_path)
+                    });
+                    assert_eq!(
+                        task.inputs.as_slice(),
+                        *expected_inputs,
+                        "cache load for `{}` must have the same inputs as its non-cache task",
+                        cl.output_path,
+                    );
+
                     assert_eq!(cl.expected_hash, hash_bytes(cl.output_path.as_bytes()));
                     assert_eq!(*path_to_deep.get(cl.output_path).unwrap(), cl.deep_hash,);
                     loaded_paths.push(cl.output_path.to_owned());
@@ -1218,6 +1250,294 @@ fn test_cache_state() {
         // still there because it was only partially cached.
         assert_eq!(cold_rest, partial_rest);
     }
+}
+
+// A `.pcm` is not self-contained: clang loads and validates the PCMs it was
+// built against. If a cached root module PCM is loaded before its
+// submodule/dependency PCMs (which can happen after LRU pruning evicts only
+// part of a module group), consumers fail with "module file not found" or
+// "module file ... is out of date".
+//
+// This test creates a real cache with a cold build, removes the submodule PCMs
+// and objects of `base`/`io` while keeping their root PCMs/objects and
+// myapp's root PCM, and then replans and rebuilds. The cached PCM loads must
+// depend on the PCMs they were built against, and the rebuild must succeed.
+#[test]
+fn test_partial_cache_pcm_dependencies() {
+    let folder = TempDir::new();
+    let cfg = make_config(folder.as_str());
+    make_baselib(cfg.src_path);
+    make_iolib(cfg.src_path);
+    make_myapp(cfg.src_path);
+
+    let thread_pool = ThreadPool::new(8);
+    let mut interner = Interner::new();
+    let build_path = cfg.build_path.to_str().unwrap();
+
+    // Cold build so the cache contains real (valid) artifacts. Collect every
+    // stored artifact's deep hash so selected entries can be removed below.
+    let cold_artifacts: Vec<(Hash, &'static str)> = {
+        let ts = timestamp();
+        let mut cache_state = cache::load(cfg.cache_path, &thread_pool, ts);
+        let info = scan::scan(cfg, &mut interner, &thread_pool, 0, &mut cache_state, ts);
+        directory::setup_build_directories(cfg, &info, &interner, &thread_pool);
+        let tasks = plan::plan(
+            cfg,
+            &Subcommand::Build,
+            &mut interner,
+            &info,
+            &mut cache_state,
+            0,
+            ts,
+        );
+        let artifacts = tasks
+            .iter()
+            .filter_map(|task| match &task.command {
+                Some(Command::CacheStore(cs)) => Some((cs.deep_hash, cs.file_path)),
+                _ => None,
+            })
+            .collect();
+        Build::new(None, &mut interner, tasks, Instant::now(), &thread_pool).build();
+        cache::finish(cache_state, cfg.cache_path, &thread_pool, ts);
+        artifacts
+    };
+
+    // Keep the root PCMs and objects of base/io, remove their submodule PCMs
+    // and objects, and force myapp's bin object to be recompiled. This is the
+    // kind of partial state that pruning individual cache entries can leave
+    // behind.
+    let base_pcm = format!("{}/mod/base.pcm", build_path);
+    let myapp_bin_obj = format!("{}/entry/myapp/bin/myapp.o", build_path);
+
+    let state_file = cfg.cache_path.join("cache_state");
+    let state_bytes = std::fs::read(&state_file).unwrap();
+    let mut entries = cache::try_deserialize_state_file(&state_bytes).unwrap();
+
+    let mut removed_submodule_pcm = false;
+    let mut removed_myapp_bin_obj = false;
+
+    for (deep_hash, path) in cold_artifacts.iter() {
+        let is_submodule = path.contains("/mod/base-") || path.contains("/mod/io-");
+        let is_myapp_bin_obj = *path == myapp_bin_obj.as_str();
+        if !is_submodule && !is_myapp_bin_obj {
+            continue;
+        }
+
+        assert!(entries.remove(deep_hash).is_some());
+        std::fs::remove_file(cfg.cache_path.join(format!("{:x}", *deep_hash))).unwrap();
+
+        removed_submodule_pcm |= is_submodule && path.ends_with(".pcm");
+        removed_myapp_bin_obj |= is_myapp_bin_obj;
+    }
+
+    assert!(removed_submodule_pcm, "no submodule PCMs were removed");
+    assert!(removed_myapp_bin_obj, "myapp's bin object was not removed");
+
+    let mut new_state = Vec::new();
+    cache::serialize_state_file(&entries, &mut new_state);
+    let tmp = format!("{}.tmp", state_file.display());
+    std::fs::write(&tmp, &new_state).unwrap();
+    std::fs::rename(&tmp, &state_file).unwrap();
+
+    // Replan. `base.pcm` is a cache hit while its submodule PCMs are misses,
+    // and myapp's bin object is a miss that imports base and io.
+    let ts = timestamp();
+    let mut cache_state = cache::load(cfg.cache_path, &thread_pool, ts);
+    let info = scan::scan(cfg, &mut interner, &thread_pool, 0, &mut cache_state, ts);
+    directory::setup_build_directories(cfg, &info, &interner, &thread_pool);
+    let tasks = plan::plan(
+        cfg,
+        &Subcommand::Build,
+        &mut interner,
+        &info,
+        &mut cache_state,
+        0,
+        ts,
+    );
+
+    // This is the regression assertion. Before the fix, the cached base.pcm
+    // load had no inputs, so its submodule PCMs could still be compiling when
+    // a consumer (myapp's bin object, or another cached PCM) was compiled.
+    let base_pcm_load = tasks
+        .iter()
+        .find(|task| {
+            matches!(
+                &task.command,
+                Some(Command::CacheLoad(cl)) if cl.output_path == base_pcm.as_str()
+            )
+        })
+        .expect("expected base.pcm to be a cache load");
+    let dependency_paths: Vec<&str> = base_pcm_load
+        .inputs
+        .iter()
+        .map(|&idx| interner.get(idx))
+        .collect();
+
+    for part in ["vec", "start", "arith", "alloc"] {
+        let expected = format!("{}/mod/base-{}.pcm", build_path, part);
+        assert!(
+            dependency_paths.contains(&expected.as_str()),
+            "cached base.pcm must wait for `{expected}`; got {dependency_paths:?}"
+        );
+    }
+
+    // Before the fix the assertion above fails first, so this build is only
+    // reached once cached PCMs have their dependencies. After the fix it also
+    // verifies the real compiler accepts the resulting schedule.
+    Build::new(None, &mut interner, tasks, Instant::now(), &thread_pool).build();
+    cache::finish(cache_state, cfg.cache_path, &thread_pool, ts);
+
+    assert!(cfg.build_path.join("mod/base.pcm").exists());
+    assert!(cfg.build_path.join("entry/myapp/bin/myapp.o").exists());
+}
+
+// The object file itself is self-contained at link time, but the compile that
+// regenerates it is not: it needs the PCMs it imports. This test keeps every
+// PCM cached and only removes the lib/bin/test object files. That forces the
+// object compilations to run again, which exposes the same missing PCM
+// dependency edge as `test_partial_cache_pcm_dependencies`: a cached PCM that
+// is an input to the object compile is not ordered before that compile unless
+// the PCM load itself depends on its PCMs.
+#[test]
+fn test_partial_cache_object_dependencies() {
+    let folder = TempDir::new();
+    let cfg = make_config(folder.as_str());
+    make_baselib(cfg.src_path);
+    make_iolib(cfg.src_path);
+    make_myapp(cfg.src_path);
+
+    let thread_pool = ThreadPool::new(8);
+    let mut interner = Interner::new();
+    let build_path = cfg.build_path.to_str().unwrap();
+
+    // Cold build with real artifacts, then collect every stored artifact.
+    let cold_artifacts: Vec<(Hash, &'static str)> = {
+        let ts = timestamp();
+        let mut cache_state = cache::load(cfg.cache_path, &thread_pool, ts);
+        let info = scan::scan(cfg, &mut interner, &thread_pool, 0, &mut cache_state, ts);
+        directory::setup_build_directories(cfg, &info, &interner, &thread_pool);
+        let tasks = plan::plan(
+            cfg,
+            &Subcommand::Build,
+            &mut interner,
+            &info,
+            &mut cache_state,
+            0,
+            ts,
+        );
+        let artifacts = tasks
+            .iter()
+            .filter_map(|task| match &task.command {
+                Some(Command::CacheStore(cs)) => Some((cs.deep_hash, cs.file_path)),
+                _ => None,
+            })
+            .collect();
+        Build::new(None, &mut interner, tasks, Instant::now(), &thread_pool).build();
+        cache::finish(cache_state, cfg.cache_path, &thread_pool, ts);
+        artifacts
+    };
+
+    // Keep all PCMs, module objects, archives, executables and stamps. Remove
+    // only the lib/bin/test object files.
+    let myapp_bin_obj = format!("{}/entry/myapp/bin/myapp.o", build_path);
+    let base_pcm = format!("{}/mod/base.pcm", build_path);
+    let io_pcm = format!("{}/mod/io.pcm", build_path);
+
+    let state_file = cfg.cache_path.join("cache_state");
+    let state_bytes = std::fs::read(&state_file).unwrap();
+    let mut entries = cache::try_deserialize_state_file(&state_bytes).unwrap();
+
+    let mut removed_objects = 0;
+    for (deep_hash, path) in cold_artifacts.iter() {
+        if !(path.contains("/entry/") && path.ends_with(".o")) {
+            continue;
+        }
+
+        assert!(entries.remove(deep_hash).is_some());
+        std::fs::remove_file(cfg.cache_path.join(format!("{:x}", *deep_hash))).unwrap();
+        removed_objects += 1;
+    }
+    assert!(removed_objects > 0, "no object files were removed");
+
+    let mut new_state = Vec::new();
+    cache::serialize_state_file(&entries, &mut new_state);
+    let tmp = format!("{}.tmp", state_file.display());
+    std::fs::write(&tmp, &new_state).unwrap();
+    std::fs::rename(&tmp, &state_file).unwrap();
+
+    // Replan and rebuild. All PCMs are cache hits, but myapp's bin object is
+    // recompiled and imports both base and io.
+    let ts = timestamp();
+    let mut cache_state = cache::load(cfg.cache_path, &thread_pool, ts);
+    let info = scan::scan(cfg, &mut interner, &thread_pool, 0, &mut cache_state, ts);
+    directory::setup_build_directories(cfg, &info, &interner, &thread_pool);
+    let tasks = plan::plan(
+        cfg,
+        &Subcommand::Build,
+        &mut interner,
+        &info,
+        &mut cache_state,
+        0,
+        ts,
+    );
+
+    let producers: HashMap<&str, &Task> = {
+        let mut producers = HashMap::default();
+        for task in tasks.iter() {
+            for &output in task.outputs.iter() {
+                producers.insert(interner.get(output), task);
+            }
+        }
+        producers
+    };
+
+    let myapp_bin_obj_task = tasks
+        .iter()
+        .find(|task| {
+            matches!(
+                &task.command,
+                Some(Command::CompileToObject(co)) if co.output == myapp_bin_obj.as_str()
+            )
+        })
+        .expect("expected myapp's bin object to be recompiled");
+
+    // Walk the task graph backwards from the object compile. The object's only
+    // direct input is myapp.pcm, so base.pcm/io.pcm must be reached through the
+    // cached myapp.pcm load. Before the fix that load had no inputs and the
+    // dependency chain stops at myapp.pcm.
+    let mut stack: Vec<&str> = myapp_bin_obj_task
+        .inputs
+        .iter()
+        .map(|&idx| interner.get(idx))
+        .collect();
+    let mut visited: Vec<&str> = Vec::new();
+    while let Some(path) = stack.pop() {
+        if visited.contains(&path) {
+            continue;
+        }
+        visited.push(path);
+
+        if let Some(producer) = producers.get(path) {
+            stack.extend(producer.inputs.iter().map(|&idx| interner.get(idx)));
+        }
+    }
+
+    for expected in [base_pcm.as_str(), io_pcm.as_str()] {
+        assert!(
+            visited.contains(&expected),
+            "myapp's bin object compile must be ordered after `{expected}`; \
+             reached only {visited:?}"
+        );
+    }
+
+    // As in the PCM test, the assertion above fails first before the fix, so
+    // this build is only reached once object compiles are ordered after their
+    // PCM dependencies.
+    Build::new(None, &mut interner, tasks, Instant::now(), &thread_pool).build();
+    cache::finish(cache_state, cfg.cache_path, &thread_pool, ts);
+
+    assert!(cfg.build_path.join("mod/base.pcm").exists());
+    assert!(cfg.build_path.join("entry/myapp/bin/myapp.o").exists());
 }
 
 fn find_entry(info: &BuildInfo, interner: &mut Interner, name: &str) -> usize {

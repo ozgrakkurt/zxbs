@@ -64,6 +64,34 @@ impl CacheState {
             }
         }
     }
+
+    // Same as the `item` function but takes multiple hashes to query at the same time.
+    // Only returns the hashes if all deephashes are in the cache.
+    // Otherwise it inserts all deep_hashes into the new_entries.
+    pub fn item_multi(&mut self, deep_hashes: &[Hash], timestamp: u64) -> Option<Vec<Hash>> {
+        let mut all_found = true;
+        for deep_hash in deep_hashes.iter() {
+            if !self.entries.contains_key(deep_hash) {
+                all_found = false;
+                break;
+            }
+        }
+
+        if all_found {
+            let mut hashes = Vec::with_capacity(deep_hashes.len());
+            for deep_hash in deep_hashes.iter() {
+                let entry = self.entries.get_mut(deep_hash).unwrap();
+                entry.last_used_timestamp = timestamp;
+                hashes.push(entry.output_hash);
+            }
+            Some(hashes)
+        } else {
+            for &deep_hash in deep_hashes.iter() {
+                assert!(self.new_entries.insert(deep_hash));
+            }
+            None
+        }
+    }
 }
 
 const WAL_FILE_MAGIC: u64 = 0x104aedd95bce65d6u64;
@@ -391,7 +419,7 @@ fn merge_new_entries(
     }
 
     while let Some((deep_hash, cache_entry)) = join_set.join_next() {
-        assert!(state.entries.insert(deep_hash, cache_entry,).is_none());
+        state.entries.insert(deep_hash, cache_entry);
     }
 }
 

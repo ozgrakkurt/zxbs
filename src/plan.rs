@@ -166,14 +166,15 @@ fn plan_module_build(
         let pcm_hash = pcm_hashes[part_idx];
         let obj_hash = obj_hashes[part_idx];
 
-        if let (Some(pcm_output_hash), Some(obj_output_hash)) = (
-            cache_state.item(pcm_hash, timestamp),
-            cache_state.item(obj_hash, timestamp),
-        ) {
+        if let Some(output_hashes) = cache_state.item_multi(&[pcm_hash, obj_hash], timestamp) {
+            let pcm_output_hash = output_hashes[0];
+            let obj_output_hash = output_hashes[1];
+            assert!(output_hashes.len() == 2);
+
             tasks.push(Task {
                 entry_name: entry_name_idx,
                 part_name: part,
-                inputs: Vec::new(),
+                inputs: input_indices.clone(),
                 outputs: vec![pcm_path],
                 command: Some(Command::CacheLoad(CacheLoad {
                     cache_files_path,
@@ -186,7 +187,7 @@ fn plan_module_build(
             tasks.push(Task {
                 entry_name: entry_name_idx,
                 part_name: part,
-                inputs: Vec::new(),
+                inputs: input_indices,
                 outputs: vec![obj_path],
                 command: Some(Command::CacheLoad(CacheLoad {
                     cache_files_path,
@@ -304,12 +305,14 @@ fn plan_lib_build(
 
         let obj_hash = obj_hashes[part_idx];
 
+        let input_indices = vec![root_pcm_path_index];
+        let output_indices = vec![obj_path_index];
         if let Some(obj_output_hash) = cache_state.item(obj_hash, timestamp) {
             tasks.push(Task {
                 entry_name: entry_name_idx,
                 part_name: part_name_idx,
-                inputs: Vec::new(),
-                outputs: vec![obj_path_index],
+                inputs: input_indices,
+                outputs: output_indices,
                 command: Some(Command::CacheLoad(CacheLoad {
                     cache_files_path,
                     output_path: obj_path,
@@ -319,9 +322,6 @@ fn plan_lib_build(
                 entry_index,
             });
         } else {
-            let input_indices = vec![root_pcm_path_index];
-            let output_indices = vec![obj_path_index];
-
             tasks.push(Task {
                 entry_name: entry_name_idx,
                 part_name: part_name_idx,
@@ -360,12 +360,14 @@ fn plan_lib_build(
     // this is only used for tracing so nothing special.
     let lib_archive_part_name = interner.insert("@ARCHIVE_LIB@");
 
+    let input_indices = obj_path_indices;
+    let output_indices = vec![lib_output_path_idx];
     if let Some(lib_archive_output_hash) = cache_state.item(lib_archive_hash, timestamp) {
         tasks.push(Task {
             entry_name: entry_name_idx,
             part_name: lib_archive_part_name,
-            inputs: Vec::new(),
-            outputs: vec![lib_output_path_idx],
+            inputs: input_indices,
+            outputs: output_indices,
             command: Some(Command::CacheLoad(CacheLoad {
                 cache_files_path,
                 output_path: lib_output_path,
@@ -375,9 +377,6 @@ fn plan_lib_build(
             entry_index,
         });
     } else {
-        let input_indices = obj_path_indices;
-        let output_indices = vec![lib_output_path_idx];
-
         tasks.push(Task {
             entry_name: entry_name_idx,
             part_name: lib_archive_part_name,
@@ -464,12 +463,15 @@ fn plan_bin_build(
         let obj_hash = obj_hashes[bin_idx];
         let exe_hash = exe_hashes[bin_idx];
 
+        let input_indices = vec![self_pcm_path_idx];
+        let output_indices = vec![obj_path_index];
+
         if let Some(obj_output_hash) = cache_state.item(obj_hash, timestamp) {
             tasks.push(Task {
                 entry_name: entry_name_idx,
                 part_name: bin_name_idx,
-                inputs: Vec::new(),
-                outputs: vec![obj_path_index],
+                inputs: input_indices,
+                outputs: output_indices,
                 command: Some(Command::CacheLoad(CacheLoad {
                     cache_files_path,
                     output_path: obj_path,
@@ -479,9 +481,6 @@ fn plan_bin_build(
                 entry_index,
             });
         } else {
-            let input_indices = vec![self_pcm_path_idx];
-            let output_indices = vec![obj_path_index];
-
             tasks.push(Task {
                 entry_name: entry_name_idx,
                 part_name: bin_name_idx,
@@ -510,12 +509,15 @@ fn plan_bin_build(
             });
         }
 
+        let mut input_indices = lib_path_indices.to_vec();
+        input_indices.push(obj_path_index);
+        let output_indices = vec![exe_path_index];
         if let Some(exe_output_hash) = cache_state.item(exe_hash, timestamp) {
             tasks.push(Task {
                 entry_name: entry_name_idx,
                 part_name: bin_name_idx,
-                inputs: Vec::new(),
-                outputs: vec![exe_path_index],
+                inputs: input_indices,
+                outputs: output_indices,
                 command: Some(Command::CacheLoad(CacheLoad {
                     cache_files_path,
                     output_path: exe_path,
@@ -525,10 +527,6 @@ fn plan_bin_build(
                 entry_index,
             });
         } else {
-            let mut input_indices = lib_path_indices.to_vec();
-            input_indices.push(obj_path_index);
-            let output_indices = vec![exe_path_index];
-
             tasks.push(Task {
                 entry_name: entry_name_idx,
                 part_name: bin_name_idx,
@@ -646,12 +644,14 @@ fn plan_test_build(
         let exe_hash = exe_hashes[test_idx];
         let stamp_hash = stamp_hashes[test_idx];
 
+        let input_indices = vec![self_pcm_path_idx];
+        let output_indices = vec![obj_path_index];
         if let Some(obj_output_hash) = cache_state.item(obj_hash, timestamp) {
             tasks.push(Task {
                 entry_name: entry_name_idx,
                 part_name: test_name_idx,
-                inputs: Vec::new(),
-                outputs: vec![obj_path_index],
+                inputs: input_indices,
+                outputs: output_indices,
                 command: Some(Command::CacheLoad(CacheLoad {
                     cache_files_path,
                     output_path: obj_path,
@@ -661,9 +661,6 @@ fn plan_test_build(
                 entry_index,
             });
         } else {
-            let input_indices = vec![self_pcm_path_idx];
-            let output_indices = vec![obj_path_index];
-
             tasks.push(Task {
                 entry_name: entry_name_idx,
                 part_name: test_name_idx,
@@ -692,12 +689,15 @@ fn plan_test_build(
             });
         }
 
+        let mut input_indices = lib_path_indices.to_vec();
+        input_indices.push(obj_path_index);
+        let output_indices = vec![exe_path_index];
         if let Some(exe_output_hash) = cache_state.item(exe_hash, timestamp) {
             tasks.push(Task {
                 entry_name: entry_name_idx,
                 part_name: test_name_idx,
-                inputs: Vec::new(),
-                outputs: vec![exe_path_index],
+                inputs: input_indices,
+                outputs: output_indices,
                 command: Some(Command::CacheLoad(CacheLoad {
                     cache_files_path,
                     output_path: exe_path,
@@ -707,10 +707,6 @@ fn plan_test_build(
                 entry_index,
             });
         } else {
-            let mut input_indices = lib_path_indices.to_vec();
-            input_indices.push(obj_path_index);
-            let output_indices = vec![exe_path_index];
-
             tasks.push(Task {
                 entry_name: entry_name_idx,
                 part_name: test_name_idx,
@@ -740,13 +736,15 @@ fn plan_test_build(
             });
         }
 
+        let input_indices = vec![exe_path_index];
+        let output_indices = vec![stamp_path_index];
         if should_run_test(subcommand, entry_name, test_name) {
             if let Some(stamp_output_hash) = cache_state.item(stamp_hash, timestamp) {
                 tasks.push(Task {
                     entry_name: entry_name_idx,
                     part_name: test_name_idx,
-                    inputs: Vec::new(),
-                    outputs: vec![stamp_path_index],
+                    inputs: input_indices,
+                    outputs: output_indices,
                     command: Some(Command::CacheLoad(CacheLoad {
                         cache_files_path,
                         output_path: stamp_path,
@@ -756,9 +754,6 @@ fn plan_test_build(
                     entry_index,
                 });
             } else {
-                let input_indices = vec![exe_path_index];
-                let output_indices = vec![stamp_path_index];
-
                 tasks.push(Task {
                     entry_name: entry_name_idx,
                     part_name: test_name_idx,

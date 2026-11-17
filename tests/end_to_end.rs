@@ -142,13 +142,41 @@ fn test_smoke() {
         );
 
         assert_eq!(tasks.len(), NUM_ARTIFACTS);
+
+        // Cache loads now carry the same dependencies as the compile/link/run
+        // tasks they replace. Every dependency must be produced by another
+        // task in the warm plan, and at least one task must have one (a fully
+        // warm plan where nothing depends on anything would miss the PCM and
+        // object ordering edges).
+        let mut produced: HashMap<&'static str, ()> = HashMap::default();
+        for task in tasks.iter() {
+            for &output in task.outputs.iter() {
+                assert!(
+                    produced.insert(interner.get(output), ()).is_none(),
+                    "an artifact was produced by two tasks: `{}`",
+                    interner.get(output),
+                );
+            }
+        }
+
+        let mut saw_dependency = false;
         for task in tasks.iter() {
             match &task.command {
                 Some(Command::CacheLoad(cl)) => {
-                    assert!(task.inputs.is_empty());
                     assert_eq!(task.outputs.len(), 1);
                     assert_ne!(cl.deep_hash, 0);
                     assert_ne!(cl.expected_hash, 0);
+
+                    for &input in task.inputs.iter() {
+                        let input = interner.get(input);
+                        assert!(
+                            produced.contains_key(input),
+                            "cache load for `{}` depends on `{}`, which no task produces",
+                            cl.output_path,
+                            input,
+                        );
+                        saw_dependency = true;
+                    }
                 }
                 _ => {
                     panic!(
@@ -158,6 +186,10 @@ fn test_smoke() {
                 }
             }
         }
+        assert!(
+            saw_dependency,
+            "expected warm cache loads to carry dependency edges",
+        );
 
         Build::new(None, &mut interner, tasks, Instant::now(), &thread_pool).build();
 
