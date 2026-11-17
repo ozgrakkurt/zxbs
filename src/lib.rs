@@ -17,6 +17,7 @@ pub mod command;
 pub mod common;
 pub mod config;
 pub mod directory;
+pub mod format;
 pub mod hash;
 pub mod interner;
 pub mod plan;

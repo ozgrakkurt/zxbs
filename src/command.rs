@@ -376,55 +376,6 @@ impl RunBinary {
     }
 }
 
-pub struct Format {
-    pub clang_format: &'static str,
-    pub path: &'static str,
-}
-
-impl Format {
-    pub fn print(&self) -> String {
-        let mut out = String::with_capacity(1024);
-
-        out.push_str("FMT ");
-        out.push_str(self.path);
-
-        out
-    }
-
-    pub fn run(&self) {
-        let output = match std::process::Command::new(self.clang_format)
-            .arg("-i")
-            .arg("--style={BasedOnStyle: LLVM, IndentWidth: 4}")
-            .arg(self.path)
-            .output()
-        {
-            Ok(out) => out,
-            Err(e) => {
-                panic!(
-                    "Failed to run command. Command:\n\t{}\nError = {:?}\n",
-                    self.print(),
-                    e,
-                );
-            }
-        };
-
-        if !output.status.success() {
-            let stderr = String::from_utf8(output.stderr).unwrap();
-            panic!(
-                "Running clang format failed. Command:\n\t{}\nStatus: {}\nStdErr:\n{}\n",
-                self.print(),
-                output.status,
-                stderr,
-            );
-        }
-
-        let stdout = String::from_utf8(output.stdout).unwrap();
-        if !stdout.trim().is_empty() {
-            eprintln!("STDOUT of {}:\n{}", self.print(), stdout.as_str());
-        }
-    }
-}
-
 // Dummy command to be used when running tests and fuzzing.
 //
 // Just checks that everything is consistent and the build isn't running
@@ -534,7 +485,6 @@ pub enum Command {
     RunTest(RunTest),
     CacheLoad(CacheLoad),
     CacheStore(CacheStore),
-    Format(Format),
     TestCmd(TestCmd),
 }
 
@@ -548,7 +498,6 @@ pub enum CommandKind {
     RunTest,
     CacheLoad,
     CacheStore,
-    Format,
     TestCmd,
 }
 
@@ -563,7 +512,6 @@ impl Command {
             Command::RunTest(x) => x.print(),
             Command::CacheLoad(x) => x.print(),
             Command::CacheStore(x) => x.print(),
-            Command::Format(x) => x.print(),
             Command::TestCmd(x) => x.print(),
         }
     }
@@ -578,7 +526,6 @@ impl Command {
             Command::RunTest(x) => x.run(),
             Command::CacheLoad(x) => x.run(),
             Command::CacheStore(x) => x.run(),
-            Command::Format(x) => x.run(),
             Command::TestCmd(x) => x.run(),
         }
     }
@@ -593,7 +540,6 @@ impl Command {
             Command::RunTest(_) => CommandKind::RunTest,
             Command::CacheLoad(_) => CommandKind::CacheLoad,
             Command::CacheStore(_) => CommandKind::CacheStore,
-            Command::Format(_) => CommandKind::Format,
             Command::TestCmd(_) => CommandKind::TestCmd,
         }
     }

@@ -109,6 +109,44 @@ fn test_should_run_binary() {
     );
 }
 
+fn run_plan_with_subcommand(subcommand: Subcommand) {
+    let folder = TempDir::new();
+    let cfg = make_config(folder.as_str());
+
+    let thread_pool = ThreadPool::new(2);
+
+    let ts = timestamp();
+    let mut cache_state = cache::load(cfg.cache_path, &thread_pool, ts);
+
+    let mut interner = Interner::new();
+
+    let info = scan::scan(cfg, &mut interner, &thread_pool, 0, &mut cache_state, ts);
+
+    let _ = plan::plan(
+        cfg,
+        &subcommand,
+        &mut interner,
+        &info,
+        &mut cache_state,
+        0,
+        ts,
+    );
+}
+
+// `fmt` and `clean` are handled before planning in main.rs, so the planner
+// must reject them instead of silently planning a normal build.
+#[test]
+#[should_panic(expected = "unreachable")]
+fn test_plan_rejects_fmt() {
+    run_plan_with_subcommand(Subcommand::Fmt);
+}
+
+#[test]
+#[should_panic(expected = "unreachable")]
+fn test_plan_rejects_clean() {
+    run_plan_with_subcommand(Subcommand::Clean);
+}
+
 #[test]
 fn test_empty() {
     let folder = TempDir::new();
@@ -793,69 +831,6 @@ fn test_simple() {
             !matches!(t.command, Some(Command::RunTest(_)))
                 && !matches!(t.command, Some(Command::RunBinary(_)))
         }),);
-    }
-
-    // The `fmt` subcommand emits a format task for every source file and
-    // nothing else.
-    {
-        let tasks = plan::plan(
-            cfg,
-            &Subcommand::Fmt,
-            &mut interner,
-            &info,
-            &mut cache_state,
-            0,
-            ts,
-        );
-
-        assert_eq!(tasks.len(), 22);
-
-        let mut formatted_paths: Vec<&'static str> = tasks
-            .iter()
-            .map(|t| match &t.command {
-                Some(Command::Format(f)) => {
-                    assert_eq!(f.clang_format, "clang-format");
-                    assert!(t.inputs.is_empty());
-                    assert!(t.outputs.is_empty());
-                    f.path
-                }
-                _ => unreachable!(),
-            })
-            .collect();
-        formatted_paths.sort_unstable();
-
-        let mut expected_paths: Vec<&'static str> = Vec::new();
-        for eidx in 0..info.name.len() {
-            let entry_name = interner.get(info.name[eidx]);
-            for (folder, ext) in [
-                ("mod", "cppm"),
-                ("lib", "cc"),
-                ("bin", "cc"),
-                ("test", "cc"),
-            ] {
-                let parts: Vec<&'static str> = match folder {
-                    "mod" => info.module[eidx].iter().map(|&p| interner.get(p)).collect(),
-                    "lib" => info.lib[eidx].iter().map(|&p| interner.get(p)).collect(),
-                    "bin" => info.bin[eidx].iter().map(|&p| interner.get(p)).collect(),
-                    "test" => info.test[eidx].iter().map(|&p| interner.get(p)).collect(),
-                    _ => unreachable!(),
-                };
-                for part in parts {
-                    let path = interner.insert(&format!(
-                        "{}/{}/{}/{}.{}",
-                        cfg.src_path.to_str().unwrap(),
-                        entry_name,
-                        folder,
-                        part,
-                        ext,
-                    ));
-                    expected_paths.push(interner.get(path));
-                }
-            }
-        }
-        expected_paths.sort_unstable();
-
-        assert_eq!(formatted_paths, expected_paths);
     }
 }
 

@@ -1,9 +1,9 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use zxbs::common::check_name;
+use zxbs::common::{check_name, try_parse_file_name};
 use zxbs::config::try_parse_subcommand_arg;
-use zxbs::scan::{try_parse_deps_file, try_parse_file_name, try_parse_p1689};
+use zxbs::scan::{try_parse_deps_file, try_parse_p1689};
 
 fn valid_name_from(data: &[u8]) -> String {
     let mut name = String::new();

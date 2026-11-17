@@ -8,7 +8,7 @@ use zxbs::hash::HashMap;
 use zxbs::interner::Interner;
 use zxbs::tracer::{Entry, Tracer};
 
-const KINDS: [CommandKind; 10] = [
+const KINDS: [CommandKind; 9] = [
     CommandKind::CompileModule,
     CommandKind::CompileToObject,
     CommandKind::ArchiveLib,
@@ -17,7 +17,6 @@ const KINDS: [CommandKind; 10] = [
     CommandKind::RunTest,
     CommandKind::CacheLoad,
     CommandKind::CacheStore,
-    CommandKind::Format,
     CommandKind::TestCmd,
 ];
 

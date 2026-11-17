@@ -251,7 +251,9 @@ fuzz_target!(|data: &[u8]| {
     let expected = match kind {
         0 => true, // TestAll
         1 => true, // Build
-        2 => true, // Fmt
+        // `fmt` and `clean` are handled in main.rs before scanning, so the
+        // scan-time subcommand check rejects them.
+        2 => false, // Fmt
         3 => entry_idx.is_some_and(|idx| sub_info.bin[idx].contains(&part_idx)),
         4 => entry_idx.is_some_and(|idx| sub_info.test[idx].contains(&part_idx)),
         5 => false, // Clean

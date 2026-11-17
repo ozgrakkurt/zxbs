@@ -62,8 +62,7 @@ fn command_kind_to_color(kind: CommandKind) -> &'static str {
         CommandKind::RunTest => 6,
         CommandKind::CacheLoad => 7,
         CommandKind::CacheStore => 8,
-        CommandKind::Format => 9,
-        CommandKind::TestCmd => 10,
+        CommandKind::TestCmd => 9,
     };
     COLORS[idx]
 }

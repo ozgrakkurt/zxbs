@@ -6,7 +6,7 @@ use zxbs::config::Subcommand;
 use zxbs::hash::HashMap;
 use zxbs::thread_pool::ThreadPool;
 use zxbs::timestamp::timestamp;
-use zxbs::{build, cache, config, directory, interner, plan, scan, tracer};
+use zxbs::{build, cache, config, directory, format, interner, plan, scan, tracer};
 
 fn make_duration(start: &Instant) -> u64 {
     u64::try_from(start.elapsed().as_micros()).unwrap()
@@ -22,6 +22,10 @@ fn run() {
     match &subcommand {
         Subcommand::Clean => {
             directory::remove_dir_all(config.cache_path, &thread_pool);
+            return;
+        }
+        Subcommand::Fmt => {
+            format::format(&thread_pool, config.clang_format, config.src_path);
             return;
         }
         _ => {}
