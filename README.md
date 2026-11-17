@@ -107,6 +107,12 @@ Go into the project root and run:
 RUSTFLAGS="-C target-cpu=native" cargo install --path . --locked
 ```
 
+This isn't as fast as I would like but I did everything I know about this.
+- Avoided generics as much as I could.
+- Only include a minimal number of dependencies.
+
+The source directory as <5k loc so it is not massive.
+
 ## Test
 
 Regular tests:
