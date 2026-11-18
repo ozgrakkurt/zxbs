@@ -331,6 +331,8 @@ impl RunBinary {
 
     pub fn run(&self) {
         let output = match std::process::Command::new(self.path)
+            .stderr(std::process::Stdio::inherit())
+            .stdout(std::process::Stdio::inherit())
             .args(self.args)
             .output()
         {
@@ -346,22 +348,13 @@ impl RunBinary {
 
         if !output.status.success() {
             let stderr = String::from_utf8(output.stderr).unwrap();
-            panic!(
+            eprintln!(
                 "Running a binary failed. Command:\n\t{}\nStatus: {}\nStdErr:\n{}\n",
                 self.print(),
                 output.status,
                 stderr,
             );
-        }
-
-        let stdout = String::from_utf8(output.stdout).unwrap();
-        if !stdout.trim().is_empty() {
-            eprintln!("STDOUT of {}:\n{}", self.print(), stdout.as_str());
-        }
-
-        let stderr = String::from_utf8(output.stderr).unwrap();
-        if !stderr.trim().is_empty() {
-            eprintln!("STDERR of {}:\n{}", self.print(), stderr.as_str());
+            std::process::exit(output.status.code().unwrap_or(1));
         }
     }
 }
