@@ -219,6 +219,7 @@ pub fn try_parse_deps_file(contents: &str) -> Result<Vec<String>, String> {
             deps.push(line.to_owned());
         }
     }
+    deps.sort_unstable();
     Ok(deps)
 }
 
@@ -294,6 +295,7 @@ fn scan_subfolder(expected_extension: &'static str, path: &Path) -> Vec<String> 
             .unwrap();
         names.push(name);
     }
+    names.sort_unstable();
     names
 }
 
