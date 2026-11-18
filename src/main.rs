@@ -6,7 +6,7 @@ use zxbs::config::Subcommand;
 use zxbs::hash::HashMap;
 use zxbs::thread_pool::ThreadPool;
 use zxbs::timestamp::timestamp;
-use zxbs::{build, cache, config, directory, format, interner, plan, scan, tracer};
+use zxbs::{build, cache, config, directory, format, interner, lock, plan, scan, tracer};
 
 fn make_duration(start: &Instant) -> u64 {
     u64::try_from(start.elapsed().as_micros()).unwrap()
@@ -14,6 +14,8 @@ fn make_duration(start: &Instant) -> u64 {
 
 fn run() {
     let (config, subcommand) = config::Config::parse_cli();
+
+    let _build_lock = lock::BuildLock::acquire(config.build_lock_path);
 
     // It is ok to use more threads than the physical cpu count because the program does IO heavy
     // workloads in some parts.
