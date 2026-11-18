@@ -29,6 +29,11 @@ fn make_task(
     }
 }
 
+// A build with zero tasks must run the scheduler loop to completion without
+// tripping any of the scheduler's internal asserts ("couldn't find a starting
+// task", "tasks remaining" etc). `Build::build` returns nothing and encodes
+// all of its invariants as panics, so completing without a panic is the
+// assertion.
 #[test]
 fn empty_run() {
     let thread_pool = ThreadPool::new(2);

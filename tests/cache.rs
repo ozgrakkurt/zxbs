@@ -151,6 +151,28 @@ fn test_invalid_wal_recovery_is_ignored() {
     let bytes = std::fs::read(&wal_path).unwrap();
     std::fs::write(&wal_path, &bytes[..bytes.len() / 2]).unwrap();
 
+    // The wal file has a consistent checksum but a foreign magic number.
+    // Built by hand because `write_wal_file` only writes the right magic.
+    let bad_magic: Hash = 7;
+    write_cached_file(bad_magic);
+    cache::write_wal_file(cache_path, bad_magic, output_hash, output_size);
+    let wal_path = cache_path.join("wal").join(format!("{:x}", bad_magic));
+    let mut bytes = std::fs::read(&wal_path).unwrap();
+    bytes[0] ^= 0xff;
+    let checksum_at = bytes.len() - 16;
+    let fixed_checksum = hash_bytes(&bytes[..checksum_at]).to_le_bytes();
+    bytes[checksum_at..].copy_from_slice(&fixed_checksum);
+    std::fs::write(&wal_path, bytes).unwrap();
+
+    // The wal file is valid but has trailing garbage after the checksum.
+    let trailing: Hash = 8;
+    write_cached_file(trailing);
+    cache::write_wal_file(cache_path, trailing, output_hash, output_size);
+    let wal_path = cache_path.join("wal").join(format!("{:x}", trailing));
+    let mut bytes = std::fs::read(&wal_path).unwrap();
+    bytes.push(0);
+    std::fs::write(&wal_path, bytes).unwrap();
+
     // A valid entry to make sure the invalid ones were not ignored just
     // because recovery is broken as a whole.
     let valid: Hash = 6;
@@ -159,7 +181,14 @@ fn test_invalid_wal_recovery_is_ignored() {
 
     let mut state = cache::load(cache_path, &thread_pool, ts);
     assert_eq!(state.item(valid, ts), Some(output_hash));
-    for deep in [wrong_size, wrong_name, bad_checksum, truncated] {
+    for deep in [
+        wrong_size,
+        wrong_name,
+        bad_checksum,
+        truncated,
+        bad_magic,
+        trailing,
+    ] {
         assert_eq!(state.item(deep, ts), None);
     }
 }
@@ -425,4 +454,176 @@ fn test_finish_prunes_and_removes_evicted_files() {
     assert_eq!(loaded.item(keep, ts), Some(keep_output_hash));
     assert_eq!(loaded.item(new, ts), Some(hash_bytes(new_content)));
     assert_eq!(loaded.item(evict, ts), None);
+}
+
+// The state file roundtrips through serialize/deserialize.
+#[test]
+fn test_state_file_roundtrip() {
+    let mut entries = BTreeMap::new();
+    entries.insert(
+        0x1234,
+        CacheEntry {
+            last_used_timestamp: 100,
+            output_hash: 0x5678,
+            output_size: 42,
+        },
+    );
+    entries.insert(
+        0x4321,
+        CacheEntry {
+            last_used_timestamp: 200,
+            output_hash: 0x8765,
+            output_size: 7,
+        },
+    );
+
+    let mut bytes = Vec::new();
+    cache::serialize_state_file(&entries, &mut bytes);
+
+    assert_eq!(cache::try_deserialize_state_file(&bytes).unwrap(), entries);
+}
+
+// Unlike a wal file, a broken state file is never silently ignored: the state
+// file is the source of truth that survives the whole run. Every kind of
+// structural corruption must be rejected.
+#[test]
+fn test_corrupted_state_files_are_rejected() {
+    let mut entries = BTreeMap::new();
+    entries.insert(
+        0x1234,
+        CacheEntry {
+            last_used_timestamp: 100,
+            output_hash: 0x5678,
+            output_size: 42,
+        },
+    );
+
+    let mut valid = Vec::new();
+    cache::serialize_state_file(&entries, &mut valid);
+
+    // Corrupted magic.
+    let mut bad_magic = valid.clone();
+    bad_magic[0] ^= 0xff;
+    assert!(cache::try_deserialize_state_file(&bad_magic).is_err());
+
+    // Truncated in the middle of the entry.
+    assert!(cache::try_deserialize_state_file(&valid[..valid.len() - 20]).is_err());
+
+    // Trailing garbage after the checksum.
+    let mut trailing = valid.clone();
+    trailing.push(0);
+    assert!(cache::try_deserialize_state_file(&trailing).is_err());
+
+    // Corrupted checksum.
+    let mut bad_checksum = valid.clone();
+    *bad_checksum.last_mut().unwrap() ^= 0xff;
+    assert!(cache::try_deserialize_state_file(&bad_checksum).is_err());
+
+    // Corrupted entry payload. The checksum no longer matches the content.
+    let mut bad_entry = valid.clone();
+    bad_entry[12] ^= 0xff;
+    assert!(cache::try_deserialize_state_file(&bad_entry).is_err());
+
+    // A duplicated deep hash is structurally invalid even with a consistent
+    // checksum, so the buffer is crafted by hand.
+    let deep: Hash = 0x77;
+    let entry = cache_entry(1, 3);
+    let mut duplicate = Vec::new();
+    duplicate.extend_from_slice(&valid[0..8]); // magic
+    duplicate.extend_from_slice(&2u32.to_le_bytes()); // number of entries
+    for _ in 0..2 {
+        duplicate.extend_from_slice(&deep.to_le_bytes());
+        duplicate.extend_from_slice(&entry.last_used_timestamp.to_le_bytes());
+        duplicate.extend_from_slice(&entry.output_hash.to_le_bytes());
+        duplicate.extend_from_slice(&entry.output_size.to_le_bytes());
+    }
+    duplicate.extend_from_slice(&hash_bytes(&duplicate).to_le_bytes());
+    assert!(cache::try_deserialize_state_file(&duplicate).is_err());
+}
+
+// A corrupted state file on disk is a hard error, not an empty cache.
+#[test]
+#[should_panic(expected = "Corrupted cache state file")]
+fn test_load_panics_on_a_corrupted_state_file() {
+    let cache_path = make_cache_dir();
+    let thread_pool = ThreadPool::new(1);
+    let ts = timestamp();
+
+    drop(cache::load(&cache_path, &thread_pool, ts));
+
+    let mut entries = BTreeMap::new();
+    entries.insert(1, cache_entry(ts, 10));
+
+    let mut bytes = Vec::new();
+    cache::serialize_state_file(&entries, &mut bytes);
+    *bytes.last_mut().unwrap() ^= 0xff;
+    std::fs::write(cache_path.join("cache_state"), &bytes).unwrap();
+
+    cache::load(&cache_path, &thread_pool, ts);
+}
+
+// `item_multi` is all-or-nothing: a group of hashes is only served from the
+// cache when every single one of them is present. Otherwise the whole group
+// is recorded as new entries, exactly like the planner does for a module
+// whose pcm and object must both come from the cache.
+#[test]
+fn test_item_multi() {
+    let cache_path = make_cache_dir();
+    let thread_pool = ThreadPool::new(1);
+    let ts = timestamp();
+
+    let content: &[u8] = b"cached output";
+    let output_hash = hash_bytes(content);
+    let output_size = u32::try_from(content.len()).unwrap();
+
+    let first: Hash = 0x100;
+    let second: Hash = 0x200;
+
+    let mut entries = BTreeMap::new();
+    entries.insert(
+        first,
+        CacheEntry {
+            last_used_timestamp: ts,
+            output_hash,
+            output_size,
+        },
+    );
+    entries.insert(
+        second,
+        CacheEntry {
+            last_used_timestamp: ts,
+            output_hash,
+            output_size,
+        },
+    );
+
+    let mut state_bytes = Vec::new();
+    cache::serialize_state_file(&entries, &mut state_bytes);
+    std::fs::write(cache_path.join("cache_state"), &state_bytes).unwrap();
+    std::fs::write(cache_path.join(format!("{:x}", first)), content).unwrap();
+    std::fs::write(cache_path.join(format!("{:x}", second)), content).unwrap();
+
+    let mut state = cache::load(&cache_path, &thread_pool, ts);
+
+    // Both hashes are cached, so the group is served.
+    assert_eq!(
+        state.item_multi(&[first, second], ts),
+        Some(vec![output_hash, output_hash])
+    );
+
+    // A group with an unknown hash is not served at all.
+    let missing: Hash = 0x300;
+    assert_eq!(state.item_multi(&[first, missing], ts), None);
+
+    // The unknown hash became a new entry: once its output exists, finish
+    // makes it loadable and the same group is served.
+    let missing_content: &[u8] = b"the missing output";
+    std::fs::write(cache_path.join(format!("{:x}", missing)), missing_content).unwrap();
+    cache::finish(state, &cache_path, &thread_pool, ts);
+
+    let mut state = cache::load(&cache_path, &thread_pool, ts);
+    assert_eq!(
+        state.item_multi(&[first, missing], ts),
+        Some(vec![output_hash, hash_bytes(missing_content)])
+    );
 }

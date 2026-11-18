@@ -273,7 +273,10 @@ pub fn parse_subcommand_arg(arg: &str) -> (String, String) {
 }
 
 impl Config {
-    fn parse_subcommand(subcommand: &str, args: &mut std::env::Args) -> Subcommand {
+    pub fn parse_subcommand(
+        subcommand: &str,
+        args: &mut impl Iterator<Item = String>,
+    ) -> Subcommand {
         match subcommand {
             "run" => {
                 let arg = args
@@ -327,7 +330,9 @@ impl Config {
     }
 
     // returns parsed flag map and the subcommand name
-    fn parse_flags(args: &mut std::env::Args) -> (HashMap<String, Option<String>>, String) {
+    pub fn parse_flags(
+        args: &mut impl Iterator<Item = String>,
+    ) -> (HashMap<String, Option<String>>, String) {
         let mut flags = HashMap::<String, Option<String>>::default();
 
         while let Some(arg) = args.next() {
@@ -421,9 +426,16 @@ impl Config {
         let mut args = std::env::args();
         args.next().unwrap();
 
-        let (flags, subcommand_name) = Self::parse_flags(&mut args);
+        Self::parse_cli_args(&mut args)
+    }
 
-        let subcommand = Self::parse_subcommand(&subcommand_name, &mut args);
+    // The whole CLI parsing pipeline except for reading the process arguments.
+    // Kept separate from `parse_cli` so tests can drive it with their own
+    // argument lists.
+    pub fn parse_cli_args(args: &mut impl Iterator<Item = String>) -> (Config, Subcommand) {
+        let (flags, subcommand_name) = Self::parse_flags(args);
+
+        let subcommand = Self::parse_subcommand(&subcommand_name, args);
 
         let config = Self::parse_config(flags);
 

@@ -1,12 +1,15 @@
 #![allow(clippy::single_element_loop)]
 
+use std::path::Path;
+
 use zxbs::cache;
 use zxbs::config::{Config, Subcommand};
 use zxbs::hash::{HashMap, hash_ordered};
 use zxbs::interner::{Interner, Str};
 use zxbs::scan::{
     BuildInfo, check_cyclic_dependencies_between_entries,
-    check_cyclic_dependencies_between_module_parts, scan,
+    check_cyclic_dependencies_between_module_parts, parse_deps_file, scan, try_parse_deps_file,
+    try_parse_p1689,
 };
 use zxbs::thread_pool::ThreadPool;
 use zxbs::timestamp::timestamp;
@@ -17,16 +20,28 @@ use make_folders::{make_baselib, make_chain, make_diamond, make_iolib, make_myap
 mod tmp_dir;
 use tmp_dir::TempDir;
 
-#[test]
-fn test_empty() {
+// A scanned source tree together with the config it was scanned with. The
+// temp directory is kept alive because the checks read the source files back
+// after the scan.
+struct Tree {
+    _folder: TempDir,
+    cfg: &'static Config,
+}
+
+// Sets up a fresh source tree with `setup`, scans it and returns the config,
+// build info and interner. This is the shared skeleton of every scan test:
+// an empty cache and a zero base hash so the scan results only depend on the
+// source tree.
+fn make_tree(setup: impl FnOnce(&Path)) -> (Tree, BuildInfo, Interner) {
     let folder = TempDir::new();
     let build_path = format!("{}/build", folder.as_str());
     let src_path = format!("{}/src", folder.as_str());
     std::fs::create_dir_all(&src_path).unwrap();
+    setup(Path::new(&src_path));
 
     let mut flags = HashMap::default();
-    flags.insert("--build-dir".to_owned(), Some(build_path.clone()));
-    flags.insert("--src-dir".to_owned(), Some(src_path.clone()));
+    flags.insert("--build-dir".to_owned(), Some(build_path));
+    flags.insert("--src-dir".to_owned(), Some(src_path));
     let cfg: &'static Config = Box::leak(Box::new(Config::parse_config(flags)));
 
     let thread_pool = ThreadPool::new(4);
@@ -38,6 +53,20 @@ fn test_empty() {
 
     let info = scan(cfg, &mut interner, &thread_pool, 0, &mut cache_state, ts);
 
+    (
+        Tree {
+            _folder: folder,
+            cfg,
+        },
+        info,
+        interner,
+    )
+}
+
+#[test]
+fn test_empty() {
+    let (_tree, info, _interner) = make_tree(|_| ());
+
     assert!(info.map.is_empty());
     assert!(info.name.is_empty());
     assert!(info.module.is_empty());
@@ -47,6 +76,12 @@ fn test_empty() {
     assert!(info.test.is_empty());
     assert!(info.deps.is_empty());
     assert!(info.basic_hash.is_empty());
+
+    // An empty tree has nothing to build or run, but the subcommands that
+    // don't name a target are still accepted.
+    let mut interner = Interner::new();
+    info.check_subcommand(&mut interner, &Subcommand::TestAll);
+    info.check_subcommand(&mut interner, &Subcommand::Build);
 }
 
 fn check_baselib_info(info: &BuildInfo, interner: &mut Interner) {
@@ -331,29 +366,11 @@ fn check_all_basic_hashes(
 
 #[test]
 fn test_simple() {
-    let folder = TempDir::new();
-    let build_path = format!("{}/build", folder.as_str());
-    let src_path = format!("{}/src", folder.as_str());
-    std::fs::create_dir_all(&src_path).unwrap();
-
-    // create folders/files
-    make_baselib(std::path::Path::new(&src_path));
-    make_iolib(std::path::Path::new(&src_path));
-    make_myapp(std::path::Path::new(&src_path));
-
-    let mut flags = HashMap::default();
-    flags.insert("--build-dir".to_owned(), Some(build_path.clone()));
-    flags.insert("--src-dir".to_owned(), Some(src_path.clone()));
-    let cfg: &'static Config = Box::leak(Box::new(Config::parse_config(flags)));
-
-    let thread_pool = ThreadPool::new(4);
-
-    let ts = timestamp();
-    let mut cache_state = cache::load(cfg.cache_path, &thread_pool, ts);
-
-    let mut interner = Interner::new();
-
-    let info = scan(cfg, &mut interner, &thread_pool, 0, &mut cache_state, ts);
+    let (tree, info, mut interner) = make_tree(|src| {
+        make_baselib(src);
+        make_iolib(src);
+        make_myapp(src);
+    });
 
     assert_eq!(info.map.len(), 3);
     assert_eq!(info.name.len(), 3);
@@ -368,7 +385,7 @@ fn test_simple() {
     check_iolib_info(&info, &mut interner);
     check_myapp_info(&info, &mut interner);
 
-    check_all_basic_hashes(&info, &interner, cfg.src_path.to_str().unwrap(), 22);
+    check_all_basic_hashes(&info, &interner, tree.cfg.src_path.to_str().unwrap(), 22);
 
     // check_subcommand accepts every subcommand that refers to parts that
     // actually exist.
@@ -391,32 +408,84 @@ fn test_simple() {
     info.check_subcommand(&mut interner, &Subcommand::Build);
 }
 
+// The subcommand arguments are checked against the scan results. Anything
+// that doesn't name an existing entry, binary or test must be reported.
+#[test]
+fn test_try_check_subcommand_errors() {
+    let (_tree, info, mut interner) = make_tree(|src| {
+        make_baselib(src);
+        make_iolib(src);
+        make_myapp(src);
+    });
+
+    // Unknown entry name.
+    let err = info
+        .try_check_subcommand(
+            &mut interner,
+            &Subcommand::Test {
+                entry_name: "nosuch".to_owned(),
+                test_name: "whatever".to_owned(),
+            },
+        )
+        .unwrap_err();
+    assert!(
+        err.contains("an entry with this name wasn't found"),
+        "unexpected error: {}",
+        err
+    );
+
+    // The entry exists but the test doesn't.
+    let err = info
+        .try_check_subcommand(
+            &mut interner,
+            &Subcommand::Test {
+                entry_name: "base".to_owned(),
+                test_name: "nosuch".to_owned(),
+            },
+        )
+        .unwrap_err();
+    assert!(
+        err.contains("doesn't have a test named `nosuch`"),
+        "unexpected error: {}",
+        err
+    );
+
+    // The entry exists but the binary doesn't.
+    let err = info
+        .try_check_subcommand(
+            &mut interner,
+            &Subcommand::RunBinary {
+                entry_name: "base".to_owned(),
+                bin_name: "nosuch".to_owned(),
+                args: &[],
+            },
+        )
+        .unwrap_err();
+    assert!(
+        err.contains("doesn't have a binary named `nosuch`"),
+        "unexpected error: {}",
+        err
+    );
+
+    // `fmt` and `clean` are handled in main.rs and must never reach the
+    // check.
+    let err = info
+        .try_check_subcommand(&mut interner, &Subcommand::Fmt)
+        .unwrap_err();
+    assert!(
+        err.contains("should never happen"),
+        "unexpected error: {}",
+        err
+    );
+}
+
 // Scan the additional trees and check the build info derived from them.
 #[test]
 fn test_more_trees() {
     // A single entry with a diamond shaped module dependency graph, two bins
     // and two tests.
     {
-        let folder = TempDir::new();
-        let build_path = format!("{}/build", folder.as_str());
-        let src_path = format!("{}/src", folder.as_str());
-        std::fs::create_dir_all(&src_path).unwrap();
-
-        make_diamond(std::path::Path::new(&src_path));
-
-        let mut flags = HashMap::default();
-        flags.insert("--build-dir".to_owned(), Some(build_path.clone()));
-        flags.insert("--src-dir".to_owned(), Some(src_path.clone()));
-        let cfg: &'static Config = Box::leak(Box::new(Config::parse_config(flags)));
-
-        let thread_pool = ThreadPool::new(4);
-
-        let ts = timestamp();
-        let mut cache_state = cache::load(cfg.cache_path, &thread_pool, ts);
-
-        let mut interner = Interner::new();
-
-        let info = scan(cfg, &mut interner, &thread_pool, 0, &mut cache_state, ts);
+        let (tree, info, mut interner) = make_tree(make_diamond);
 
         assert_eq!(info.map.len(), 1);
         let i = entry_index(&info, &mut interner, "diamond");
@@ -437,7 +506,7 @@ fn test_more_trees() {
         check_part_list(&info.bin[i], &mut interner, &["tool_a", "tool_b"]);
         check_part_list(&info.test[i], &mut interner, &["left", "right"]);
         check_deps(&info, &mut interner, i, &[]);
-        check_all_basic_hashes(&info, &interner, cfg.src_path.to_str().unwrap(), 9);
+        check_all_basic_hashes(&info, &interner, tree.cfg.src_path.to_str().unwrap(), 9);
 
         info.check_subcommand(
             &mut interner,
@@ -460,26 +529,7 @@ fn test_more_trees() {
     // from both the root module and a submodule. `app` has no lib or bin
     // parts.
     {
-        let folder = TempDir::new();
-        let build_path = format!("{}/build", folder.as_str());
-        let src_path = format!("{}/src", folder.as_str());
-        std::fs::create_dir_all(&src_path).unwrap();
-
-        make_util_app(std::path::Path::new(&src_path));
-
-        let mut flags = HashMap::default();
-        flags.insert("--build-dir".to_owned(), Some(build_path.clone()));
-        flags.insert("--src-dir".to_owned(), Some(src_path.clone()));
-        let cfg: &'static Config = Box::leak(Box::new(Config::parse_config(flags)));
-
-        let thread_pool = ThreadPool::new(4);
-
-        let ts = timestamp();
-        let mut cache_state = cache::load(cfg.cache_path, &thread_pool, ts);
-
-        let mut interner = Interner::new();
-
-        let info = scan(cfg, &mut interner, &thread_pool, 0, &mut cache_state, ts);
+        let (tree, info, mut interner) = make_tree(make_util_app);
 
         assert_eq!(info.map.len(), 2);
 
@@ -503,32 +553,13 @@ fn test_more_trees() {
         check_part_list(&info.test[app], &mut interner, &["main"]);
         check_deps(&info, &mut interner, app, &["util"]);
 
-        check_all_basic_hashes(&info, &interner, cfg.src_path.to_str().unwrap(), 7);
+        check_all_basic_hashes(&info, &interner, tree.cfg.src_path.to_str().unwrap(), 7);
     }
 
     // A linear chain of three entries: `top` depends on `mid` which depends
     // on `core`.
     {
-        let folder = TempDir::new();
-        let build_path = format!("{}/build", folder.as_str());
-        let src_path = format!("{}/src", folder.as_str());
-        std::fs::create_dir_all(&src_path).unwrap();
-
-        make_chain(std::path::Path::new(&src_path));
-
-        let mut flags = HashMap::default();
-        flags.insert("--build-dir".to_owned(), Some(build_path.clone()));
-        flags.insert("--src-dir".to_owned(), Some(src_path.clone()));
-        let cfg: &'static Config = Box::leak(Box::new(Config::parse_config(flags)));
-
-        let thread_pool = ThreadPool::new(4);
-
-        let ts = timestamp();
-        let mut cache_state = cache::load(cfg.cache_path, &thread_pool, ts);
-
-        let mut interner = Interner::new();
-
-        let info = scan(cfg, &mut interner, &thread_pool, 0, &mut cache_state, ts);
+        let (tree, info, mut interner) = make_tree(make_chain);
 
         assert_eq!(info.map.len(), 3);
 
@@ -559,7 +590,7 @@ fn test_more_trees() {
         check_part_list(&info.test[top], &mut interner, &["top"]);
         check_deps(&info, &mut interner, top, &["mid"]);
 
-        check_all_basic_hashes(&info, &interner, cfg.src_path.to_str().unwrap(), 10);
+        check_all_basic_hashes(&info, &interner, tree.cfg.src_path.to_str().unwrap(), 10);
     }
 }
 
@@ -567,70 +598,53 @@ fn test_more_trees() {
 // module inside the `mod` folder is required.
 #[test]
 fn test_optional_folders_and_deps() {
-    let folder = TempDir::new();
-    let build_path = format!("{}/build", folder.as_str());
-    let src_path = format!("{}/src", folder.as_str());
-    let src = std::path::Path::new(&src_path);
+    let (tree, info, mut interner) = make_tree(|src| {
+        // A module-only entry: no deps file and no lib, bin or test folder.
+        let mod_path = src.join("solo").join("mod");
+        std::fs::create_dir_all(&mod_path).unwrap();
+        std::fs::write(mod_path.join("solo.cppm"), "export module solo;\n").unwrap();
 
-    // A module-only entry: no deps file and no lib, bin or test folder.
-    let mod_path = src.join("solo").join("mod");
-    std::fs::create_dir_all(&mod_path).unwrap();
-    std::fs::write(mod_path.join("solo.cppm"), "export module solo;\n").unwrap();
+        // Another module-only entry that other entries can depend on.
+        let mod_path = src.join("leaf").join("mod");
+        std::fs::create_dir_all(&mod_path).unwrap();
+        std::fs::write(mod_path.join("leaf.cppm"), "export module leaf;\n").unwrap();
 
-    // Another module-only entry that other entries can depend on.
-    let mod_path = src.join("leaf").join("mod");
-    std::fs::create_dir_all(&mod_path).unwrap();
-    std::fs::write(mod_path.join("leaf.cppm"), "export module leaf;\n").unwrap();
+        // An entry with a deps file but no lib, bin or test folder.
+        let mod_path = src.join("app").join("mod");
+        std::fs::create_dir_all(&mod_path).unwrap();
+        std::fs::write(
+            mod_path.join("app.cppm"),
+            "export module app;\nimport leaf;\n",
+        )
+        .unwrap();
+        std::fs::write(src.join("app").join("deps"), "leaf\n").unwrap();
 
-    // An entry with a deps file but no lib, bin or test folder.
-    let mod_path = src.join("app").join("mod");
-    std::fs::create_dir_all(&mod_path).unwrap();
-    std::fs::write(
-        mod_path.join("app.cppm"),
-        "export module app;\nimport leaf;\n",
-    )
-    .unwrap();
-    std::fs::write(src.join("app").join("deps"), "leaf\n").unwrap();
+        // An entry with all the source folders but no deps file.
+        let entry_path = src.join("parts");
+        let mod_path = entry_path.join("mod");
+        std::fs::create_dir_all(&mod_path).unwrap();
+        std::fs::write(mod_path.join("parts.cppm"), "export module parts;\n").unwrap();
 
-    // An entry with all the source folders but no deps file.
-    let entry_path = src.join("parts");
-    let mod_path = entry_path.join("mod");
-    std::fs::create_dir_all(&mod_path).unwrap();
-    std::fs::write(mod_path.join("parts.cppm"), "export module parts;\n").unwrap();
+        let lib_path = entry_path.join("lib");
+        std::fs::create_dir_all(&lib_path).unwrap();
+        std::fs::write(lib_path.join("helper.cc"), "import parts;\n").unwrap();
 
-    let lib_path = entry_path.join("lib");
-    std::fs::create_dir_all(&lib_path).unwrap();
-    std::fs::write(lib_path.join("helper.cc"), "import parts;\n").unwrap();
+        let bin_path = entry_path.join("bin");
+        std::fs::create_dir_all(&bin_path).unwrap();
+        std::fs::write(
+            bin_path.join("tool.cc"),
+            "import parts;\nint main(void) { return 0; }\n",
+        )
+        .unwrap();
 
-    let bin_path = entry_path.join("bin");
-    std::fs::create_dir_all(&bin_path).unwrap();
-    std::fs::write(
-        bin_path.join("tool.cc"),
-        "import parts;\nint main(void) { return 0; }\n",
-    )
-    .unwrap();
-
-    let test_path = entry_path.join("test");
-    std::fs::create_dir_all(&test_path).unwrap();
-    std::fs::write(
-        test_path.join("check.cc"),
-        "import parts;\nint main(void) { return 0; }\n",
-    )
-    .unwrap();
-
-    let mut flags = HashMap::default();
-    flags.insert("--build-dir".to_owned(), Some(build_path.clone()));
-    flags.insert("--src-dir".to_owned(), Some(src_path.clone()));
-    let cfg: &'static Config = Box::leak(Box::new(Config::parse_config(flags)));
-
-    let thread_pool = ThreadPool::new(4);
-
-    let ts = timestamp();
-    let mut cache_state = cache::load(cfg.cache_path, &thread_pool, ts);
-
-    let mut interner = Interner::new();
-
-    let info = scan(cfg, &mut interner, &thread_pool, 0, &mut cache_state, ts);
+        let test_path = entry_path.join("test");
+        std::fs::create_dir_all(&test_path).unwrap();
+        std::fs::write(
+            test_path.join("check.cc"),
+            "import parts;\nint main(void) { return 0; }\n",
+        )
+        .unwrap();
+    });
 
     assert_eq!(info.map.len(), 4);
 
@@ -660,7 +674,7 @@ fn test_optional_folders_and_deps() {
     check_deps(&info, &mut interner, parts, &[]);
 
     // solo(1) + leaf(1) + app(1) + parts(4)
-    check_all_basic_hashes(&info, &interner, cfg.src_path.to_str().unwrap(), 7);
+    check_all_basic_hashes(&info, &interner, tree.cfg.src_path.to_str().unwrap(), 7);
 }
 
 fn make_entry_graph(interner: &mut Interner, names: &[&str]) -> (Vec<Str>, HashMap<Str, u32>) {
@@ -731,4 +745,125 @@ fn test_module_cycle_check_rejects_cycle() {
     let entry_name = interner.insert("entry");
 
     check_cyclic_dependencies_between_module_parts(&interner, entry_name, &parts, &matrix);
+}
+
+// clang-scan-deps emits p1689 json. The happy path covers rules with
+// provides and requires lists.
+#[test]
+fn test_parse_p1689() {
+    let contents = br#"{
+        "rules": [
+            {
+                "primary-output": "my_mod.cppm",
+                "requires": [
+                    { "logical-name": "other_mod", "source-path": "x" }
+                ],
+                "provides": [
+                    { "logical-name": "my_mod", "is-interface": true }
+                ]
+            }
+        ]
+    }"#;
+
+    let deps = try_parse_p1689(contents).unwrap();
+    assert_eq!(deps.deps, ["other_mod"]);
+    assert_eq!(deps.provides, ["my_mod"]);
+
+    // A file without rules contributes nothing.
+    let deps = try_parse_p1689(b"{}").unwrap();
+    assert!(deps.deps.is_empty());
+    assert!(deps.provides.is_empty());
+}
+
+// Every malformed shape of the p1689 format must produce an error instead of
+// a panic or silently wrong dependencies.
+#[test]
+fn test_parse_p1689_errors() {
+    let cases: &[(&[u8], &str)] = &[
+        (b"not json", "Failed to parse p1689 json"),
+        (b"[]", "p1689 root is not an object"),
+        (br#"{"rules": {}}"#, "p1689 `rules` is not an array"),
+        (br#"{"rules": [1]}"#, "p1689 rule is not an object"),
+        (
+            br#"{"rules": [{"provides": 1}]}"#,
+            "p1689 `provides` is not an array",
+        ),
+        (
+            br#"{"rules": [{"provides": [1]}]}"#,
+            "p1689 provides entry is not an object",
+        ),
+        (
+            br#"{"rules": [{"provides": [{}]}]}"#,
+            "p1689 provides entry has no logical-name",
+        ),
+        (
+            br#"{"rules": [{"provides": [{"logical-name": 1}]}]}"#,
+            "p1689 logical-name is not a string",
+        ),
+        (
+            br#"{"rules": [{"requires": 1}]}"#,
+            "p1689 `requires` is not an array",
+        ),
+        (
+            br#"{"rules": [{"requires": [1]}]}"#,
+            "p1689 requires entry is not an object",
+        ),
+        (
+            br#"{"rules": [{"requires": [{}]}]}"#,
+            "p1689 requires entry has no logical-name",
+        ),
+        (
+            br#"{"rules": [{"requires": [{"logical-name": 1}]}]}"#,
+            "p1689 logical-name is not a string",
+        ),
+    ];
+
+    for &(contents, expected) in cases.iter() {
+        let err = try_parse_p1689(contents).unwrap_err();
+        assert!(
+            err.contains(expected),
+            "unexpected error for {}: {}",
+            String::from_utf8_lossy(contents),
+            err
+        );
+    }
+}
+
+// A deps file lists entry names, one per line. Blank lines and surrounding
+// whitespace are tolerated.
+#[test]
+fn test_parse_deps_file() {
+    let deps = try_parse_deps_file("base\n\n  io  \n\n").unwrap();
+    assert_eq!(deps, ["base", "io"]);
+
+    // An empty file has no dependencies.
+    let deps = try_parse_deps_file(" \n").unwrap();
+    assert!(deps.is_empty());
+}
+
+#[test]
+fn test_parse_deps_file_errors() {
+    // Entry names must be valid names.
+    let err = try_parse_deps_file("Base\n").unwrap_err();
+    assert!(
+        err.contains("Invalid name `Base`"),
+        "unexpected error: {}",
+        err
+    );
+
+    // Repeating a dependency is almost certainly a mistake.
+    let err = try_parse_deps_file("base\nbase\n").unwrap_err();
+    assert!(
+        err.contains("duplicate dependency on `base`"),
+        "unexpected error: {}",
+        err
+    );
+}
+
+// The panicking wrapper reports the file path so the user can find the
+// offending deps file.
+#[test]
+#[should_panic(expected = "Failed to parse deps file at: `/some/path/deps`")]
+fn test_parse_deps_file_panics_with_the_path() {
+    parse_deps_file(Path::new("/some/path/deps"), "Base\n");
 }

@@ -1,12 +1,7 @@
 use std::path::Path;
 
-use zxbs::config::{self, Config};
+use zxbs::config::{self, Config, Subcommand};
 use zxbs::hash::HashMap;
-
-#[test]
-fn test_empty() {
-    Config::parse_config(HashMap::default());
-}
 
 #[test]
 fn test_simple() {
@@ -76,6 +71,17 @@ fn test_opt_level_is_used_for_compiling_and_linking() {
     assert!(has_flag(cfg.ldflags, "-O3"));
 }
 
+// `--cxx-time-trace` is passed through to the compiler flags.
+#[test]
+fn test_cxx_time_trace_flag() {
+    let cfg = Config::parse_config(flags(&[("--cxx-time-trace", None)]));
+
+    assert!(has_flag(cfg.cxxflags, "-ftime-trace"));
+
+    let cfg = Config::parse_config(flags(&[]));
+    assert!(!has_flag(cfg.cxxflags, "-ftime-trace"));
+}
+
 #[test]
 fn test_fuzz_flags() {
     let cfg = Config::parse_config(flags(&[("--fuzz", None)]));
@@ -129,6 +135,13 @@ fn test_unknown_flags_are_rejected() {
     Config::parse_config(flags(&[("--not-a-real-flag", None)]));
 }
 
+// A string flag must not appear without its value.
+#[test]
+#[should_panic(expected = "Expected a value for flag `--cxx`")]
+fn test_str_flag_without_a_value_is_rejected() {
+    Config::parse_config(flags(&[("--cxx", None)]));
+}
+
 #[test]
 #[should_panic]
 fn test_parse_subcommand_arg_without_separator() {
@@ -145,4 +158,166 @@ fn test_parse_subcommand_arg_with_extra_separator() {
 #[should_panic]
 fn test_parse_subcommand_arg_with_invalid_name() {
     config::parse_subcommand_arg("myapp:Main");
+}
+
+// `parse_flags` splits the leading `--flag`/`--flag=value` arguments from the
+// subcommand name that terminates the flag list.
+#[test]
+fn test_parse_flags() {
+    let mut args = ["--dev-mode", "--build-dir=/some/build", "test", "extra"]
+        .map(str::to_owned)
+        .into_iter();
+
+    let (flags, subcommand) = Config::parse_flags(&mut args);
+
+    assert_eq!(subcommand, "test");
+    assert_eq!(flags.get("--dev-mode"), Some(&None));
+    assert_eq!(
+        flags.get("--build-dir"),
+        Some(&Some("/some/build".to_owned()))
+    );
+    assert_eq!(flags.len(), 2);
+}
+
+#[test]
+#[should_panic(expected = "Duplicate flag")]
+fn test_duplicate_bare_flags_are_rejected() {
+    let mut args = ["--dev-mode", "--dev-mode", "build"]
+        .map(str::to_owned)
+        .into_iter();
+    Config::parse_flags(&mut args);
+}
+
+#[test]
+#[should_panic(expected = "Duplicate flag")]
+fn test_duplicate_valued_flags_are_rejected() {
+    let mut args = ["--cxx=a", "--cxx=b", "build"]
+        .map(str::to_owned)
+        .into_iter();
+    Config::parse_flags(&mut args);
+}
+
+#[test]
+#[should_panic(expected = "Invalid flag")]
+fn test_flag_with_two_values_is_rejected() {
+    let mut args = ["--cxx=a=b", "build"].map(str::to_owned).into_iter();
+    Config::parse_flags(&mut args);
+}
+
+#[test]
+#[should_panic(expected = "Expected a subcommand")]
+fn test_missing_subcommand_is_rejected() {
+    let mut args = ["--dev-mode"].map(str::to_owned).into_iter();
+    Config::parse_flags(&mut args);
+}
+
+#[test]
+fn test_parse_subcommand() {
+    // `run` consumes the entry:bin argument and passes the rest to the binary.
+    let sc = Config::parse_subcommand(
+        "run",
+        &mut ["myapp:main", "--foo"].map(str::to_owned).into_iter(),
+    );
+    assert_eq!(
+        sc,
+        Subcommand::RunBinary {
+            entry_name: "myapp".to_owned(),
+            bin_name: "main".to_owned(),
+            args: &["--foo"],
+        }
+    );
+
+    // `test` without a target runs all tests, with a target exactly one.
+    let sc = Config::parse_subcommand("test", &mut std::iter::empty::<String>());
+    assert_eq!(sc, Subcommand::TestAll);
+    let sc = Config::parse_subcommand("test", &mut ["base:memcmp"].map(str::to_owned).into_iter());
+    assert_eq!(
+        sc,
+        Subcommand::Test {
+            entry_name: "base".to_owned(),
+            test_name: "memcmp".to_owned(),
+        }
+    );
+
+    // `build`, `fmt` and `clean` take no arguments.
+    for (name, expected) in [
+        ("build", Subcommand::Build),
+        ("fmt", Subcommand::Fmt),
+        ("clean", Subcommand::Clean),
+    ] {
+        let sc = Config::parse_subcommand(name, &mut std::iter::empty::<String>());
+        assert_eq!(sc, expected);
+    }
+}
+
+#[test]
+#[should_panic(expected = "Expected argument for `run`")]
+fn test_run_subcommand_requires_a_target() {
+    Config::parse_subcommand("run", &mut std::iter::empty::<String>());
+}
+
+#[test]
+#[should_panic(expected = "Didn't expect arguments after the test name")]
+fn test_test_subcommand_rejects_extra_arguments() {
+    Config::parse_subcommand(
+        "test",
+        &mut ["base:memcmp", "extra"].map(str::to_owned).into_iter(),
+    );
+}
+
+#[test]
+#[should_panic(expected = "Didn't expect arguments for `build` subcommand")]
+fn test_build_subcommand_rejects_arguments() {
+    Config::parse_subcommand("build", &mut ["extra"].map(str::to_owned).into_iter());
+}
+
+#[test]
+#[should_panic(expected = "unexpected subcommand name")]
+fn test_unknown_subcommand_is_rejected() {
+    Config::parse_subcommand("deploy", &mut std::iter::empty::<String>());
+}
+
+// The full CLI pipeline: flags are turned into a config and the subcommand is
+// parsed alongside them.
+#[test]
+fn test_parse_cli_args() {
+    let (cfg, sc) = Config::parse_cli_args(
+        &mut ["--fuzz", "--opt-level=2", "build"]
+            .map(str::to_owned)
+            .into_iter(),
+    );
+
+    assert_eq!(sc, Subcommand::Build);
+    assert!(cfg.cxxflags.contains(&"-DZX_FUZZ"));
+    assert!(cfg.cxxflags.contains(&"-O2"));
+}
+
+// Running every fuzz target forever is not a valid combination, so `test`
+// without a specific target must reject --fuzz-unlimited.
+#[test]
+#[should_panic(expected = "--fuzz-unlimited is not allowed")]
+fn test_test_all_rejects_fuzz_unlimited() {
+    Config::parse_cli_args(
+        &mut ["--fuzz", "--fuzz-unlimited", "test"]
+            .map(str::to_owned)
+            .into_iter(),
+    );
+}
+
+// A specific test target is fine though: only one fuzz target runs.
+#[test]
+fn test_specific_test_allows_fuzz_unlimited() {
+    let (_, sc) = Config::parse_cli_args(
+        &mut ["--fuzz", "--fuzz-unlimited", "test", "base:memcmp"]
+            .map(str::to_owned)
+            .into_iter(),
+    );
+
+    assert_eq!(
+        sc,
+        Subcommand::Test {
+            entry_name: "base".to_owned(),
+            test_name: "memcmp".to_owned(),
+        }
+    );
 }

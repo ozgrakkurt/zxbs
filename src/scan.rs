@@ -109,6 +109,7 @@ impl BuildInfo {
     }
 }
 
+#[derive(Debug, PartialEq)]
 pub struct CppmDeps {
     pub deps: Vec<String>,
     pub provides: Vec<String>,

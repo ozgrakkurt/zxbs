@@ -470,7 +470,7 @@ pub enum Command {
     TestCmd(TestCmd),
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CommandKind {
     CompileModule,
     CompileToObject,
