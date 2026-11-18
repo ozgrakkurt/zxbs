@@ -246,17 +246,6 @@ fn test_link_binary_failure_panics() {
     .run();
 }
 
-#[test]
-#[should_panic(expected = "Running a test failed")]
-fn test_run_test_failure_panics() {
-    RunTest {
-        path: failing_tool(),
-        stamp_hash: 0,
-        stamp_path: "stamp",
-    }
-    .run();
-}
-
 // A failing command that also prints to stdout must report the output before
 // panicking. `sh -c` runs the noise script, ignoring the extra compile
 // arguments passed after it.

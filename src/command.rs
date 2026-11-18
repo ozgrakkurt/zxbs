@@ -295,12 +295,13 @@ impl RunTest {
 
         if !output.status.success() {
             let stderr = String::from_utf8(output.stderr).unwrap();
-            panic!(
+            eprintln!(
                 "Running a test failed. Command:\n\t{}\nStatus: {}\nStdErr:\n{}\n",
                 self.print(),
                 output.status,
                 stderr,
             );
+            std::process::exit(output.status.code().unwrap_or(1));
         }
 
         let stdout = String::from_utf8(output.stdout).unwrap();
