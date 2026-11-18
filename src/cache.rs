@@ -102,8 +102,6 @@ const STATE_FILE_MAGIC: u64 = 0x167045aafea85f3du64;
 // name: <deep_hash>
 // content: <output content>
 //
-// The checksum is hash_bytes(<all file content that came before the checksum>);
-//
 // location: <cache_path>/
 //
 // We don't ever expect cached files to be corrupted.

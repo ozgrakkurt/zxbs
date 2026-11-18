@@ -255,7 +255,7 @@ fn plan_lib_build(
         timestamp,
     }: Params,
 ) {
-    // build object files (both .cc and .s)
+    // build object files
     // archive into .a file
 
     let entry_name_idx = info.name[entry_index];

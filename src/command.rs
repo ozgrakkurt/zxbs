@@ -333,6 +333,7 @@ impl RunBinary {
         let output = match std::process::Command::new(self.path)
             .stderr(std::process::Stdio::inherit())
             .stdout(std::process::Stdio::inherit())
+            .stdin(std::process::Stdio::inherit())
             .args(self.args)
             .output()
         {
@@ -347,12 +348,10 @@ impl RunBinary {
         };
 
         if !output.status.success() {
-            let stderr = String::from_utf8(output.stderr).unwrap();
             eprintln!(
-                "Running a binary failed. Command:\n\t{}\nStatus: {}\nStdErr:\n{}\n",
+                "Running a binary failed. Command:\n\t{}\nStatus: {}",
                 self.print(),
                 output.status,
-                stderr,
             );
             std::process::exit(output.status.code().unwrap_or(1));
         }
