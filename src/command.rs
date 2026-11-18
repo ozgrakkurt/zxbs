@@ -387,6 +387,50 @@ impl TestCmd {
     }
 }
 
+// Copy a file using a `cp` child process instead of `std::fs::copy`.
+//
+// Cache loads are often used for test binaries that are executed right after
+// being loaded. If we copied the file ourselves, the zxbs process would hold
+// a writable fd for the destination while the copy runs. Another thread can
+// fork a child for an unrelated command during that window, and the child
+// inherits the writable fd (O_CLOEXEC only closes it at exec, not at fork).
+// After the temporary file is renamed onto the executable, that inherited fd
+// refers to the executable's inode, so executing it fails with ETXTBSY ("Text
+// file busy") until the forked child execs and closes the fd.
+//
+// Doing the copy in a separate process keeps the writable fd out of zxbs, so
+// none of zxbs's children can inherit it. `--preserve=mode` is needed because
+// the destination may be an executable and must keep its executable bits.
+fn copy_file_with_cp(source: &str, destination: &str) {
+    let output = match std::process::Command::new("cp")
+        .arg("--preserve=mode")
+        .arg(source)
+        .arg(destination)
+        .output()
+    {
+        Ok(out) => out,
+        Err(e) => {
+            panic!(
+                "Failed to run command. Command:\n\tcp --preserve=mode {} {}\nError = {:?}\n",
+                source, destination, e,
+            );
+        }
+    };
+
+    if !output.status.success() {
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        panic!(
+            "Copying a cached file failed. Command:\n\tcp --preserve=mode {} {}\nStatus: {}\nStdErr:\n{}\n",
+            source, destination, output.status, stderr,
+        );
+    }
+
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    if !stdout.trim().is_empty() {
+        eprintln!("STDOUT of cp: {}", stdout);
+    }
+}
+
 // Load a file to output from cache.
 // Checks the file in the cache has the expected hash.
 pub struct CacheLoad {
@@ -415,7 +459,7 @@ impl CacheLoad {
         // it is crucial to use copy so the file keeps same permissions.
         // we need it to be executable if it is an executable file.
         let tmp_path = make_tmp_path(self.output_path);
-        std::fs::copy(&cache_path, &tmp_path).unwrap();
+        copy_file_with_cp(&cache_path, &tmp_path);
         std::fs::rename(&tmp_path, self.output_path).unwrap();
     }
 }
