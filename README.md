@@ -1,12 +1,12 @@
 # zxbs
 
-This is a build system written in Rust, to compile C++ projects that use C++20 modules using clang.
+This is a build system for C++ projects that use C++20 modules.
 
-It is only intended to work on linux x86_64 and produce code for linux x86_64.
+It is only intended to work on linux x86_64 and it is assumed the underlying compiler tools are always clang/llvm.
 
-Doesn't support depending on external code or even linking in libc. The C++ project is expected to implement memcpy/memcmp/_start etc. itself.
+Doesn't support depending on external code.
 
-It is required to get familiar with [how C++ modules work in clang](https://clang.llvm.org/docs/StandardCPlusPlusModules.html) in order to understand this document.
+It is recommended to get familiar with [how C++ modules work in clang](https://clang.llvm.org/docs/StandardCPlusPlusModules.html) to understand what C++ modules are.
 
 This document is intended to be read from start to finish in order to be understood and be helpful in using or modifying this project. It is discouraged to use this project
 without reading and roughly understanding this document to the end.
@@ -19,85 +19,20 @@ as it is missing a lot of features that people would want.
 The reason for publishing this project publicly is to just show my work and also I hope other people that want to implement something like this will find it
 worthwhile to explore and helpful for their learning.
 
-The main reason I built this project is the frustration I had with cmake/ninja and python/ninja setups I had. I wanted to have a build system
-that worked nicely with C++ modules, fuzz testing and didn't require me to list source files a second time in build files. I also wanted
-it to be easy to modify for my usecase so I wouldn't need to learn cmake to bend it to for my usecase.
-
-My usecase was mostly covered by using a python script that generated ninja files but that was slow and clunky and didn't seem to be possible to adapt
-to include c++ modules support. I switched to rust for implementing the config generation and then I realized I don't need ninja at that point.
+This build system was built for [zx](https://github.com/ozgrakkurt/zx). There are no other users of this build system other than `zx`.
 
 ## Goals
 
-- Never break the API of the system. If a C++ project compiles with this build system now, it should keep compiling forever. This is only for the CLI usage aspect, there is no such guarantee internally in this codebase.
 - Build shoud be as fast as possible with minimal overhead over the underlying clang calls and maximum parallelism.
 - Cache should be sufficient so re-compilation and re-testing is always practically instant even when clang is slow or when we are running slow tests like fuzz tests.
 - Caching and every other piece of the system should be as reliable and as well-tested as possible. User should never have to debug the build system.
 - Implicit directory structure so the C++ developer doesn't have to list every file they want to include in some other build system file.
 - Minimal number of dependencies.
-- Static linking with musl should work so it is possible to easily make a release binary that is portable between computers.
 - Everything is built-in. For example user shouldn't need to implement clang-format using makefiles etc. they can just use `zxbs fmt`.
+- Features to make integrating fuzz tests easy.
 - Configuration options are minimal so we can make sure every option works with other options and there are no edge cases.
-- Built-in profiling tooling so it is very easy to visualize what is taking time in the build. Crucial for both the user and the development of this tool.
-- Don't support unneeded things. There is no header (.h) support at all since we are using modules for interfacing between parts of the project.
-
-## Directory Structure
-
-The C++ project is expected to have a particular directory structure.
-
-The base src and build directories are configurable via CLI flags but the rest of the
-structure including the file extensions are fixed.
-
-The project consists of a number of entries.
-
-Each entry has a module, library, binary and test part. And each entry folder has a `deps` file that is a regular text file that contains
-a list of the names of the dependencies of this entry, each on a seperate line.
-
-The module part consists of `.cppm` (C++20 module) files. They implement the interfacing between the entries.
-They are expected to also contain some of implementation as (unlike the library part) they can be inlined across entries for optimization by the compiler.
-Each entry is expected to at least have a module file named `<entry_name>.cppm`, this is the root module file of the entry. Each root module file is expected to
-depend on all the other module files in the entry.
-
-The library part is the regular `.cc` files you would expect in a c++ project. They just output object files and then get linked into a static library that gets
-linked into any executable that ends up depending on this entry.
-
-The binary part contains one `.cc` file per binary target. So each `.cc` file that is in the `bin` folder will generate an executable in the output.
-
-The test part also contains only `.cc` files. These `.cc` files are expected to be regular c++ programs that just return non-zero status codes and print error messages to stderr if a test fails.
-
-Binaries, tests and library files implicitly depend on their parent entry and whatever entries that their parent entry depends on. They can only import root modules of their parent entry or root modules
-of any other entry that their parent entry depends on.
-
-All source files are scanned and found automatically. Extensions and locations of the source files are hardcoded into the implementation and can't be changed via configuration.
-
-- src/
-  - <entry_name>
-    - bin
-      - <executable_name>.cc
-    - test
-      - <test_name>.cc
-    - lib
-      - <library_implementation_file>.cc
-    - mod
-      - <module_file_name>.cppm
-    - deps
-
-- build/ (output)
-  - cache
-    - ..
-  - out
-    - mod
-      - <some_module_output>.pcm (these come from building the cppm files.)
-    - entry
-      - <entry_name>
-        - lib
-          - object files
-        - bin
-          - object files
-          - executables
-        - test
-          - test executables
-          - stamp
-            - test stamps that are emitted if a test runs successfully, used for cache purposes.
+- Built-in profiling tooling so it is very easy to visualize what is taking time in the build. This is crucial for both the user and the development of this tool.
+- Don't support unneeded things. There is no header (.h) support at all since we are building around modules.
 
 ## Install
 
@@ -107,48 +42,9 @@ Go into the project root and run:
 RUSTFLAGS="-C target-cpu=native" cargo install --path . --locked
 ```
 
-This isn't as fast as I would like but I did everything I know about this.
-- Avoided generics as much as I could.
-- Only include a minimal number of dependencies.
+## Usage
 
-The source directory as <5k loc so it is not massive.
-
-## Test
-
-Regular tests:
-
-`cargo test --all-features --all-targets`
-
-Fuzz tests:
-
-`make fuzz`
-
-## Lint - Format
-
-`cargo clippy --all-targets --all-features`
-
-`cargo fmt`
-
-Go into the `fuzz` directory and repeat the commands with `cargo +nightly`.
-
-## Profiling
-
-Enabling the `--time-trace` flag makes the build system output a `time_trace.json` in the `build/out` directory.
-
-This file can be opened in a chromium browser by going to the `chrome://tracing` page and opening it.
-
-It can also be opened in `Perfetto`.
-
-This is crucial for keeping a project building fast. It is recommended to check the profiles as soon as you find the total
-build time getting slower and it is also recommended to check the uncached full build time of your c++ project from time to time using
-something like this:
-
-```
-zxbs clean
-time zxbs --time-trace test
-```
-
-## CLI
+### CLI
 
 The form of the command is:
 
@@ -182,22 +78,98 @@ Available subcommands are:
 - `fmt` -> Formats all of the source files using clang-format.
 - `clean` -> Deletes the cache.
 
-## Example projects / Projects that use this build system
+### Directory Structure
 
-- [zx](https://github.com/ozgrakkurt/zx)
+The C++ project is expected to have a particular directory structure.
 
-## LLM usage
+The base src and build directories are configurable via CLI flags but the rest of the
+structure including the file extensions are fixed.
 
-LLM assistence is only reviews and prototyping on the implementation (src/) part of the project. Any code that LLM writes for implementation was completely re-written to make it reasonable.
+The project consists of a number of entries.
 
-LLMs generated code does exist in the test and fuzz tests parts but I also try to mostly review this part code to at least make sure it is hitting the wanted parts of the implementation in a rasonable amount of ways.
+Each entry has a module, library, binary and test part. And each entry folder has a `deps` file that is a regular text file that contains
+a list of the names of the dependencies of this entry, each on a seperate line.
 
-## Implementation
+The module part consists of `.cppm` (C++20 module) files. They implement the interfacing between the entries.
+They are expected to also contain some of implementation as (unlike the library part) they can be inlined across entries for optimization by the compiler.
+Each entry is expected to at least have a module file named `<entry_name>.cppm`, this is the root module file of the entry. Each root module file is expected to
+depend on all the other module files in the entry.
 
-It is strongly recommended to go into the code at this point and at least understand how configuration and scanning work.
+The library part is the regular `.cc` files you would expect in a c++ project. They just output object files and then get linked into a static library that gets
+linked into any executable that ends up depending on this entry.
 
-The implementation details and architecture are documented in the code.
+The binary part contains one `.cc` file per binary target. So each `.cc` file that is in the `bin` folder will generate an executable in the output.
 
-## Contribution
+The test part also contains only `.cc` files. These `.cc` files are expected to be regular c++ programs that just return non-zero status codes and print error messages to stderr if a test fails.
 
-I don't expect anyone to contribute code to this project. I instead encourage you to build what you want in your way and just take the bits of this project where you see fit.
+Binaries, tests and library files implicitly depend on their parent entry and whatever entries that their parent entry depends on. They can only import root modules of their parent entry or root modules
+of any other entry that their parent entry depends on.
+
+All source files are scanned and found automatically. File extensions (.cppm/.cc) and expected locations of the source files are hardcoded into the implementation and can't be changed via configuration.
+
+- src/
+  - <entry_name>
+    - bin
+      - <executable_name>.cc
+    - test
+      - <test_name>.cc
+    - lib
+      - <library_implementation_file>.cc
+    - mod
+      - <module_file_name>.cppm
+    - deps
+
+- build/ (output)
+  - cache
+    - ..
+  - out
+    - mod
+      - <some_module_output>.pcm (these come from building the cppm files.)
+    - entry
+      - <entry_name>
+        - lib
+          - object files
+        - bin
+          - object files
+          - executables
+        - test
+          - test executables
+          - stamp
+            - test stamps that are emitted if a test runs successfully, used for cache purposes.
+
+### Profiling
+
+Enabling the `--time-trace` flag makes the build system output a `time_trace.json` in the `build/out` directory.
+
+This file can be opened in a chromium browser by going to the `chrome://tracing` page and opening it.
+
+It can also be opened in `Perfetto`.
+
+This is crucial for keeping your project building fast. It is recommended to check the profiles as soon as you find the total
+build time getting longer and it is also recommended to check the uncached full build time of your c++ project from time to time using
+something like this:
+
+```
+zxbs clean
+time zxbs --time-trace test
+```
+
+## Development (of `zxbs` project)
+
+### Test
+
+Regular tests:
+
+`cargo test --all-features --all-targets`
+
+Fuzz tests:
+
+`make fuzz`
+
+### Lint - Format
+
+`cargo clippy --all-targets --all-features`
+
+`cargo fmt`
+
+Go into the `fuzz` directory and repeat the commands with `cargo +nightly`.
