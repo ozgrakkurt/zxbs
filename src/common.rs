@@ -47,3 +47,7 @@ pub fn try_parse_file_name<'name>(
 
     Ok(name)
 }
+
+pub fn make_tmp_path(output: &str) -> String {
+    format!("{}.{:x}.tmp", output, rand::random::<u128>())
+}

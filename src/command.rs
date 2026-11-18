@@ -3,19 +3,9 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use crate::cache::write_wal_file as write_cache_wal_file;
+use crate::common::make_tmp_path;
 use crate::hash::{Hash, hash_bytes};
 use crate::interner::Str;
-
-/// Temporary name in the same directory as `output`.
-///
-/// Compiler tools never write directly to a build output. They write to a
-/// fresh random file which is then renamed onto the output, so a tool process
-/// orphaned by a crash can never share (and keep busy) the inode we publish.
-/// Keeping the temporary file next to the output also makes the rename atomic,
-/// since it never crosses a filesystem boundary.
-fn make_tmp_name(output: &str) -> String {
-    format!("{}.{:x}.tmp", output, rand::random::<u128>())
-}
 
 pub struct CompileModule {
     pub cxx: &'static str,
@@ -45,8 +35,8 @@ impl CompileModule {
     }
 
     pub fn run(&self) {
-        let tmp_object_output = make_tmp_name(self.object_output);
-        let tmp_pcm_output = make_tmp_name(self.pcm_output);
+        let tmp_object_output = make_tmp_path(self.object_output);
+        let tmp_pcm_output = make_tmp_path(self.pcm_output);
 
         let output = match std::process::Command::new(self.cxx)
             .args(self.cxxflags)
@@ -110,7 +100,7 @@ impl CompileToObject {
     }
 
     pub fn run(&self) {
-        let tmp_output = make_tmp_name(self.output);
+        let tmp_output = make_tmp_path(self.output);
 
         let output = match std::process::Command::new(self.cxx)
             .args(self.cxxflags)
@@ -172,7 +162,7 @@ impl ArchiveLib {
     }
 
     pub fn run(&self) {
-        let tmp_output = make_tmp_name(self.output);
+        let tmp_output = make_tmp_path(self.output);
 
         let output = match std::process::Command::new(self.ar)
             .arg("crs")
@@ -237,7 +227,7 @@ impl LinkBinary {
     }
 
     pub fn run(&self) {
-        let tmp_output = make_tmp_name(self.output);
+        let tmp_output = make_tmp_path(self.output);
         let output = match std::process::Command::new(self.cxx)
             .args(self.ldflags)
             .arg("-o")
@@ -318,7 +308,7 @@ impl RunTest {
             eprintln!("STDOUT of {}:\n{}", self.print(), stdout.as_str());
         }
 
-        let tmp_output = make_tmp_name(self.stamp_path);
+        let tmp_output = make_tmp_path(self.stamp_path);
         std::fs::write(&tmp_output, self.stamp_hash.to_le_bytes()).unwrap();
         std::fs::rename(&tmp_output, self.stamp_path).unwrap()
     }
@@ -431,7 +421,7 @@ impl CacheLoad {
 
         // it is crucial to use copy so the file keeps same permissions.
         // we need it to be executable if it is an executable file.
-        let tmp_path = make_tmp_name(self.output_path);
+        let tmp_path = make_tmp_path(self.output_path);
         std::fs::copy(&cache_path, &tmp_path).unwrap();
         std::fs::rename(&tmp_path, self.output_path).unwrap();
     }
@@ -461,7 +451,7 @@ impl CacheStore {
 
         // it is crucial to use copy so the file keeps same permissions.
         // we need it to be executable if it is an executable file.
-        let tmp_path = make_tmp_name(&cache_path);
+        let tmp_path = make_tmp_path(&cache_path);
         std::fs::copy(self.file_path, &tmp_path).unwrap();
         std::fs::rename(&tmp_path, &cache_path).unwrap();
 

@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use crate::cache::CacheState;
 use crate::cache::write_wal_file as write_cache_wal_file;
-use crate::common::{check_name, try_parse_file_name};
+use crate::common::{check_name, make_tmp_path, try_parse_file_name};
 use crate::config::{Config, Subcommand};
 use crate::hash::{Hash, HashMap, HashSet, hash_bytes, hash_ordered, mix_hashes};
 use crate::interner::{Interner, Str};
@@ -1008,7 +1008,7 @@ pub fn scan(
 
                 let output_hash = hash_bytes(&raw);
 
-                let tmp_path = format!("{}.tmp", cache_path.display());
+                let tmp_path = make_tmp_path(cache_path.to_str().unwrap());
                 std::fs::write(&tmp_path, &raw).unwrap();
                 std::fs::rename(&tmp_path, &cache_path).unwrap();
 

@@ -3,6 +3,7 @@ use std::io::ErrorKind as IoErrorKind;
 use std::mem::size_of;
 use std::path::Path;
 
+use crate::common::make_tmp_path;
 use crate::hash::{Hash, hash_bytes};
 use crate::thread_pool::{JoinSet, ThreadPool};
 
@@ -471,7 +472,7 @@ fn write_state_file(cache_path: &Path, entries: &BTreeMap<Hash, CacheEntry>) {
     let mut out = Vec::new();
     serialize_state_file(entries, &mut out);
 
-    let tmp_path = format!("{}.tmp", state_file_path.display());
+    let tmp_path = make_tmp_path(state_file_path.to_str().unwrap());
     std::fs::write(&tmp_path, &out).unwrap();
     std::fs::rename(&tmp_path, &state_file_path).unwrap();
 }
