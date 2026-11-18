@@ -15,11 +15,19 @@ fn make_duration(start: &Instant) -> u64 {
 fn run() {
     let (config, subcommand) = config::Config::parse_cli();
 
-    let _build_lock = lock::BuildLock::acquire(config.build_lock_path);
-
     // It is ok to use more threads than the physical cpu count because the program does IO heavy
     // workloads in some parts.
     let thread_pool = ThreadPool::new(128);
+
+    match &subcommand {
+        Subcommand::Fmt => {
+            format::format(&thread_pool, config.clang_format, config.src_path);
+            return;
+        }
+        _ => {}
+    }
+
+    let _build_lock = lock::BuildLock::acquire(config.build_lock_path);
 
     match &subcommand {
         Subcommand::Clean => {
@@ -27,8 +35,8 @@ fn run() {
             return;
         }
         Subcommand::Fmt => {
-            format::format(&thread_pool, config.clang_format, config.src_path);
-            return;
+            // handled above
+            unreachable!();
         }
         _ => {}
     }

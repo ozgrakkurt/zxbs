@@ -10,8 +10,10 @@ pub struct BuildLock {
 }
 
 impl BuildLock {
-    // Blocks until this process holds the exclusive lock on `build_path`.
+    // Blocks until this process holds the exclusive lock on `lock_path`.
     pub fn acquire(lock_path: &Path) -> BuildLock {
+        std::fs::create_dir_all(lock_path.parent().unwrap()).unwrap();
+
         let file = OpenOptions::new()
             .read(true)
             .write(true)
@@ -43,7 +45,7 @@ impl BuildLock {
             }
             Err(TryLockError::Error(e)) => {
                 panic!(
-                    "Failed to lock the build lock at`{}`: {}",
+                    "Failed to lock the build lock at `{}`: {}",
                     lock_path.display(),
                     e
                 )
