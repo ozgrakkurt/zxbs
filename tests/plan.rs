@@ -1615,3 +1615,136 @@ fn test_deep_hash_invalidation() {
     assert_ne!(before.bin_exe[top], after.bin_exe[top]);
     assert_ne!(before.test_exe[top], after.test_exe[top]);
 }
+
+// `stamp` is a valid name for a test and must not conflict with the directory
+// used to store test stamps. Build the test for real, then make sure a warm
+// cache restores both the executable and the stamp without running the test
+// again.
+#[test]
+fn test_builds_test_named_stamp() {
+    let folder = TempDir::new();
+    let cfg = make_config(folder.as_str());
+
+    let entry_path = cfg.src_path.join("foo");
+    let mod_path = entry_path.join("mod");
+    let test_path = entry_path.join("test");
+    std::fs::create_dir_all(&mod_path).unwrap();
+    std::fs::create_dir_all(&test_path).unwrap();
+
+    std::fs::write(mod_path.join("foo.cppm"), "export module foo;\n").unwrap();
+    std::fs::write(
+        test_path.join("stamp.cc"),
+        r#"
+            import foo;
+
+            __asm__(".text\n"
+            ".type _start, @function\n"
+            ".global _start\n"
+            "_start:\n\t"
+            "xorq %rbp, %rbp\n\t"
+            "popq %rdi\n\t"
+            "movq %rsp, %rsi\n\t"
+            "andq $-16, %rsp\n\t"
+            "callq main\n\t"
+            "movq %rax, %rdi\n\t"
+            "movq $60, %rax\n\t"
+            "syscall\n\t");
+
+            int main(void) {
+                return 0;
+            }
+        "#,
+    )
+    .unwrap();
+    std::fs::write(entry_path.join("deps"), "").unwrap();
+
+    let thread_pool = ThreadPool::new(4);
+    let ts = timestamp();
+    let mut interner = Interner::new();
+
+    let exe_path = cfg.build_path.join("entry/foo/test/stamp");
+    let stamp_path = cfg.build_path.join("entry/foo/test/@stamp@/stamp");
+
+    // Cold build: the test is planned, linked, run and its stamp is written
+    // under `@stamp@`, not under the executable path.
+    {
+        let mut cache_state = cache::load(cfg.cache_path, &thread_pool, ts);
+        let info = scan::scan(cfg, &mut interner, &thread_pool, 0, &mut cache_state, ts);
+        directory::setup_build_directories(cfg, &info, &interner, &thread_pool);
+        let tasks = plan::plan(
+            cfg,
+            &Subcommand::TestAll,
+            &mut interner,
+            &info,
+            &mut cache_state,
+            0,
+            ts,
+        );
+
+        let run_test = tasks
+            .iter()
+            .find_map(|task| match &task.command {
+                Some(Command::RunTest(run_test)) if interner.get(task.part_name) == "stamp" => {
+                    Some(run_test)
+                }
+                _ => None,
+            })
+            .expect("test named `stamp` should be planned");
+
+        assert_eq!(run_test.path, exe_path.to_str().unwrap());
+        assert_eq!(run_test.stamp_path, stamp_path.to_str().unwrap());
+        assert_ne!(exe_path, stamp_path);
+
+        Build::new(None, &mut interner, tasks, Instant::now(), &thread_pool).build();
+        cache::finish(cache_state, cfg.cache_path, &thread_pool, ts);
+
+        assert!(exe_path.is_file(), "test executable was not created");
+        assert!(stamp_path.is_file(), "test stamp was not created");
+        assert_eq!(std::fs::read(&stamp_path).unwrap().len(), 16);
+    }
+
+    // Warm cache: the executable and stamp are restored from the cache and
+    // the test is not run again.
+    {
+        let mut cache_state = cache::load(cfg.cache_path, &thread_pool, ts);
+        let info = scan::scan(cfg, &mut interner, &thread_pool, 0, &mut cache_state, ts);
+        directory::setup_build_directories(cfg, &info, &interner, &thread_pool);
+        let tasks = plan::plan(
+            cfg,
+            &Subcommand::TestAll,
+            &mut interner,
+            &info,
+            &mut cache_state,
+            0,
+            ts,
+        );
+
+        assert!(
+            tasks
+                .iter()
+                .all(|task| matches!(&task.command, Some(Command::CacheLoad(_)))),
+            "a warm rebuild should only contain cache loads"
+        );
+        assert!(
+            !tasks
+                .iter()
+                .any(|task| matches!(&task.command, Some(Command::RunTest(_)))),
+            "the cached stamp should prevent the test from running again"
+        );
+        assert!(
+            tasks.iter().any(|task| matches!(
+                &task.command,
+                Some(Command::CacheLoad(load)) if load.output_path == stamp_path.to_str().unwrap()
+            )),
+            "the stamp should be loaded from the cache"
+        );
+
+        Build::new(None, &mut interner, tasks, Instant::now(), &thread_pool).build();
+        cache::finish(cache_state, cfg.cache_path, &thread_pool, ts);
+
+        assert!(exe_path.is_file(), "cached executable was not restored");
+        assert!(stamp_path.is_file(), "cached stamp was not restored");
+        assert!(cfg.build_path.join("entry/foo/test/@stamp@").is_dir());
+        assert!(!stamp_path.is_dir(), "stamp path must be a file");
+    }
+}
