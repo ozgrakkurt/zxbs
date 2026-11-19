@@ -81,7 +81,7 @@ fn make_commands() -> Vec<(Command, CommandKind, &'static str)> {
             Command::RunTest(RunTest {
                 path: "test_bin",
                 stamp_hash: 7,
-                stamp_path: "stamp",
+                stamp_path: "@stamp@",
             }),
             CommandKind::RunTest,
             "RUN_TEST test_bin",

@@ -636,7 +636,7 @@ fn plan_test_build(
         let exe_path_index = interner.insert(exe_path.to_str().unwrap());
         let exe_path = interner.get(exe_path_index);
 
-        let stamp_path = build_path.join("stamp").join(test_name);
+        let stamp_path = build_path.join("@stamp@").join(test_name);
         let stamp_path_index = interner.insert(stamp_path.to_str().unwrap());
         let stamp_path = interner.get(stamp_path_index);
 

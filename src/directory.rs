@@ -161,7 +161,7 @@ pub fn create_build_directories(
         let test_stamp_path = entries_build_path
             .join(entry_name)
             .join("test")
-            .join("stamp");
+            .join("@stamp@");
         join_set.spawn(thread_pool, move || {
             std::fs::create_dir(test_stamp_path).unwrap();
         });

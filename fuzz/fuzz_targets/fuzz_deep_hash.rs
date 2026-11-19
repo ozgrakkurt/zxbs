@@ -21,6 +21,7 @@ fn config() -> &'static Config {
         cxxflags: &[],
         ldflags: &[],
         build_path: Path::new("/build"),
+        build_lock_path: Path::new("/lock"),
         src_path: Path::new("/src"),
         cache_path: Path::new("/cache"),
         time_trace: false,

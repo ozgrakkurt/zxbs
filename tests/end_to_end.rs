@@ -105,7 +105,7 @@ fn test_smoke() {
             let stamp_path = build_path
                 .join(format!("entry/{}", entry_name))
                 .join("test")
-                .join("stamp")
+                .join("@stamp@")
                 .join(test_name);
             assert!(stamp_path.exists());
             // The stamp file is just the hash the test result is cached by.
@@ -198,5 +198,9 @@ fn test_smoke() {
 
     // The outputs were restored from the cache.
     assert!(cfg.build_path.join("entry/myapp/bin/myapp").exists());
-    assert!(cfg.build_path.join("entry/base/test/stamp/memcmp").exists());
+    assert!(
+        cfg.build_path
+            .join("entry/base/test/@stamp@/memcmp")
+            .exists()
+    );
 }

@@ -281,7 +281,7 @@ fn check_run_test_task(
 
     let exe_path = format!("{}/entry/{}/test/{}", build_path, entry_name, test_name);
     let stamp_path = format!(
-        "{}/entry/{}/test/stamp/{}",
+        "{}/entry/{}/test/@stamp@/{}",
         build_path, entry_name, test_name
     );
 
@@ -525,7 +525,7 @@ fn check_entry_tasks(
         i += 1;
 
         let stamp_path = format!(
-            "{}/entry/{}/test/stamp/{}",
+            "{}/entry/{}/test/@stamp@/{}",
             build_path, entry_name, test_name
         );
         check_store_task(
