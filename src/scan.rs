@@ -26,6 +26,7 @@ pub struct BuildInfo {
     // matrix[i * mod_count + j] is true if mod no i depends on mod no j.
     pub mod_dep_matrix: Vec<Vec<bool>>,
     pub lib: Vec<Vec<Str>>,
+    pub asm: Vec<Vec<Str>>,
     pub bin: Vec<Vec<Str>>,
     pub test: Vec<Vec<Str>>,
     pub deps: Vec<Vec<Str>>,
@@ -305,6 +306,7 @@ enum ListingResultKind {
     Lib,
     Test,
     Bin,
+    Asm,
 }
 
 struct ListingResult {
@@ -319,6 +321,7 @@ enum ScanTargetKind {
     Lib,
     Test,
     Bin,
+    Asm,
 }
 
 // A single source file that needs to be scanned with clang-scan-deps (or read
@@ -688,6 +691,7 @@ pub fn check_cyclic_dependencies_between_module_parts(
 // The expected contents are:
 // - mod folder
 // - lib folder
+// - asm folder
 // - bin folder
 // - test folder
 // - deps file
@@ -708,9 +712,10 @@ fn check_entry_folder_content(path: &Path) {
         let file_name = file_path.file_name().unwrap().to_str().unwrap();
         let file_type = entry.file_type().unwrap();
 
+        const DIR_NAMES: [&str; 5] = ["mod", "lib", "bin", "test", "asm"];
+
         if file_type.is_dir() {
-            if file_name != "mod" && file_name != "lib" && file_name != "bin" && file_name != "test"
-            {
+            if !DIR_NAMES.contains(&file_name) {
                 panic!(
                     "Found unexpected directory `{}` in entry directory at: `{}`",
                     file_name,
@@ -802,6 +807,12 @@ pub fn scan(
             entry_index,
             parts: scan_subfolder("cc", &p),
         });
+        let p = entry_path.join("asm");
+        listing_join_set.spawn(thread_pool, move || ListingResult {
+            kind: ListingResultKind::Asm,
+            entry_index,
+            parts: scan_subfolder("s", &p),
+        });
 
         let p = entry_path.join("test");
         listing_join_set.spawn(thread_pool, move || ListingResult {
@@ -825,6 +836,7 @@ pub fn scan(
     let mut deps_list: Vec<Vec<Str>> = vec![Vec::new(); entry_names.len()];
     let mut mod_list: Vec<Vec<Str>> = vec![Vec::new(); entry_names.len()];
     let mut lib_list: Vec<Vec<Str>> = vec![Vec::new(); entry_names.len()];
+    let mut asm_list: Vec<Vec<Str>> = vec![Vec::new(); entry_names.len()];
     let mut test_list: Vec<Vec<Str>> = vec![Vec::new(); entry_names.len()];
     let mut bin_list: Vec<Vec<Str>> = vec![Vec::new(); entry_names.len()];
 
@@ -877,6 +889,22 @@ pub fn scan(
                     .parts
                     .iter()
                     .map(|name| interner.insert(name.as_str()))
+                    .collect::<Vec<Str>>();
+            }
+            ListingResultKind::Asm => {
+                spawn_hash_scan_targets(
+                    result.entry_index,
+                    &entry_path,
+                    &result.parts,
+                    interner,
+                    thread_pool,
+                    &mut hashes_join_set,
+                    "asm",
+                    "s",
+                    ScanTargetKind::Asm,
+                );
+
+                asm_list[result.entry_index] = result.parts.iter().map(|name| interner.insert(name.as_str()))
                     .collect::<Vec<Str>>();
             }
             ListingResultKind::Test => {
@@ -957,6 +985,7 @@ pub fn scan(
     let deps_list = deps_list;
     let mod_list = mod_list;
     let lib_list = lib_list;
+    let asm_list = asm_list;
     let test_list = test_list;
     let bin_list = bin_list;
 
@@ -971,6 +1000,13 @@ pub fn scan(
                 .insert(interner.insert(scan_target.path), basic_hash)
                 .is_none()
         );
+
+        match scan_target.kind {
+            ScanTargetKind::Asm => {
+                continue;
+            }
+            _ => (),
+        }
 
         // We use this deep hash for the clang-scan-deps result of this file.
         let scan_deps_hash = mix_hashes(
@@ -1176,6 +1212,7 @@ pub fn scan(
         module: mod_list,
         mod_dep_matrix,
         lib: lib_list,
+        asm: asm_list,
         bin: bin_list,
         test: test_list,
         deps: deps_list,
