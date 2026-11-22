@@ -811,7 +811,7 @@ pub fn scan(
         listing_join_set.spawn(thread_pool, move || ListingResult {
             kind: ListingResultKind::Asm,
             entry_index,
-            parts: scan_subfolder("s", &p),
+            parts: scan_subfolder("S", &p),
         });
 
         let p = entry_path.join("test");
@@ -900,7 +900,7 @@ pub fn scan(
                     thread_pool,
                     &mut hashes_join_set,
                     "asm",
-                    "s",
+                    "S",
                     ScanTargetKind::Asm,
                 );
 

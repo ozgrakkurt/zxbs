@@ -28,6 +28,7 @@ pub struct Config {
     pub clang_format: &'static str,
     pub cxxflags: &'static [&'static str],
     pub asmflags: &'static [&'static str],
+    pub asmflags: &'static [&'static str],
     pub ldflags: &'static [&'static str],
     pub build_path: &'static Path,
     pub build_lock_path: &'static Path,
@@ -106,6 +107,48 @@ struct FlagCfg {
 }
 
 fn make_asmflags(cfg: &FlagCfg) -> Vec<&'static str> {
+    // `.S` files are preprocessed by clang before being assembled, so the
+    // preprocessor flags and defines used by `make_cxxflags` are valid here
+    // too. Codegen-only flags have no effect on assembly, so they are omitted.
+    let mut asmflags = vec![
+        // Treat preprocessor warnings and unused command line arguments as errors.
+        "-Werror",
+        // Target micro architecture.
+        "-march=native",
+        // Use cpp standard.
+        "-std=c++23",
+        // disable libc
+        "-nostdlib",
+        "-nostdinc",
+        "--target=x86_64-linux-none",
+        // no pie
+        "-fno-pic",
+        "-fno-pie",
+    ];
+
+    if cfg.debug_info {
+        asmflags.push("-g1");
+        asmflags.push("-gdwarf32");
+        asmflags.push("-gdwarf-5");
+        asmflags.push("-DZX_DEBUG_INFO");
+    }
+
+    if cfg.dev_mode {
+        asmflags.push("-DZX_DEV");
+    }
+
+    if cfg.fuzz {
+        asmflags.push("-DZX_FUZZ");
+    }
+
+    if cfg.fuzz_unlimited {
+        if !cfg.fuzz {
+            panic!("Using --fuzz-unlimited without --fuzz doesn't make sense.");
+        }
+        asmflags.push("-DZX_FUZZ_UNLIMITED");
+    }
+
+    asmflags
 }
 
 fn make_cxxflags(cfg: &FlagCfg) -> Vec<&'static str> {
@@ -411,6 +454,7 @@ impl Config {
             fuzz_unlimited,
         };
         let cxxflags = make_cxxflags(&flag_cfg).leak();
+        let asmflags = make_asmflags(&flag_cfg).leak();
         let ldflags = make_ldflags(&flag_cfg).leak();
 
         Config {
@@ -423,6 +467,7 @@ impl Config {
             cache_path,
             src_path,
             cxxflags,
+            asmflags,
             ldflags,
             time_trace,
             fuzz_unlimited,

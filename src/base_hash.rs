@@ -44,6 +44,10 @@ fn hash_flags(config: &Config) -> Hash {
         bufs.push(flag.as_bytes());
     }
 
+    for flag in config.asmflags.iter() {
+        bufs.push(flag.as_bytes());
+    }
+
     bufs.push(config.src_path.as_os_str().as_bytes());
 
     hash_ordered(&bufs)

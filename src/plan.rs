@@ -7,7 +7,7 @@
 use crate::build::Task;
 use crate::cache::CacheState;
 use crate::command::{
-    ArchiveLib, CacheLoad, CacheStore, Command, CompileModule, CompileToObject, LinkBinary,
+    ArchiveLib, CacheLoad, CacheStore, Command, CompileModule, CompileCCFile, CompileAsmFile, LinkBinary,
     RunBinary, RunTest,
 };
 use crate::config::{Config, Subcommand};
@@ -327,7 +327,7 @@ fn plan_lib_build(
                 part_name: part_name_idx,
                 inputs: input_indices,
                 outputs: output_indices,
-                command: Some(Command::CompileToObject(CompileToObject {
+                command: Some(Command::CompileCCFile(CompileCCFile {
                     cxx: config.cxx,
                     cxxflags: config.cxxflags,
                     input: cc_path,
@@ -486,7 +486,7 @@ fn plan_bin_build(
                 part_name: bin_name_idx,
                 inputs: input_indices,
                 outputs: output_indices,
-                command: Some(Command::CompileToObject(CompileToObject {
+                command: Some(Command::CompileCCFile(CompileCCFile {
                     cxx: config.cxx,
                     cxxflags: config.cxxflags,
                     input: cc_path,
@@ -666,7 +666,7 @@ fn plan_test_build(
                 part_name: test_name_idx,
                 inputs: input_indices,
                 outputs: output_indices,
-                command: Some(Command::CompileToObject(CompileToObject {
+                command: Some(Command::CompileCCFile(CompileCCFile {
                     cxx: config.cxx,
                     cxxflags: config.cxxflags,
                     input: cc_path,
@@ -803,6 +803,7 @@ pub struct DeepHashes {
     pub module_pcm: Vec<Vec<Hash>>,
     pub module_object: Vec<Vec<Hash>>,
     pub lib_object: Vec<Vec<Hash>>,
+    pub asm_object: Vec<Vec<Hash>>,
     pub bin_object: Vec<Vec<Hash>>,
     pub bin_exe: Vec<Vec<Hash>>,
     pub test_object: Vec<Vec<Hash>>,
@@ -818,6 +819,7 @@ impl DeepHashes {
             module_pcm: vec![Vec::new(); len],
             module_object: vec![Vec::new(); len],
             lib_object: vec![Vec::new(); len],
+            asm_object: vec![Vec::new(); len],
             bin_object: vec![Vec::new(); len],
             bin_exe: vec![Vec::new(); len],
             test_object: vec![Vec::new(); len],
@@ -961,7 +963,7 @@ fn construct_entry_deep_hash(
     let mut hash_combiner = UnorderedHashCombiner::new();
     hash_combiner.add(base_hash);
 
-    // start with the interface (pcm) hash aggregation. We will add lib (object) stuff later.
+    // start with the interface (pcm) hash aggregation. We will add lib/asm (object) stuff later.
 
     for dep_name in info.deps[entry_idx].iter() {
         let dep_idx = usize::try_from(*info.map.get(dep_name).unwrap()).unwrap();
@@ -1034,6 +1036,20 @@ fn construct_entry_deep_hash(
         hash_combiner.add(obj_hash);
     }
     out.lib_object[entry_idx] = lib_hashes;
+
+    // asm
+    let mut asm_hashes = Vec::with_capacity(info.asm[entry_idx].len());
+    for &asm_part_name in info.asm[entry_idx].iter() {
+        let path = config.src_path.join(entry_name).join("asm").join(format!("{}.S", interner.get(asm_part_name)));
+        let path = interner.insert(path.to_str().unwrap());
+        let basic_ash = *info.basic_hash.get(&path).unwrap();
+
+        let obj_hash = mix_hashes(basic_hash, entry_pcm_hash);
+        asm_hashes.push(obj_hash);
+
+        hash_combiner.add(obj_hash);
+    }
+    out.asm_object[entry_idx] = asm_hashes;
 
     // save entry lib archive hash
     let entry_lib_hash = hash_combiner.combine();
@@ -1283,6 +1299,7 @@ pub fn plan(
     assert_eq!(info.name.len(), info.mod_dep_matrix.len());
     assert_eq!(info.name.len(), info.module.len());
     assert_eq!(info.name.len(), info.lib.len());
+    assert_eq!(info.name.len(), info.asm.len());
     assert_eq!(info.name.len(), info.bin.len());
     assert_eq!(info.name.len(), info.test.len());
     assert_eq!(info.name.len(), info.deps.len());
