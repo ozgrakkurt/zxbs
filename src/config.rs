@@ -28,7 +28,6 @@ pub struct Config {
     pub clang_format: &'static str,
     pub cxxflags: &'static [&'static str],
     pub asmflags: &'static [&'static str],
-    pub asmflags: &'static [&'static str],
     pub ldflags: &'static [&'static str],
     pub build_path: &'static Path,
     pub build_lock_path: &'static Path,

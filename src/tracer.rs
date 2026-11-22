@@ -55,7 +55,7 @@ const COLORS: [&str; 25] = [
 fn command_kind_to_color(kind: CommandKind) -> &'static str {
     let idx = match kind {
         CommandKind::CompileModule => 1,
-        CommandKind::CompileCCFile  => 2,
+        CommandKind::CompileCCFile => 2,
         CommandKind::ArchiveLib => 3,
         CommandKind::LinkBinary => 4,
         CommandKind::RunBinary => 5,
@@ -63,7 +63,7 @@ fn command_kind_to_color(kind: CommandKind) -> &'static str {
         CommandKind::CacheLoad => 7,
         CommandKind::CacheStore => 8,
         CommandKind::TestCmd => 9,
-        CommandKind::CompileAsm => 10,
+        CommandKind::CompileAsmFile => 10,
     };
     COLORS[idx]
 }

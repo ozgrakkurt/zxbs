@@ -904,7 +904,10 @@ pub fn scan(
                     ScanTargetKind::Asm,
                 );
 
-                asm_list[result.entry_index] = result.parts.iter().map(|name| interner.insert(name.as_str()))
+                asm_list[result.entry_index] = result
+                    .parts
+                    .iter()
+                    .map(|name| interner.insert(name.as_str()))
                     .collect::<Vec<Str>>();
             }
             ListingResultKind::Test => {

@@ -7,8 +7,8 @@
 use crate::build::Task;
 use crate::cache::CacheState;
 use crate::command::{
-    ArchiveLib, CacheLoad, CacheStore, Command, CompileModule, CompileCCFile, CompileAsmFile, LinkBinary,
-    RunBinary, RunTest,
+    ArchiveLib, CacheLoad, CacheStore, Command, CompileAsmFile, CompileCCFile, CompileModule,
+    LinkBinary, RunBinary, RunTest,
 };
 use crate::config::{Config, Subcommand};
 use crate::hash::{Hash, HashSet, UnorderedHashCombiner, hash_bytes, mix_hashes};
@@ -261,9 +261,15 @@ fn plan_lib_build(
     let entry_name_idx = info.name[entry_index];
     let entry_name = interner.get(entry_name_idx);
 
-    let parts = &info.lib[entry_index];
-    let src_path = config.src_path.join(entry_name).join("lib");
-    let build_path = config.build_path.join("entry").join(entry_name).join("lib");
+    let entry_build_path = config.build_path.join("entry").join(entry_name);
+    let entry_src_path = config.src_path.join(entry_name);
+
+    let lib_parts = &info.lib[entry_index];
+    let asm_parts = &info.asm[entry_index];
+    let cc_src_path = entry_src_path.join("lib");
+    let asm_src_path = entry_src_path.join("asm");
+    let build_path = entry_build_path.join("lib");
+    let asm_build_path = entry_build_path.join("asm");
 
     let root_pcm_path = config
         .build_path
@@ -275,8 +281,10 @@ fn plan_lib_build(
 
     let mod_parts = &info.module[entry_index];
 
-    let mut obj_path_indices: Vec<Str> = Vec::with_capacity(parts.len() + mod_parts.len());
-    let mut obj_paths: Vec<&'static str> = Vec::with_capacity(parts.len() + mod_parts.len());
+    let num_parts = lib_parts.len() + mod_parts.len() + asm_parts.len();
+
+    let mut obj_path_indices: Vec<Str> = Vec::with_capacity(num_parts);
+    let mut obj_paths: Vec<&'static str> = Vec::with_capacity(num_parts);
 
     for &mod_part_name_idx in mod_parts.iter() {
         let part_name = interner.get(mod_part_name_idx);
@@ -291,9 +299,9 @@ fn plan_lib_build(
 
     let cache_files_path = config.cache_path.to_str().unwrap();
 
-    for (part_idx, &part_name_idx) in parts.iter().enumerate() {
+    for (part_idx, &part_name_idx) in lib_parts.iter().enumerate() {
         let part_name = interner.get(part_name_idx);
-        let cc_path = src_path.join(format!("{}.cc", part_name));
+        let cc_path = cc_src_path.join(format!("{}.cc", part_name));
         let cc_path_index = interner.insert(cc_path.to_str().unwrap());
         let cc_path = interner.get(cc_path_index);
         let obj_path = build_path.join(format!("{}.o", part_name));
@@ -331,6 +339,68 @@ fn plan_lib_build(
                     cxx: config.cxx,
                     cxxflags: config.cxxflags,
                     input: cc_path,
+                    output: obj_path,
+                })),
+                entry_index,
+            });
+
+            tasks.push(Task {
+                entry_name: entry_name_idx,
+                part_name: part_name_idx,
+                inputs: vec![obj_path_index],
+                outputs: Vec::new(),
+                command: Some(Command::CacheStore(CacheStore {
+                    cache_files_path,
+                    file_path: obj_path,
+                    deep_hash: obj_hash,
+                })),
+                entry_index,
+            });
+        }
+    }
+
+    let asm_obj_hashes = &deep_hashes.asm_object[entry_index];
+
+    for (part_idx, &part_name_idx) in asm_parts.iter().enumerate() {
+        let part_name = interner.get(part_name_idx);
+        let asm_path = asm_src_path.join(format!("{}.S", part_name));
+        let asm_path_index = interner.insert(asm_path.to_str().unwrap());
+        let asm_path = interner.get(asm_path_index);
+        let obj_path = asm_build_path.join(format!("{}.o", part_name));
+        let obj_path_index = interner.insert(obj_path.to_str().unwrap());
+        let obj_path = interner.get(obj_path_index);
+
+        obj_path_indices.push(obj_path_index);
+        obj_paths.push(obj_path);
+
+        let obj_hash = asm_obj_hashes[part_idx];
+
+        let input_indices = vec![root_pcm_path_index];
+        let output_indices = vec![obj_path_index];
+        if let Some(obj_output_hash) = cache_state.item(obj_hash, timestamp) {
+            tasks.push(Task {
+                entry_name: entry_name_idx,
+                part_name: part_name_idx,
+                inputs: input_indices,
+                outputs: output_indices,
+                command: Some(Command::CacheLoad(CacheLoad {
+                    cache_files_path,
+                    output_path: obj_path,
+                    deep_hash: obj_hash,
+                    expected_hash: obj_output_hash,
+                })),
+                entry_index,
+            });
+        } else {
+            tasks.push(Task {
+                entry_name: entry_name_idx,
+                part_name: part_name_idx,
+                inputs: input_indices,
+                outputs: output_indices,
+                command: Some(Command::CompileAsmFile(CompileAsmFile {
+                    cxx: config.cxx,
+                    asmflags: config.asmflags,
+                    input: asm_path,
                     output: obj_path,
                 })),
                 entry_index,
@@ -1040,9 +1110,13 @@ fn construct_entry_deep_hash(
     // asm
     let mut asm_hashes = Vec::with_capacity(info.asm[entry_idx].len());
     for &asm_part_name in info.asm[entry_idx].iter() {
-        let path = config.src_path.join(entry_name).join("asm").join(format!("{}.S", interner.get(asm_part_name)));
+        let path = config
+            .src_path
+            .join(entry_name)
+            .join("asm")
+            .join(format!("{}.S", interner.get(asm_part_name)));
         let path = interner.insert(path.to_str().unwrap());
-        let basic_ash = *info.basic_hash.get(&path).unwrap();
+        let basic_hash = *info.basic_hash.get(&path).unwrap();
 
         let obj_hash = mix_hashes(basic_hash, entry_pcm_hash);
         asm_hashes.push(obj_hash);
@@ -1335,6 +1409,9 @@ pub fn plan(
         };
 
         plan_module_build(params.reborrow());
+
+        // This actually plans the asm folder build as well as the lib folder build.
+        // So no need to plan_asm_build seperately.
         plan_lib_build(params.reborrow());
 
         plan_test_build(params.reborrow(), lib_path_list, &lib_path_indices);
