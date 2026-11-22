@@ -268,7 +268,7 @@ fn plan_lib_build(
     let asm_parts = &info.asm[entry_index];
     let cc_src_path = entry_src_path.join("lib");
     let asm_src_path = entry_src_path.join("asm");
-    let build_path = entry_build_path.join("lib");
+    let lib_build_path = entry_build_path.join("lib");
     let asm_build_path = entry_build_path.join("asm");
 
     let root_pcm_path = config
@@ -375,7 +375,7 @@ fn plan_lib_build(
 
         let obj_hash = asm_obj_hashes[part_idx];
 
-        let input_indices = vec![root_pcm_path_index];
+        let input_indices = vec![];
         let output_indices = vec![obj_path_index];
         if let Some(obj_output_hash) = cache_state.item(obj_hash, timestamp) {
             tasks.push(Task {
@@ -421,7 +421,7 @@ fn plan_lib_build(
         }
     }
 
-    let lib_output_path = build_path.join(format!("lib{}.a", entry_name));
+    let lib_output_path = lib_build_path.join(format!("lib{}.a", entry_name));
     let lib_output_path_idx = interner.insert(lib_output_path.to_str().unwrap());
     let lib_output_path = interner.get(lib_output_path_idx);
 
