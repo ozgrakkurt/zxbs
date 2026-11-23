@@ -56,6 +56,7 @@ fn command_kind_to_color(kind: CommandKind) -> &'static str {
     let idx = match kind {
         CommandKind::CompileModule => 1,
         CommandKind::CompileToObject => 2,
+        CommandKind::CompileToAssembly => 10,
         CommandKind::ArchiveLib => 3,
         CommandKind::LinkBinary => 4,
         CommandKind::RunBinary => 5,

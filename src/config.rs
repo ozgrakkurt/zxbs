@@ -34,6 +34,9 @@ pub struct Config {
     pub cache_path: &'static Path,
     pub time_trace: bool,
     pub fuzz_unlimited: bool,
+    /// Emit annotated assembly (`.s`) next to library, binary and test object
+    /// files. Module object files are not included.
+    pub emit_asm: bool,
 }
 
 fn parse_bool_arg(args: &mut HashMap<String, Option<String>>, name: &str, default: bool) -> bool {
@@ -380,6 +383,7 @@ impl Config {
         let build_dir = parse_str_arg(&mut flags, "--build-dir", "build");
         let time_trace = parse_bool_arg(&mut flags, "time-trace", false);
         let cxx_time_trace = parse_bool_arg(&mut flags, "cxx-time-trace", false);
+        let emit_asm = parse_bool_arg(&mut flags, "asm", false);
 
         if !flags.is_empty() {
             eprintln!("Found unexpected flags: ");
@@ -422,6 +426,7 @@ impl Config {
             ldflags,
             time_trace,
             fuzz_unlimited,
+            emit_asm,
         }
     }
 

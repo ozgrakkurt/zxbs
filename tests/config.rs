@@ -47,9 +47,19 @@ fn test_default_flag_values() {
     assert!(!has_flag(cfg.cxxflags, "-DZX_FUZZ"));
     assert!(!has_flag(cfg.cxxflags, "-DZX_FUZZ_UNLIMITED"));
     assert!(!cfg.fuzz_unlimited);
+    assert!(!cfg.emit_asm);
 
     // Debug info is on by default so the linker shouldn't strip symbols.
     assert!(!has_flag(cfg.ldflags, "-Wl,-s"));
+}
+
+#[test]
+fn test_asm_flag() {
+    let cfg = Config::parse_config(flags(&[("--asm", None)]));
+    assert!(cfg.emit_asm);
+
+    let cfg = Config::parse_config(flags(&[("--no-asm", None)]));
+    assert!(!cfg.emit_asm);
 }
 
 #[test]

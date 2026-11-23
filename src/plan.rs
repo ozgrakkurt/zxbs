@@ -7,13 +7,14 @@
 use crate::build::Task;
 use crate::cache::CacheState;
 use crate::command::{
-    ArchiveLib, CacheLoad, CacheStore, Command, CompileModule, CompileToObject, LinkBinary,
-    RunBinary, RunTest,
+    ArchiveLib, CacheLoad, CacheStore, Command, CompileModule, CompileToAssembly, CompileToObject,
+    LinkBinary, RunBinary, RunTest,
 };
 use crate::config::{Config, Subcommand};
 use crate::hash::{Hash, HashSet, UnorderedHashCombiner, hash_bytes, mix_hashes};
 use crate::interner::{Interner, Str};
 use crate::scan::BuildInfo;
+use std::path::Path;
 
 pub fn make_module_artifact_name(root_name: &str, part_name: &str, extension: &str) -> String {
     if root_name == part_name {
@@ -54,6 +55,76 @@ pub fn should_run_binary(
             }
         }
         _ => None,
+    }
+}
+
+// Plan the tasks that produce the annotated assembly (`.s`) for a library,
+// binary or test object file. The assembly file goes next to the object file
+// and is cached like any other artifact.
+fn plan_asm_build(
+    config: &Config,
+    interner: &mut Interner,
+    cache_state: &mut CacheState,
+    tasks: &mut Vec<Task>,
+    entry_name: Str,
+    part_name: Str,
+    entry_index: usize,
+    inputs: &[Str],
+    input: &'static str,
+    object_path: &str,
+    asm_hash: Hash,
+    timestamp: u64,
+) {
+    if !config.emit_asm {
+        return;
+    }
+
+    let asm_path = Path::new(object_path).with_extension("s");
+    let asm_path = interner.insert(asm_path.to_str().unwrap());
+    let asm_path_str = interner.get(asm_path);
+    let cache_files_path = config.cache_path.to_str().unwrap();
+
+    if let Some(asm_output_hash) = cache_state.item(asm_hash, timestamp) {
+        tasks.push(Task {
+            entry_name,
+            part_name,
+            inputs: inputs.to_vec(),
+            outputs: vec![asm_path],
+            command: Some(Command::CacheLoad(CacheLoad {
+                cache_files_path,
+                output_path: asm_path_str,
+                deep_hash: asm_hash,
+                expected_hash: asm_output_hash,
+            })),
+            entry_index,
+        });
+    } else {
+        tasks.push(Task {
+            entry_name,
+            part_name,
+            inputs: inputs.to_vec(),
+            outputs: vec![asm_path],
+            command: Some(Command::CompileToAssembly(CompileToAssembly {
+                cxx: config.cxx,
+                cxxflags: config.cxxflags,
+                input,
+                output: asm_path_str,
+            })),
+            entry_index,
+        });
+
+        tasks.push(Task {
+            entry_name,
+            part_name,
+            inputs: vec![asm_path],
+            outputs: Vec::new(),
+            command: Some(Command::CacheStore(CacheStore {
+                cache_files_path,
+                file_path: asm_path_str,
+                deep_hash: asm_hash,
+            })),
+            entry_index,
+        });
     }
 }
 
@@ -288,6 +359,7 @@ fn plan_lib_build(
     }
 
     let obj_hashes = &deep_hashes.lib_object[entry_index];
+    let asm_hashes = &deep_hashes.lib_asm[entry_index];
 
     let cache_files_path = config.cache_path.to_str().unwrap();
 
@@ -311,7 +383,7 @@ fn plan_lib_build(
             tasks.push(Task {
                 entry_name: entry_name_idx,
                 part_name: part_name_idx,
-                inputs: input_indices,
+                inputs: input_indices.clone(),
                 outputs: output_indices,
                 command: Some(Command::CacheLoad(CacheLoad {
                     cache_files_path,
@@ -325,7 +397,7 @@ fn plan_lib_build(
             tasks.push(Task {
                 entry_name: entry_name_idx,
                 part_name: part_name_idx,
-                inputs: input_indices,
+                inputs: input_indices.clone(),
                 outputs: output_indices,
                 command: Some(Command::CompileToObject(CompileToObject {
                     cxx: config.cxx,
@@ -349,6 +421,21 @@ fn plan_lib_build(
                 entry_index,
             });
         }
+
+        plan_asm_build(
+            config,
+            interner,
+            cache_state,
+            tasks,
+            entry_name_idx,
+            part_name_idx,
+            entry_index,
+            &input_indices,
+            cc_path,
+            obj_path,
+            asm_hashes[part_idx],
+            timestamp,
+        );
     }
 
     let lib_output_path = build_path.join(format!("lib{}.a", entry_name));
@@ -439,6 +526,7 @@ fn plan_bin_build(
 
     let obj_hashes = &deep_hashes.bin_object[entry_index];
     let exe_hashes = &deep_hashes.bin_exe[entry_index];
+    let asm_hashes = &deep_hashes.bin_asm[entry_index];
 
     let cache_files_path = config.cache_path.to_str().unwrap();
 
@@ -470,7 +558,7 @@ fn plan_bin_build(
             tasks.push(Task {
                 entry_name: entry_name_idx,
                 part_name: bin_name_idx,
-                inputs: input_indices,
+                inputs: input_indices.clone(),
                 outputs: output_indices,
                 command: Some(Command::CacheLoad(CacheLoad {
                     cache_files_path,
@@ -484,7 +572,7 @@ fn plan_bin_build(
             tasks.push(Task {
                 entry_name: entry_name_idx,
                 part_name: bin_name_idx,
-                inputs: input_indices,
+                inputs: input_indices.clone(),
                 outputs: output_indices,
                 command: Some(Command::CompileToObject(CompileToObject {
                     cxx: config.cxx,
@@ -508,6 +596,21 @@ fn plan_bin_build(
                 entry_index,
             });
         }
+
+        plan_asm_build(
+            config,
+            interner,
+            cache_state,
+            tasks,
+            entry_name_idx,
+            bin_name_idx,
+            entry_index,
+            &input_indices,
+            cc_path,
+            obj_path,
+            asm_hashes[bin_idx],
+            timestamp,
+        );
 
         let mut input_indices = lib_path_indices.to_vec();
         input_indices.push(obj_path_index);
@@ -615,6 +718,7 @@ fn plan_test_build(
     let obj_hashes = &deep_hashes.test_object[entry_index];
     let exe_hashes = &deep_hashes.test_exe[entry_index];
     let stamp_hashes = &deep_hashes.test_stamp[entry_index];
+    let asm_hashes = &deep_hashes.test_asm[entry_index];
 
     let cache_files_path = config.cache_path.to_str().unwrap();
 
@@ -650,7 +754,7 @@ fn plan_test_build(
             tasks.push(Task {
                 entry_name: entry_name_idx,
                 part_name: test_name_idx,
-                inputs: input_indices,
+                inputs: input_indices.clone(),
                 outputs: output_indices,
                 command: Some(Command::CacheLoad(CacheLoad {
                     cache_files_path,
@@ -664,7 +768,7 @@ fn plan_test_build(
             tasks.push(Task {
                 entry_name: entry_name_idx,
                 part_name: test_name_idx,
-                inputs: input_indices,
+                inputs: input_indices.clone(),
                 outputs: output_indices,
                 command: Some(Command::CompileToObject(CompileToObject {
                     cxx: config.cxx,
@@ -688,6 +792,21 @@ fn plan_test_build(
                 entry_index,
             });
         }
+
+        plan_asm_build(
+            config,
+            interner,
+            cache_state,
+            tasks,
+            entry_name_idx,
+            test_name_idx,
+            entry_index,
+            &input_indices,
+            cc_path,
+            obj_path,
+            asm_hashes[test_idx],
+            timestamp,
+        );
 
         let mut input_indices = lib_path_indices.to_vec();
         input_indices.push(obj_path_index);
@@ -803,9 +922,12 @@ pub struct DeepHashes {
     pub module_pcm: Vec<Vec<Hash>>,
     pub module_object: Vec<Vec<Hash>>,
     pub lib_object: Vec<Vec<Hash>>,
+    pub lib_asm: Vec<Vec<Hash>>,
     pub bin_object: Vec<Vec<Hash>>,
+    pub bin_asm: Vec<Vec<Hash>>,
     pub bin_exe: Vec<Vec<Hash>>,
     pub test_object: Vec<Vec<Hash>>,
+    pub test_asm: Vec<Vec<Hash>>,
     pub test_exe: Vec<Vec<Hash>>,
     pub test_stamp: Vec<Vec<Hash>>,
 }
@@ -818,9 +940,12 @@ impl DeepHashes {
             module_pcm: vec![Vec::new(); len],
             module_object: vec![Vec::new(); len],
             lib_object: vec![Vec::new(); len],
+            lib_asm: vec![Vec::new(); len],
             bin_object: vec![Vec::new(); len],
+            bin_asm: vec![Vec::new(); len],
             bin_exe: vec![Vec::new(); len],
             test_object: vec![Vec::new(); len],
+            test_asm: vec![Vec::new(); len],
             test_exe: vec![Vec::new(); len],
             test_stamp: vec![Vec::new(); len],
         }
@@ -993,6 +1118,9 @@ fn construct_entry_deep_hash(
     // Meaning a change on the cc file or the cppm (pcm) files is the only cause that might change
     // the object file output.
     //
+    // Annotated assembly is produced from the same source with the same flags as its object file,
+    // so its deep hash is the object hash mixed with a fixed marker.
+    //
     // So object file hashes should be independent of each other but all dependent on the entry_pcm_hash
     // we calculated.
     //
@@ -1019,6 +1147,7 @@ fn construct_entry_deep_hash(
 
     // lib
     let mut lib_hashes = Vec::with_capacity(info.lib[entry_idx].len());
+    let mut lib_asm_hashes = Vec::with_capacity(info.lib[entry_idx].len());
     for &lib_part_name in info.lib[entry_idx].iter() {
         let path = config
             .src_path
@@ -1030,10 +1159,12 @@ fn construct_entry_deep_hash(
 
         let obj_hash = mix_hashes(basic_hash, entry_pcm_hash);
         lib_hashes.push(obj_hash);
+        lib_asm_hashes.push(mix_hashes(obj_hash, hash_bytes(b"assembly")));
 
         hash_combiner.add(obj_hash);
     }
     out.lib_object[entry_idx] = lib_hashes;
+    out.lib_asm[entry_idx] = lib_asm_hashes;
 
     // save entry lib archive hash
     let entry_lib_hash = hash_combiner.combine();
@@ -1072,6 +1203,7 @@ fn construct_entry_deep_hash(
     // test
     let test_info = &info.test[entry_idx];
     let mut test_object_hashes = Vec::with_capacity(test_info.len());
+    let mut test_asm_hashes = Vec::with_capacity(test_info.len());
     let mut test_exe_hashes = Vec::with_capacity(test_info.len());
     let mut test_stamp_hashes = Vec::with_capacity(test_info.len());
 
@@ -1087,6 +1219,7 @@ fn construct_entry_deep_hash(
         let obj_hash = mix_hashes(basic_hash, entry_pcm_hash);
 
         test_object_hashes.push(obj_hash);
+        test_asm_hashes.push(mix_hashes(obj_hash, hash_bytes(b"assembly")));
 
         let exe_hash = mix_hashes(obj_hash, link_base_hash);
 
@@ -1098,6 +1231,7 @@ fn construct_entry_deep_hash(
     }
 
     out.test_object[entry_idx] = test_object_hashes;
+    out.test_asm[entry_idx] = test_asm_hashes;
     out.test_exe[entry_idx] = test_exe_hashes;
     out.test_stamp[entry_idx] = test_stamp_hashes;
 
@@ -1105,6 +1239,7 @@ fn construct_entry_deep_hash(
 
     let bin_info = &info.bin[entry_idx];
     let mut bin_object_hashes = Vec::with_capacity(bin_info.len());
+    let mut bin_asm_hashes = Vec::with_capacity(bin_info.len());
     let mut bin_exe_hashes = Vec::with_capacity(bin_info.len());
 
     for &bin_name in info.bin[entry_idx].iter() {
@@ -1119,6 +1254,7 @@ fn construct_entry_deep_hash(
         let obj_hash = mix_hashes(basic_hash, entry_pcm_hash);
 
         bin_object_hashes.push(obj_hash);
+        bin_asm_hashes.push(mix_hashes(obj_hash, hash_bytes(b"assembly")));
 
         let exe_hash = mix_hashes(obj_hash, link_base_hash);
 
@@ -1126,6 +1262,7 @@ fn construct_entry_deep_hash(
     }
 
     out.bin_object[entry_idx] = bin_object_hashes;
+    out.bin_asm[entry_idx] = bin_asm_hashes;
     out.bin_exe[entry_idx] = bin_exe_hashes;
 }
 

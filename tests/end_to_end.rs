@@ -204,3 +204,145 @@ fn test_smoke() {
             .exists()
     );
 }
+
+// With `--asm` every library, binary and test object file gets an annotated
+// assembly file next to it. Those files are restored from the cache just like
+// the object files.
+#[test]
+fn test_asm_output() {
+    let folder = TempDir::new();
+    let build_path = format!("{}/build", folder.as_str());
+    let src_path = format!("{}/src", folder.as_str());
+    std::fs::create_dir_all(&src_path).unwrap();
+
+    make_baselib(Path::new(&src_path));
+
+    let mut flags = HashMap::default();
+    flags.insert("--build-dir".to_owned(), Some(build_path.clone()));
+    flags.insert("--src-dir".to_owned(), Some(src_path.clone()));
+    flags.insert("--asm".to_owned(), None);
+    flags.insert("--opt-level".to_owned(), Some("2".to_owned()));
+    let cfg: &'static Config = Box::leak(Box::new(Config::parse_config(flags)));
+
+    let thread_pool = ThreadPool::new(16);
+
+    let mut interner = Interner::new();
+
+    let base_hash = calculate_base_hash(cfg, &thread_pool);
+
+    // Every artifact of the base tree that is built from a library, binary or
+    // test source file.
+    let objects = [
+        "entry/base/lib/memcmp",
+        "entry/base/lib/memcpy",
+        "entry/base/bin/memcpy_bench",
+        "entry/base/test/memcmp",
+        "entry/base/test/vec",
+        "entry/base/test/arith",
+    ];
+
+    // First run: a full build from a cold cache.
+    {
+        let ts = timestamp();
+        let mut cache_state = cache::load(cfg.cache_path, &thread_pool, ts);
+
+        let info = scan::scan(
+            cfg,
+            &mut interner,
+            &thread_pool,
+            base_hash,
+            &mut cache_state,
+            ts,
+        );
+        info.check_subcommand(&mut interner, &Subcommand::Build);
+
+        directory::setup_build_directories(cfg, &info, &interner, &thread_pool);
+
+        let tasks = plan(
+            cfg,
+            &Subcommand::Build,
+            &mut interner,
+            &info,
+            &mut cache_state,
+            base_hash,
+            ts,
+        );
+
+        // 37 normal tasks plus a compile and a store for each of the 6
+        // assembly files.
+        assert_eq!(tasks.len(), 37 + 2 * objects.len());
+
+        Build::new(None, &mut interner, tasks, Instant::now(), &thread_pool).build();
+
+        cache::finish(cache_state, cfg.cache_path, &thread_pool, ts);
+    }
+
+    for object in objects.iter() {
+        let object_path = cfg.build_path.join(format!("{}.o", object));
+        let asm_path = cfg.build_path.join(format!("{}.s", object));
+
+        assert!(object_path.exists(), "missing {}", object_path.display());
+
+        let asm = std::fs::read_to_string(&asm_path)
+            .unwrap_or_else(|e| panic!("missing {}: {}", asm_path.display(), e));
+        assert!(!asm.trim().is_empty());
+        assert!(
+            asm.contains(".text"),
+            "{} doesn't look like assembly",
+            asm_path.display(),
+        );
+        assert!(
+            asm.contains('#'),
+            "{} doesn't look like *annotated* assembly",
+            asm_path.display(),
+        );
+    }
+
+    // Second run: everything, including the assembly files, comes from the
+    // cache.
+    {
+        let ts = timestamp();
+        let mut cache_state = cache::load(cfg.cache_path, &thread_pool, ts);
+
+        let info = scan::scan(
+            cfg,
+            &mut interner,
+            &thread_pool,
+            base_hash,
+            &mut cache_state,
+            ts,
+        );
+
+        directory::setup_build_directories(cfg, &info, &interner, &thread_pool);
+
+        let tasks = plan(
+            cfg,
+            &Subcommand::Build,
+            &mut interner,
+            &info,
+            &mut cache_state,
+            base_hash,
+            ts,
+        );
+
+        // 21 regular artifacts + 6 assembly files.
+        assert_eq!(tasks.len(), 21 + objects.len());
+        assert!(
+            tasks
+                .iter()
+                .all(|task| matches!(task.command, Some(Command::CacheLoad(_)),))
+        );
+
+        Build::new(None, &mut interner, tasks, Instant::now(), &thread_pool).build();
+
+        cache::finish(cache_state, cfg.cache_path, &thread_pool, ts);
+    }
+
+    for object in objects.iter() {
+        assert!(cfg.build_path.join(format!("{}.s", object)).exists());
+    }
+
+    // Module object files don't get assembly output.
+    assert!(!cfg.build_path.join("mod/base.s").exists());
+    assert!(!cfg.build_path.join("mod/base-vec.s").exists());
+}

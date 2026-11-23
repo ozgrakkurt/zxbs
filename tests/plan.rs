@@ -37,6 +37,17 @@ const NUM_TASKS: usize = 91;
 const NUM_STORED_ARTIFACTS: usize = 51;
 
 fn make_config(folder: &str) -> &'static Config {
+    make_config_with_extra_flags(folder, &[])
+}
+
+fn make_asm_config(folder: &str) -> &'static Config {
+    make_config_with_extra_flags(folder, &[("--asm", None)])
+}
+
+fn make_config_with_extra_flags(
+    folder: &str,
+    extra_flags: &[(&str, Option<&str>)],
+) -> &'static Config {
     let build_dir = format!("{}/build", folder);
     let src_dir = format!("{}/src", folder);
     std::fs::create_dir_all(&src_dir).unwrap();
@@ -44,6 +55,9 @@ fn make_config(folder: &str) -> &'static Config {
     let mut flags = HashMap::default();
     flags.insert("--build-dir".to_owned(), Some(build_dir));
     flags.insert("--src-dir".to_owned(), Some(src_dir));
+    for &(name, value) in extra_flags.iter() {
+        flags.insert(name.to_owned(), value.map(str::to_owned));
+    }
     Box::leak(Box::new(Config::parse_config(flags)))
 }
 
@@ -232,6 +246,27 @@ fn check_obj_task(
     }
 }
 
+// Check a CompileToAssembly task for a library, binary or test object file.
+fn check_asm_task(
+    task: &Task,
+    interner: &Interner,
+    input_path: &str,
+    asm_path: &str,
+    expected_inputs: &[String],
+) {
+    assert_eq!(strs(interner, &task.inputs), as_strs(expected_inputs));
+    assert_eq!(strs(interner, &task.outputs), vec![asm_path]);
+
+    match &task.command {
+        Some(Command::CompileToAssembly(ca)) => {
+            assert_eq!(ca.cxx, "clang++");
+            assert_eq!(ca.input, input_path);
+            assert_eq!(ca.output, asm_path);
+        }
+        _ => unreachable!(),
+    }
+}
+
 // Check a LinkBinary task for a test/bin part.
 fn check_link_task(
     task: &Task,
@@ -310,6 +345,7 @@ fn check_entry_tasks(
     src_path: &str,
     lib_paths: &[String],
     cache_files_path: &str,
+    emit_asm: bool,
     store_hashes: &mut Vec<Hash>,
 ) {
     let entry_name = interner.get(info.name[eidx]).to_owned();
@@ -416,6 +452,27 @@ fn check_entry_tasks(
             store_hashes,
         );
         i += 1;
+
+        if emit_asm {
+            let asm_path = format!("{}/entry/{}/lib/{}.s", build_path, entry_name, part_name);
+            check_asm_task(
+                entry_tasks[i],
+                interner,
+                &format!("{}/{}/lib/{}.cc", src_path, entry_name, part_name),
+                &asm_path,
+                &[format!("{}/mod/{}.pcm", build_path, entry_name)],
+            );
+            i += 1;
+
+            check_store_task(
+                entry_tasks[i],
+                interner,
+                &asm_path,
+                cache_files_path,
+                store_hashes,
+            );
+            i += 1;
+        }
     }
 
     // Lib archive task. Inputs are all the module objects followed by all the
@@ -500,6 +557,27 @@ fn check_entry_tasks(
         );
         i += 1;
 
+        if emit_asm {
+            let asm_path = format!("{}/entry/{}/test/{}.s", build_path, entry_name, test_name);
+            check_asm_task(
+                entry_tasks[i],
+                interner,
+                &format!("{}/{}/test/{}.cc", src_path, entry_name, test_name),
+                &asm_path,
+                &[format!("{}/mod/{}.pcm", build_path, entry_name)],
+            );
+            i += 1;
+
+            check_store_task(
+                entry_tasks[i],
+                interner,
+                &asm_path,
+                cache_files_path,
+                store_hashes,
+            );
+            i += 1;
+        }
+
         check_link_task(
             entry_tasks[i],
             interner,
@@ -562,6 +640,27 @@ fn check_entry_tasks(
             store_hashes,
         );
         i += 1;
+
+        if emit_asm {
+            let asm_path = format!("{}/entry/{}/bin/{}.s", build_path, entry_name, bin_name);
+            check_asm_task(
+                entry_tasks[i],
+                interner,
+                &format!("{}/{}/bin/{}.cc", src_path, entry_name, bin_name),
+                &asm_path,
+                &[format!("{}/mod/{}.pcm", build_path, entry_name)],
+            );
+            i += 1;
+
+            check_store_task(
+                entry_tasks[i],
+                interner,
+                &asm_path,
+                cache_files_path,
+                store_hashes,
+            );
+            i += 1;
+        }
 
         check_link_task(
             entry_tasks[i],
@@ -712,6 +811,7 @@ fn test_simple() {
             src_path,
             &lib_paths,
             cache_files_path,
+            cfg.emit_asm,
             &mut store_hashes,
         );
     }
@@ -834,6 +934,133 @@ fn test_simple() {
     }
 }
 
+// `--asm` adds an annotated assembly artifact next to every library, binary
+// and test object file. Each one is a compile + cache store on a cold cache
+// and a single cache load on a warm cache.
+#[test]
+fn test_asm() {
+    let folder = TempDir::new();
+    let cfg = make_asm_config(folder.as_str());
+
+    make_baselib(Path::new(cfg.src_path));
+
+    let thread_pool = ThreadPool::new(8);
+
+    let ts = timestamp();
+    let mut cache_state = cache::load(cfg.cache_path, &thread_pool, ts);
+
+    let mut interner = Interner::new();
+
+    let info = scan::scan(cfg, &mut interner, &thread_pool, 0, &mut cache_state, ts);
+
+    let tasks = plan::plan(
+        cfg,
+        &Subcommand::TestAll,
+        &mut interner,
+        &info,
+        &mut cache_state,
+        0,
+        ts,
+    );
+
+    // 43 tasks for the base tree plus a compile and a store for each of its
+    // 6 library, test and binary object files.
+    assert_eq!(tasks.len(), 43 + 2 * 6);
+
+    let build_path = cfg.build_path.to_str().unwrap();
+    let src_path = cfg.src_path.to_str().unwrap();
+    let cache_files_path = cfg.cache_path.to_str().unwrap();
+
+    let entry_tasks: Vec<&Task> = tasks.iter().filter(|t| t.entry_index == 0).collect();
+    let lib_paths = vec![format!("{}/entry/base/lib/libbase.a", build_path)];
+    let mut store_hashes: Vec<Hash> = Vec::new();
+    check_entry_tasks(
+        &entry_tasks,
+        &interner,
+        &info,
+        0,
+        build_path,
+        src_path,
+        &lib_paths,
+        cache_files_path,
+        true,
+        &mut store_hashes,
+    );
+
+    // 24 regular artifacts + 6 assembly files.
+    assert_eq!(store_hashes.len(), 24 + 6);
+
+    let mut seen = std::collections::HashSet::new();
+    for hash in store_hashes.iter() {
+        assert!(seen.insert(*hash));
+    }
+
+    // Every assembly output has a sibling object path and vice versa.
+    let mut deep_to_path: HashMap<Hash, &'static str> = HashMap::default();
+    let mut cold_inputs: HashMap<Str, Vec<Str>> = HashMap::default();
+    let mut num_asm_outputs = 0;
+    for task in tasks.iter() {
+        if let Some(Command::CacheStore(cs)) = &task.command {
+            assert!(deep_to_path.insert(cs.deep_hash, cs.file_path).is_none());
+        }
+
+        for &output in task.outputs.iter() {
+            cold_inputs.insert(output, task.inputs.clone());
+
+            let path = interner.get(output);
+            if path.ends_with(".s") {
+                num_asm_outputs += 1;
+                assert_eq!(
+                    Path::new(path).with_extension("o").parent(),
+                    Path::new(path).parent(),
+                );
+            }
+        }
+    }
+    assert_eq!(num_asm_outputs, 6);
+
+    // Warm cache: every assembly file is restored from the cache with the
+    // same dependency inputs as the compile task it replaces.
+    for (&deep, &path) in deep_to_path.iter() {
+        store_in_cache(cfg.cache_path, path, deep);
+    }
+
+    let mut warm_state = cache::load(cfg.cache_path, &thread_pool, ts);
+    let warm_tasks = plan::plan(
+        cfg,
+        &Subcommand::TestAll,
+        &mut interner,
+        &info,
+        &mut warm_state,
+        0,
+        ts,
+    );
+    assert_eq!(warm_tasks.len(), 24 + 6);
+
+    let mut num_asm_loads = 0;
+    for task in warm_tasks.iter() {
+        match &task.command {
+            Some(Command::CacheLoad(cl)) => {
+                assert_eq!(task.outputs.len(), 1);
+                assert_eq!(interner.get(task.outputs[0]), cl.output_path);
+                assert_eq!(
+                    task.inputs.as_slice(),
+                    cold_inputs.get(&task.outputs[0]).unwrap().as_slice(),
+                );
+
+                if cl.output_path.ends_with(".s") {
+                    num_asm_loads += 1;
+                }
+            }
+            _ => panic!(
+                "expected only cache loads on a warm cache, got: {}",
+                task.command.as_ref().unwrap().print(),
+            ),
+        }
+    }
+    assert_eq!(num_asm_loads, 6);
+}
+
 // Check the complete task list of a tree: the totals against the expected
 // numbers and every entry's tasks in detail with `check_entry_tasks`.
 //
@@ -908,6 +1135,7 @@ fn check_tree(
             src_path,
             &lib_paths,
             cache_files_path,
+            cfg.emit_asm,
             &mut store_hashes,
         );
     }

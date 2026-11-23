@@ -26,6 +26,7 @@ fn config() -> &'static Config {
         cache_path: Path::new("/cache"),
         time_trace: false,
         fuzz_unlimited: false,
+        emit_asm: false,
     })
 }
 
@@ -286,13 +287,22 @@ fn snapshot(hashes: &DeepHashes) -> Vec<Hash> {
     for list in hashes.lib_object.iter() {
         out.extend_from_slice(list);
     }
+    for list in hashes.lib_asm.iter() {
+        out.extend_from_slice(list);
+    }
     for list in hashes.bin_object.iter() {
+        out.extend_from_slice(list);
+    }
+    for list in hashes.bin_asm.iter() {
         out.extend_from_slice(list);
     }
     for list in hashes.bin_exe.iter() {
         out.extend_from_slice(list);
     }
     for list in hashes.test_object.iter() {
+        out.extend_from_slice(list);
+    }
+    for list in hashes.test_asm.iter() {
         out.extend_from_slice(list);
     }
     for list in hashes.test_exe.iter() {
@@ -352,6 +362,7 @@ fuzz_target!(|data: &[u8]| {
         FileKind::Lib => {
             assert_eq!(base.entry_pcm[entry], after.entry_pcm[entry]);
             assert_ne!(base.lib_object[entry], after.lib_object[entry]);
+            assert_ne!(base.lib_asm[entry], after.lib_asm[entry]);
             assert_ne!(
                 base.entry_lib_archive[entry],
                 after.entry_lib_archive[entry]
@@ -360,11 +371,13 @@ fuzz_target!(|data: &[u8]| {
         FileKind::Bin => {
             assert_eq!(base.entry_pcm[entry], after.entry_pcm[entry]);
             assert_ne!(base.bin_object[entry], after.bin_object[entry]);
+            assert_ne!(base.bin_asm[entry], after.bin_asm[entry]);
             assert_ne!(base.bin_exe[entry], after.bin_exe[entry]);
         }
         FileKind::Test => {
             assert_eq!(base.entry_pcm[entry], after.entry_pcm[entry]);
             assert_ne!(base.test_object[entry], after.test_object[entry]);
+            assert_ne!(base.test_asm[entry], after.test_asm[entry]);
             assert_ne!(base.test_exe[entry], after.test_exe[entry]);
             assert_ne!(base.test_stamp[entry], after.test_stamp[entry]);
         }

@@ -4,9 +4,10 @@ use zxbs::interner::Interner;
 use zxbs::tracer::{Entry, Tracer};
 
 // The chrome tracing color scheme indexes each command kind gets.
-const KIND_COLORS: [(CommandKind, &str); 9] = [
+const KIND_COLORS: [(CommandKind, &str); 10] = [
     (CommandKind::CompileModule, "thread_state_running"),
     (CommandKind::CompileToObject, "thread_state_runnable"),
+    (CommandKind::CompileToAssembly, "black"),
     (CommandKind::ArchiveLib, "thread_state_sleeping"),
     (CommandKind::LinkBinary, "thread_state_unknown"),
     (CommandKind::RunBinary, "memory_dump"),
