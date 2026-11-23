@@ -141,7 +141,7 @@ impl CompileToObject {
 
 // Compile a translation unit to annotated assembly.
 //
-// This is used by the `--asm` flag to put a `.s` file next to every library,
+// This is used by the `--emit-asm` flag to put a `.s` file next to every library,
 // binary and test object file. It is a separate compiler invocation because
 // clang can't emit an object file and an explicit assembly output in the same
 // run.

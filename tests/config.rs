@@ -54,11 +54,11 @@ fn test_default_flag_values() {
 }
 
 #[test]
-fn test_asm_flag() {
-    let cfg = Config::parse_config(flags(&[("--asm", None)]));
+fn test_emit_asm_flag() {
+    let cfg = Config::parse_config(flags(&[("--emit-asm", None)]));
     assert!(cfg.emit_asm);
 
-    let cfg = Config::parse_config(flags(&[("--no-asm", None)]));
+    let cfg = Config::parse_config(flags(&[("--no-emit-asm", None)]));
     assert!(!cfg.emit_asm);
 }
 

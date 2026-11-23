@@ -383,7 +383,7 @@ impl Config {
         let build_dir = parse_str_arg(&mut flags, "--build-dir", "build");
         let time_trace = parse_bool_arg(&mut flags, "time-trace", false);
         let cxx_time_trace = parse_bool_arg(&mut flags, "cxx-time-trace", false);
-        let emit_asm = parse_bool_arg(&mut flags, "asm", false);
+        let emit_asm = parse_bool_arg(&mut flags, "emit-asm", false);
 
         if !flags.is_empty() {
             eprintln!("Found unexpected flags: ");

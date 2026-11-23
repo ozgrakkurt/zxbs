@@ -41,7 +41,7 @@ fn make_config(folder: &str) -> &'static Config {
 }
 
 fn make_asm_config(folder: &str) -> &'static Config {
-    make_config_with_extra_flags(folder, &[("--asm", None)])
+    make_config_with_extra_flags(folder, &[("--emit-asm", None)])
 }
 
 fn make_config_with_extra_flags(
@@ -934,7 +934,7 @@ fn test_simple() {
     }
 }
 
-// `--asm` adds an annotated assembly artifact next to every library, binary
+// `--emit-asm` adds an annotated assembly artifact next to every library, binary
 // and test object file. Each one is a compile + cache store on a cold cache
 // and a single cache load on a warm cache.
 #[test]

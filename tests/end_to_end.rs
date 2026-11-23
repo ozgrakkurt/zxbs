@@ -205,7 +205,7 @@ fn test_smoke() {
     );
 }
 
-// With `--asm` every library, binary and test object file gets an annotated
+// With `--emit-asm` every library, binary and test object file gets an annotated
 // assembly file next to it. Those files are restored from the cache just like
 // the object files.
 #[test]
@@ -220,7 +220,7 @@ fn test_asm_output() {
     let mut flags = HashMap::default();
     flags.insert("--build-dir".to_owned(), Some(build_path.clone()));
     flags.insert("--src-dir".to_owned(), Some(src_path.clone()));
-    flags.insert("--asm".to_owned(), None);
+    flags.insert("--emit-asm".to_owned(), None);
     flags.insert("--opt-level".to_owned(), Some("2".to_owned()));
     let cfg: &'static Config = Box::leak(Box::new(Config::parse_config(flags)));
 
