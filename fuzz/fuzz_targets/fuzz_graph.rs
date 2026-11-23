@@ -30,6 +30,7 @@ fn config() -> &'static Config {
         cache_path: Path::new("/cache"),
         time_trace: false,
         fuzz_unlimited: false,
+        emit_asm: false,
     })
 }
 

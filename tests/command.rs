@@ -3,8 +3,8 @@ use std::os::unix::fs::PermissionsExt;
 use std::sync::{Arc, Mutex};
 
 use zxbs::command::{
-    ArchiveLib, CacheLoad, CacheStore, Command, CommandKind, CompileModule, CompileToObject,
-    LinkBinary, RunBinary, RunTest, TestCmd,
+    ArchiveLib, CacheLoad, CacheStore, Command, CommandKind, CompileModule, CompileToAssembly,
+    CompileToObject, LinkBinary, RunBinary, RunTest, TestCmd,
 };
 use zxbs::hash::{Hash, hash_bytes};
 
@@ -48,6 +48,16 @@ fn make_commands() -> Vec<(Command, CommandKind, &'static str)> {
             }),
             CommandKind::CompileToObject,
             "<cxx> <cxxflags> in.cc -c -o out.o",
+        ),
+        (
+            Command::CompileToAssembly(CompileToAssembly {
+                cxx: "clang++",
+                cxxflags: &["-O2"],
+                input: "in.cc",
+                output: "out.s",
+            }),
+            CommandKind::CompileToAssembly,
+            "<cxx> <cxxflags> in.cc -S -fverbose-asm -o out.s",
         ),
         (
             Command::ArchiveLib(ArchiveLib {
@@ -218,6 +228,18 @@ fn test_compile_to_object_failure_panics() {
         cxxflags: &[],
         input: "in.cc",
         output: "out.o",
+    }
+    .run();
+}
+
+#[test]
+#[should_panic(expected = "Compile to assembly (.s) Failed")]
+fn test_compile_to_assembly_failure_panics() {
+    CompileToAssembly {
+        cxx: failing_tool(),
+        cxxflags: &[],
+        input: "in.cc",
+        output: "out.s",
     }
     .run();
 }

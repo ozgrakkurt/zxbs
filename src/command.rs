@@ -139,6 +139,76 @@ impl CompileToObject {
     }
 }
 
+// Compile a translation unit to annotated assembly.
+//
+// This is used by the `--emit-asm` flag to put a `.s` file next to every library,
+// binary and test object file. It is a separate compiler invocation because
+// clang can't emit an object file and an explicit assembly output in the same
+// run.
+pub struct CompileToAssembly {
+    pub cxx: &'static str,
+    pub cxxflags: &'static [&'static str],
+    pub input: &'static str,
+    pub output: &'static str,
+}
+
+impl CompileToAssembly {
+    pub fn print(&self) -> String {
+        let mut out = String::with_capacity(1024);
+
+        out.push_str("<cxx> <cxxflags> ");
+
+        out.push_str(self.input);
+
+        out.push_str(" -S -fverbose-asm -o ");
+
+        out.push_str(self.output);
+
+        out
+    }
+
+    pub fn run(&self) {
+        let tmp_output = make_tmp_path(self.output);
+
+        let mut command = std::process::Command::new(self.cxx);
+        command
+            .args(self.cxxflags)
+            .arg(self.input)
+            .arg("-S")
+            .arg("-fverbose-asm")
+            .arg("-o")
+            .arg(&tmp_output);
+
+        let output = match command.output() {
+            Ok(out) => out,
+            Err(e) => {
+                panic!(
+                    "Failed to run command. Command:\n\t{}\nError = {:?}\n",
+                    self.print(),
+                    e,
+                );
+            }
+        };
+
+        if !output.status.success() {
+            let stderr = String::from_utf8(output.stderr).unwrap();
+            panic!(
+                "Compile to assembly (.s) Failed. Command:\n\t{}\nStatus: {}\nStdErr:\n{}\n",
+                self.print(),
+                output.status,
+                stderr,
+            );
+        }
+
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        if !stdout.trim().is_empty() {
+            eprintln!("STDOUT of {}:\n{}", self.print(), stdout.as_str());
+        }
+
+        std::fs::rename(&tmp_output, self.output).unwrap();
+    }
+}
+
 pub struct ArchiveLib {
     pub ar: &'static str,
     pub output: &'static str,
@@ -506,6 +576,7 @@ impl CacheStore {
 pub enum Command {
     CompileModule(CompileModule),
     CompileToObject(CompileToObject),
+    CompileToAssembly(CompileToAssembly),
     ArchiveLib(ArchiveLib),
     LinkBinary(LinkBinary),
     RunBinary(RunBinary),
@@ -519,6 +590,7 @@ pub enum Command {
 pub enum CommandKind {
     CompileModule,
     CompileToObject,
+    CompileToAssembly,
     ArchiveLib,
     LinkBinary,
     RunBinary,
@@ -533,6 +605,7 @@ impl Command {
         match self {
             Command::CompileModule(x) => x.print(),
             Command::CompileToObject(x) => x.print(),
+            Command::CompileToAssembly(x) => x.print(),
             Command::ArchiveLib(x) => x.print(),
             Command::LinkBinary(x) => x.print(),
             Command::RunBinary(x) => x.print(),
@@ -547,6 +620,7 @@ impl Command {
         match self {
             Command::CompileModule(x) => x.run(),
             Command::CompileToObject(x) => x.run(),
+            Command::CompileToAssembly(x) => x.run(),
             Command::ArchiveLib(x) => x.run(),
             Command::LinkBinary(x) => x.run(),
             Command::RunBinary(x) => x.run(),
@@ -561,6 +635,7 @@ impl Command {
         match self {
             Command::CompileModule(_) => CommandKind::CompileModule,
             Command::CompileToObject(_) => CommandKind::CompileToObject,
+            Command::CompileToAssembly(_) => CommandKind::CompileToAssembly,
             Command::ArchiveLib(_) => CommandKind::ArchiveLib,
             Command::LinkBinary(_) => CommandKind::LinkBinary,
             Command::RunBinary(_) => CommandKind::RunBinary,

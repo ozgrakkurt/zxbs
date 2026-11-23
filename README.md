@@ -70,6 +70,8 @@ Available flags are:
 - `--[no]-time-trace`. Enables or disables the `chrome://tracing` formatted timing output generation. Disabled by default.
 - `--[no]-cxx-time-trace`. Enables or disables passing `-ftime-trace` flag to clang which makes it generate `chrome://tracing` formatted files per compilation unit. These
   files can later be found in the build directory.
+- `--[no]-emit-asm`. Enables or disables generating annotated assembly with `-S -fverbose-asm` next to every library, binary and test object file.
+  Module object files are not emitted. The `.s` files are treated like any other build artifact and are stored in the cache. Disabled by default.
 
 Available subcommands are:
 - `run <entry_name:binary_name> [target_arg]*` -> Builds everything and then runs the indicated binary target. The [target_arg]* list is passed through to the binary that is being run.
@@ -136,6 +138,8 @@ All source files are scanned and found automatically. File extensions (.cppm/.cc
           - test executables
           - stamp
             - test stamps that are emitted if a test runs successfully, used for cache purposes.
+
+When `--emit-asm` is enabled, an annotated `.s` file is emitted next to every library, binary and test object file in the output tree.
 
 ### Profiling
 
