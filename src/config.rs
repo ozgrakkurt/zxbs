@@ -133,6 +133,8 @@ fn make_cxxflags(cfg: &FlagCfg) -> Vec<&'static str> {
         "-Wswitch-default",
         // Treat warnings as errors.
         "-Werror",
+        // Check using #if VAR where var is undefined
+        "-Wundef",
         // Target micro architecture.
         "-march=native",
         // Use cpp standard.
@@ -194,26 +196,33 @@ fn make_cxxflags(cfg: &FlagCfg) -> Vec<&'static str> {
         cxxflags.push("-gdwarf32");
         cxxflags.push("-gdwarf-5");
         cxxflags.push("-fasynchronous-unwind-tables");
-        cxxflags.push("-DZX_DEBUG_INFO");
+        cxxflags.push("-DZX_DEBUG_INFO=1");
     } else {
         cxxflags.push("-fno-unwind-tables");
         cxxflags.push("-fno-asynchronous-unwind-tables");
+        cxxflags.push("-DZX_DEBUG_INFO=0");
     }
 
     if cfg.dev_mode {
-        cxxflags.push("-DZX_DEV");
+        cxxflags.push("-DZX_DEV=1");
+    } else {
+        cxxflags.push("-DZX_DEV=0");
     }
 
     if cfg.fuzz {
-        cxxflags.push("-DZX_FUZZ");
+        cxxflags.push("-DZX_FUZZ=1");
         cxxflags.push("-fsanitize-coverage=trace-pc-guard");
+    } else {
+        cxxflags.push("-DZX_FUZZ=0");
     }
 
     if cfg.fuzz_unlimited {
         if !cfg.fuzz {
             panic!("Using --fuzz-unlimited without --fuzz doesn't make sense.");
         }
-        cxxflags.push("-DZX_FUZZ_UNLIMITED");
+        cxxflags.push("-DZX_FUZZ_UNLIMITED=1");
+    } else {
+        cxxflags.push("-DZX_FUZZ_UNLIMITED=0");
     }
 
     cxxflags
