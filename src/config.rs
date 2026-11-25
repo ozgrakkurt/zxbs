@@ -131,6 +131,7 @@ fn make_cxxflags(cfg: &FlagCfg) -> Vec<&'static str> {
         "-Wbool-operation",
         // make sure switch on enum has a default
         "-Wswitch-default",
+        "-Wundef",
         // Treat warnings as errors.
         "-Werror",
         // Target micro architecture.
