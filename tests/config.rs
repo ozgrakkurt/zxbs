@@ -42,10 +42,13 @@ fn has_flag(flags: &[&str], flag: &str) -> bool {
 fn test_default_flag_values() {
     let cfg = Config::parse_config(HashMap::default());
 
-    assert!(has_flag(cfg.cxxflags, "-DZX_DEV"));
+    assert!(has_flag(cfg.cxxflags, "-DZX_DEV=1"));
+    assert!(has_flag(cfg.cxxflags, "-DZX_DEBUG_INFO=1"));
+    assert!(has_flag(cfg.cxxflags, "-DZX_FUZZ=0"));
+    assert!(has_flag(cfg.cxxflags, "-DZX_FUZZ_UNLIMITED=0"));
     assert!(has_flag(cfg.cxxflags, "-g1"));
-    assert!(!has_flag(cfg.cxxflags, "-DZX_FUZZ"));
-    assert!(!has_flag(cfg.cxxflags, "-DZX_FUZZ_UNLIMITED"));
+    // Undefined identifiers in `#if` are errors so typos in guards are caught.
+    assert!(has_flag(cfg.cxxflags, "-Wundef"));
     assert!(!cfg.fuzz_unlimited);
     assert!(!cfg.emit_asm);
 
@@ -66,7 +69,8 @@ fn test_emit_asm_flag() {
 fn test_negative_bool_flags() {
     let cfg = Config::parse_config(flags(&[("--no-dev-mode", None), ("--no-debug-info", None)]));
 
-    assert!(!has_flag(cfg.cxxflags, "-DZX_DEV"));
+    assert!(has_flag(cfg.cxxflags, "-DZX_DEV=0"));
+    assert!(has_flag(cfg.cxxflags, "-DZX_DEBUG_INFO=0"));
 
     assert!(!has_flag(cfg.cxxflags, "-g1"));
     assert!(has_flag(cfg.cxxflags, "-fno-unwind-tables"));
@@ -95,13 +99,13 @@ fn test_cxx_time_trace_flag() {
 #[test]
 fn test_fuzz_flags() {
     let cfg = Config::parse_config(flags(&[("--fuzz", None)]));
-    assert!(has_flag(cfg.cxxflags, "-DZX_FUZZ"));
+    assert!(has_flag(cfg.cxxflags, "-DZX_FUZZ=1"));
+    assert!(has_flag(cfg.cxxflags, "-DZX_FUZZ_UNLIMITED=0"));
     assert!(has_flag(cfg.cxxflags, "-fsanitize-coverage=trace-pc-guard"));
-    assert!(!has_flag(cfg.cxxflags, "-DZX_FUZZ_UNLIMITED"));
     assert!(!cfg.fuzz_unlimited);
 
     let cfg = Config::parse_config(flags(&[("--fuzz", None), ("--fuzz-unlimited", None)]));
-    assert!(has_flag(cfg.cxxflags, "-DZX_FUZZ_UNLIMITED"));
+    assert!(has_flag(cfg.cxxflags, "-DZX_FUZZ_UNLIMITED=1"));
     assert!(cfg.fuzz_unlimited);
 }
 
@@ -298,7 +302,7 @@ fn test_parse_cli_args() {
     );
 
     assert_eq!(sc, Subcommand::Build);
-    assert!(cfg.cxxflags.contains(&"-DZX_FUZZ"));
+    assert!(cfg.cxxflags.contains(&"-DZX_FUZZ=1"));
     assert!(cfg.cxxflags.contains(&"-O2"));
 }
 
